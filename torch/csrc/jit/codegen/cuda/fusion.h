@@ -53,6 +53,7 @@ class WelfordResult;
 
 class SegmentCandidateFinder;
 class SegmentedFusion;
+class MultiGroupFusionBuilder;
 
 //! Fusion Guard is our "context manager". It holds the actrive fusion and
 //! allows it to be accessed anywhere through FusionGuard::getCurFusion()
@@ -222,11 +223,24 @@ class TORCH_CUDA_CU_API Fusion : public IrContainer {
     return io_alias_;
   }
 
+  auto activeMultiGroupFusionBuilder() const {
+    return active_multi_group_builder_;
+  }
+
+  void setActiveMultiGroupFusionBuilder(MultiGroupFusionBuilder* builder) {
+    active_multi_group_builder_ = builder;
+  }
+
+  void invalidateMultiGroupFusionBuilder() {
+    active_multi_group_builder_ = nullptr;
+  }
+
  protected:
   friend SegmentCandidateFinder;
   friend SegmentedFusion;
   friend class TranslateApplicableWelford;
   friend Val;
+  friend class MultiDeviceRuntime;
 
   static IrCloner copy(const Fusion* from, Fusion* to);
 
@@ -269,6 +283,8 @@ class TORCH_CUDA_CU_API Fusion : public IrContainer {
   //  the states are either all valid or all invalid
   bool all_tv_uses_valid_ = false;
   bool is_during_update_uses_ = false;
+
+  MultiGroupFusionBuilder* active_multi_group_builder_ = nullptr;
 };
 
 } // namespace cuda

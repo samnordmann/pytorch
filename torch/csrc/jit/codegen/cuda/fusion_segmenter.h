@@ -48,6 +48,9 @@ class TORCH_CUDA_CU_API SegmentedGroup {
     exprs_.push_back(expr);
   }
 
+  SegmentedGroup(Fusion* fusion)
+      : segmented_fusion_(nullptr), complete_fusion_(fusion) {}
+
   //! Checks if this group takes original fusion's input
   bool isInputGroup() {
     return !input_vals.empty();
@@ -106,6 +109,11 @@ class TORCH_CUDA_CU_API SegmentedGroup {
   c10::optional<std::unique_ptr<SchedulerEntry>> getMaybeSchedulerEntry(
       SchedulerRuntimeInfo& runtime_info);
 
+  Fusion* completeFusion() {
+    TORCH_INTERNAL_ASSERT(complete_fusion_ != nullptr);
+    return complete_fusion_;
+  }
+
  public:
   //! "Ancestor nodes", towards inputs of segmentedDAG
   std::vector<SegmentedEdge*> producer_edges;
@@ -124,6 +132,7 @@ class TORCH_CUDA_CU_API SegmentedGroup {
   friend class SegmentedFusion;
   friend class FusionKernelRuntime;
   friend class TranslateApplicableWelford;
+  friend class MultiGroupFusionBuilder;
 
   //! unique identifier of group in the segmented fusion
   int group_id_ = -1;
@@ -195,7 +204,10 @@ class TORCH_CUDA_CU_API SegmentedGroup {
   }
 
   //! SegmentedFusion this group belongs to
-  SegmentedFusion* segmented_fusion_;
+  SegmentedFusion* segmented_fusion_ = nullptr;
+
+  //! Experimental interface:
+  Fusion* complete_fusion_ = nullptr;
 };
 
 std::ostream& operator<<(std::ostream& os, const SegmentedGroup* group);

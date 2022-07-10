@@ -7,6 +7,7 @@
 #include <torch/csrc/jit/codegen/cuda/ir_graphviz.h>
 #include <torch/csrc/jit/codegen/cuda/ir_iostream.h>
 #include <torch/csrc/jit/codegen/cuda/ir_utils.h>
+#include <torch/csrc/jit/codegen/cuda/multidevice_runtime.h>
 #include <torch/csrc/jit/codegen/cuda/scheduler/debug_utils.h>
 
 #include <sstream>
@@ -3211,6 +3212,14 @@ std::string toString(const SegmentCandidateFinderOptions& segment_options) {
   }
   ss << "\n}\n";
   return ss.str();
+}
+
+void MultiGroupFusion::print() {
+  std::cout << "MultiGroupFusion {\n";
+  for (auto& group_ptr : groups_) {
+    detailGroupPrint(std::cout, group_ptr.get());
+  }
+  std::cout << "} //MultiGroupFusion \n";
 }
 
 } // namespace cuda

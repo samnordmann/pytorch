@@ -2,6 +2,7 @@
 #include <torch/csrc/jit/codegen/cuda/ir_builder.h>
 #include <torch/csrc/jit/codegen/cuda/ir_cloner.h>
 #include <torch/csrc/jit/codegen/cuda/kernel.h>
+#include <torch/csrc/jit/codegen/cuda/multidevice_runtime.h>
 
 namespace torch {
 namespace jit {
@@ -423,6 +424,13 @@ Val* SimplifyingIrBuilder::minExpr(Val* lhs, Val* rhs) {
       rhs,
       [](Val* lhs, Val* rhs) { return IrBuilder::minExpr(lhs, rhs); },
       [](int64_t lhs, int64_t rhs) { return std::min(lhs, rhs); });
+}
+
+void IrBuilder::newStmt(
+    MultiGroupFusionBuilder* multi_group_container,
+    Statement* stmt) {
+  auto container = FusionGuard::getCurFusion();
+  multi_group_container->newStmt(IrBuilderPasskey(container), stmt);
 }
 
 } // namespace cuda

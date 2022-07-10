@@ -1383,7 +1383,7 @@ std::string toString(ScheduleHeuristic sh) {
     case ScheduleHeuristic::Persistent:
       return "persistent";
     default:
-      TORCH_INTERNAL_ASSERT(false, "undefined schedule");
+      return "undefined";
   }
   return "";
 }
