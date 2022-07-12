@@ -25,7 +25,7 @@ namespace functionalization {
 
 
 inline Tensor to_meta(const Tensor& t) {
-    return at::native::empty_strided_meta(t.sizes(), t.strides(),
+    return at::native::empty_strided_symint_meta(t.sym_sizes(), t.sym_strides(),
 /*dtype=*/c10::make_optional(t.scalar_type()), /*layout=*/c10::make_optional(t.layout()),
 /*device=*/c10::make_optional(c10::Device(kMeta)), /*pin_memory=*/c10::nullopt);
 }
