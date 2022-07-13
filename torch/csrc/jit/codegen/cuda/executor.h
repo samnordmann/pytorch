@@ -153,6 +153,13 @@ class TORCH_CUDA_CU_API FusionExecutor : public NonCopyable {
     disable_parameter_cache_ = true;
   }
 
+  //! Used in distributed setting where we only want to
+  //!  allocate output space and receive output data from
+  //!  a different rank instead of computing them.
+  std::vector<at::Tensor> allocOutputSpace(
+      const at::ArrayRef<IValue>& inputs,
+      c10::Device device_to_alloc);
+
  private:
   // NOLINTNEXTLINE(cppcoreguidelines-pro-type-member-init)
   struct GlobalBuffers {

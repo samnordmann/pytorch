@@ -8,6 +8,7 @@
 #include <torch/csrc/jit/codegen/cuda/scheduler/registry.h>
 
 #include <c10/core/DeviceType.h>
+#include <c10/cuda/CUDAFunctions.h>
 
 namespace torch {
 namespace jit {
@@ -18,6 +19,8 @@ namespace cuda {
 //!  purely manually controlled.
 class TORCH_CUDA_CU_API MultiGroupFusion : NonCopyable {
  public:
+  using ProcessRankType = int;
+
   // Print out the fusion in std::cout
   void print();
 
@@ -38,6 +41,16 @@ class TORCH_CUDA_CU_API MultiGroupFusion : NonCopyable {
     return auto_scheduled_groups_.count(group);
   }
 
+  // Returns the process rank running the group:
+  auto getProcessRank(SegmentedGroup* group) {
+    return group_to_rank_map_.at(group);
+  }
+
+  // Returns the device running the group:
+  auto getDeviceFor(SegmentedGroup* group) {
+    return group_to_device_map_.at(group);
+  }
+
  private:
   // Note: while not directly using `SegmentedFusion`,
   //  still using the layer of segmented groups so we can
@@ -56,6 +69,18 @@ class TORCH_CUDA_CU_API MultiGroupFusion : NonCopyable {
 
   // Keeps track of which group to auto schedule
   std::unordered_set<SegmentedGroup*> auto_scheduled_groups_;
+
+  // Temporary parameters below to enable multi-process and
+  //  mult-device fusion.
+  // This currently seem rather restricted.
+  //
+  // Should really build out some flexibility along this line.
+
+  // Maps from group to the device where the group will run.
+  std::unordered_map<SegmentedGroup*, c10::Device> group_to_device_map_;
+
+  // Maps from group to the process rank that will run this group.
+  std::unordered_map<SegmentedGroup*, ProcessRankType> group_to_rank_map_;
 };
 
 //! Record object keeping track of the group construction
@@ -66,6 +91,13 @@ struct GroupRecord {
 
   // Tracks if this group is meant to be auto-scheduled.
   bool auto_schedule = false;
+
+  // Tracks which process rank will run this kernel
+  MultiGroupFusion::ProcessRankType process_rank = -1;
+
+  // Tracks which device this group will run on.
+  c10::Device device =
+      c10::Device(DeviceType::CUDA, at::cuda::current_device());
 
   // Tracks list of expressions that go into this group
   std::vector<Expr*> exprs;
@@ -108,7 +140,11 @@ class TORCH_CUDA_CU_API MultiGroupFusionBuilder : NonCopyable {
   }
 
   // Mark starting point of a new group, i.e kernel
-  void newGroup(bool auto_schedule = false);
+  void newGroup(
+      bool auto_schedule = false,
+      MultiGroupFusion::ProcessRankType process_rank = -1,
+      c10::Device device =
+          c10::Device(DeviceType::CUDA, at::cuda::current_device()));
 
   // Make the given tensor a group output
   void addGroupOutput(TensorView* tv);
@@ -163,8 +199,13 @@ class TORCH_CUDA_CU_API MultiDeviceRuntime {
 
  public:
   explicit MultiDeviceRuntime(
-      std::unique_ptr<MultiGroupFusion> multi_group_fusion)
-      : multi_group_fusion_(std::move(multi_group_fusion)) {}
+      std::unique_ptr<MultiGroupFusion> multi_group_fusion,
+      MultiGroupFusion::ProcessRankType process_rank = -1)
+      : multi_group_fusion_(std::move(multi_group_fusion)),
+        process_rank_(process_rank) {
+    // Initialize some rank dependency info
+    buildValueToRankMap();
+  }
 
   // Run kernels with the given global inputs, compile if needed.
   std::vector<at::Tensor> runWithInput(std::vector<IValue> inputs);
@@ -179,6 +220,8 @@ class TORCH_CUDA_CU_API MultiDeviceRuntime {
   auto flattenedFusion() const {
     return multi_group_fusion_->completeFusion();
   }
+
+  void buildValueToRankMap();
 
  private:
   // Get list of global inputs to the complete fusion.
@@ -217,6 +260,16 @@ class TORCH_CUDA_CU_API MultiDeviceRuntime {
   //  of intermediate tensors produced by each kernel.
   std::unordered_map<Val*, IValue> context_values_;
 
+  // Keep track of which rank to receive the value from, if it
+  //  is not to be computed from the current rank.
+  std::unordered_map<Val*, MultiGroupFusion::ProcessRankType>
+      context_source_rank_;
+
+  // Keep track of which rank will use which value to determine where
+  //  to send data.
+  using RankVector = VectorOfUniqueEntries<MultiGroupFusion::ProcessRankType>;
+  std::unordered_map<Val*, RankVector> value_to_user_rank_;
+
   // Keeps track of if compilation has run.
   bool compiled_ = false;
 
@@ -230,6 +283,10 @@ class TORCH_CUDA_CU_API MultiDeviceRuntime {
   //  the auto-scheduled kernels.
   std::unordered_map<SegmentedGroup*, std::unique_ptr<SchedulerEntry>>
       auto_scheduler_registry_;
+
+  // Keeps track of process rank owning this runtime,
+  //  not sure if this will ever change throughout the runtime's lifetime.
+  MultiGroupFusion::ProcessRankType process_rank_ = -1;
 };
 
 } // namespace cuda

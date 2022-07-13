@@ -21,11 +21,17 @@ MultiGroupFusionBuilder::MultiGroupFusionBuilder() {
   original_fusion_->setActiveMultiGroupFusionBuilder(this);
 }
 
-void MultiGroupFusionBuilder::newGroup(bool auto_schedule) {
+// TODO: almost a good time to have a "group parameters" struct.
+void MultiGroupFusionBuilder::newGroup(
+    bool auto_schedule,
+    MultiGroupFusion::ProcessRankType process_rank,
+    c10::Device device) {
   // Create a new record.
   GroupRecord new_group_record;
   new_group_record.unique_id = running_group_counter_++;
   new_group_record.auto_schedule = auto_schedule;
+  new_group_record.process_rank = process_rank;
+  new_group_record.device = device;
 
   // Copy currently avaialbe tenors in the context
   //  into the group's context. This includes all
@@ -156,11 +162,17 @@ std::unique_ptr<MultiGroupFusion> MultiGroupFusionBuilder::build() {
     // Build the segmented group
     multigroup_fusion.groups_.push_back(buildGroup(record));
 
+    auto new_group = multigroup_fusion.groups_.back().get();
+
     // track auto scheduled groups:
     if (record.auto_schedule) {
-      multigroup_fusion.auto_scheduled_groups_.insert(
-          multigroup_fusion.groups_.back().get());
+      multigroup_fusion.auto_scheduled_groups_.insert(new_group);
     }
+
+    // Fill in rank and device info for each group:
+    multigroup_fusion.group_to_device_map_.emplace(
+        std::make_pair(new_group, record.device));
+    multigroup_fusion.group_to_rank_map_[new_group] = record.process_rank;
   }
 
   // Invalidate this builder within original_fusion_
@@ -267,6 +279,24 @@ void updateLaunchParamsFromScheduler(
 
 } // namespace
 
+void MultiDeviceRuntime::buildValueToRankMap() {
+  for (auto group_idx :
+       c10::irange(multi_group_fusion_->fusionGroups().size())) {
+    auto group = multi_group_fusion_->fusionGroups().at(group_idx).get();
+    auto group_rank = multi_group_fusion_->getProcessRank(group);
+
+    // Fill the rank which will define the output values
+    for (auto output_val : group->output_vals) {
+      context_source_rank_[output_val] = group_rank;
+    }
+
+    // Fill the rank which will consume the input values
+    for (auto input_val : group->input_vals) {
+      value_to_user_rank_[input_val].pushBack(group_rank);
+    }
+  }
+}
+
 MultiDeviceRuntime::CompiledKernelPtr MultiDeviceRuntime::compileGroup(
     SegmentedGroup* group,
     std::vector<IValue> group_inputs) {
@@ -338,6 +368,8 @@ MultiDeviceRuntime::CompiledKernelPtr MultiDeviceRuntime::compileGroup(
 //  multifusion logic from actual runtime.
 
 // Launch kernel and record the kernel output into current context
+// TODO: this name should probably be runGroup now, since it doesn't
+//  necessarily launch a kernel.
 void MultiDeviceRuntime::runKernel(
     int group_idx,
     std::vector<IValue>& group_input) {
@@ -357,13 +389,65 @@ void MultiDeviceRuntime::runKernel(
     updateLaunchParamsFromScheduler(scheduler_it->second.get(), launch_params);
   }
 
+  // Device and rank info from this group
+  auto group_rank = multi_group_fusion_->getProcessRank(group);
+  auto group_device = multi_group_fusion_->getDeviceFor(group);
+
+  // Container for the resulting tensors
+  std::vector<at::Tensor> outputs;
+
+  // In the case where either rank is -1, we default to always
+  //  run this group.
+  bool always_run = group_rank == -1 || process_rank_ == -1;
+  bool running_kernel = always_run || group_rank == process_rank_;
+
+  // ========================================================================
+  //  Section for receiving data from other rank:
+  auto input_n = group_input.size();
+  TORCH_INTERNAL_ASSERT(group->input_vals.size() == input_n);
+
+  for (auto input_idx : c10::irange(input_n)) {
+    auto input_source_rank_it =
+        context_source_rank_.find(group->input_vals.at(input_idx));
+    if (input_source_rank_it == context_source_rank_.end()) {
+      std::unordered_set<Val*> global_inputs(
+          multi_group_fusion_->completeFusion()->inputs().begin(),
+          multi_group_fusion_->completeFusion()->inputs().end());
+
+      // Check that if there's no source rank definition then this
+      //  value is a global input.
+      // TODO:
+      // At the very beginning of this run the global inputs could be
+      //  on any device so there'd need to be an initial processing
+      //  to make sure all the running groups have them available.
+      TORCH_INTERNAL_ASSERT(
+          global_inputs.count(group->input_vals.at(input_idx)));
+      continue;
+    }
+
+    auto input_source_rank = input_source_rank_it->second;
+    if (input_source_rank != -1 && input_source_rank != process_rank_) {
+      // Receive this value here
+      //  NCCL_RECEIVE (source_rank, group_input.at(input_idx))
+    }
+  }
+  // ========================================================================
+
+  if (running_kernel) {
+    outputs = executor->runFusion(
+        group_input,
+        launch_params,
+        // WAR: using constant group id for simplicity, so would not
+        //  be able to do dynamic shape yet.
+        0);
+  } else {
+    // For simplicity, just allocate space for all the potential
+    //  kernel outputs. Optimization possible but quite open ended
+    //  for now.
+    outputs = executor->allocOutputSpace(group_input, group_device);
+  }
+
   // Run the kernels and pull the output
-  auto outputs = executor->runFusion(
-      group_input,
-      launch_params,
-      // WAR: using constant group id for simplicity, so would not
-      //  be able to do dynamic shape yet.
-      0);
 
   // Bind context tensors to the actual kernel outputs:
   int number_of_outputs = group->output_vals.size();
@@ -371,7 +455,36 @@ void MultiDeviceRuntime::runKernel(
   TORCH_INTERNAL_ASSERT(outputs.size() == number_of_outputs);
 
   for (auto output_idx : c10::irange(number_of_outputs)) {
-    context_values_[group->output_vals.at(output_idx)] = outputs.at(output_idx);
+    auto output_val = group->output_vals.at(output_idx);
+
+    // Fill tensor data or placeholder to context.
+    context_values_[output_val] = outputs.at(output_idx);
+  }
+
+  // ========================================================================
+  //  Section for sending data to other rank:
+
+  // Running_kernel would mean that current rank has valid data,
+  //  !always_run would mean that some ranks do not have it so we need to
+  //  send it.
+  if (running_kernel && !always_run) {
+    for (auto output_val : group->output_vals) {
+      auto destination_it = value_to_user_rank_.find(output_val);
+      if (destination_it == value_to_user_rank_.end()) {
+        // Not an intermediate value.
+        continue;
+      }
+
+      auto& tensor_to_send = context_values_.at(output_val).toTensor();
+      auto& rank_vector = destination_it->second;
+      if (rank_vector.has(-1)) {
+        // send to all ranks
+      } else {
+        for (auto rank : rank_vector.vector()) {
+          // Send to rank
+        }
+      }
+    }
   }
 }
 
