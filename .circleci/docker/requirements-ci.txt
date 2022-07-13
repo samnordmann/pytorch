@@ -52,6 +52,11 @@ junitparser==2.1.1
 #Pinned versions: 2.1.1
 #test that import:
 
+pynvml
+#Description: unitparser handles JUnit/xUnit Result XML files
+#Pinned versions: 2.1.1
+#test that import:
+
 librosa>=0.6.2
 #Description: A python package for music and audio analysis
 #Pinned versions: >=0.6.2
