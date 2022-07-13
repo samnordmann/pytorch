@@ -528,7 +528,7 @@ def wait_for_process(p):
         # Always call p.wait() to ensure exit
         p.wait()
 
-def shell(command, cwd=None, env=None):
+def shell(command, cwd=None, env=None, wait=True):
     sys.stdout.flush()
     sys.stderr.flush()
     # The following cool snippet is copied from Py3 core library subprocess.call
@@ -540,7 +540,12 @@ def shell(command, cwd=None, env=None):
     # https://github.com/python/cpython/blob/71b6c1af727fbe13525fb734568057d78cea33f3/Lib/subprocess.py#L309-L323
     assert not isinstance(command, torch._six.string_classes), "Command to shell should be a list or tuple of tokens"
     p = subprocess.Popen(command, universal_newlines=True, cwd=cwd, env=env)
-    return wait_for_process(p)
+    import psutil
+    import time
+    while p.poll() is None:
+        print(psutil.cpu_percent())
+        time.sleep(.5)
+    return p.returncode
 
 
 def discover_test_cases_recursively(suite_or_case):
