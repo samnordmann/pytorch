@@ -109,6 +109,7 @@ class ShufflerIterDataPipe(IterDataPipe[T_co]):
         self._enabled = True
         self._seed = None
         self._rng = random.Random()
+        self._fast_forward_iterator = None
 
     def set_shuffle(self, shuffle=True):
         self._enabled = shuffle
@@ -153,6 +154,8 @@ class ShufflerIterDataPipe(IterDataPipe[T_co]):
             self.buffer_size,
             self._enabled,
             self._seed,
+            self._valid_iterator_id,
+            self._number_of_samples_yielded,
             self._rng.getstate(),
         )
         return state
@@ -163,6 +166,8 @@ class ShufflerIterDataPipe(IterDataPipe[T_co]):
             self.buffer_size,
             self._enabled,
             self._seed,
+            self._valid_iterator_id,
+            self._number_of_samples_yielded,
             rng_state,
         ) = state
         self._rng = random.Random()

@@ -167,6 +167,8 @@ class _ForkerIterDataPipe(IterDataPipe):
             self.main_datapipe,
             self.num_instances,
             self.buffer_size,
+            self._valid_iterator_id,
+            self._number_of_samples_yielded,
         )
         return state
 
@@ -175,6 +177,8 @@ class _ForkerIterDataPipe(IterDataPipe):
             self.main_datapipe,
             self.num_instances,
             self.buffer_size,
+            self._valid_iterator_id,
+            self._number_of_samples_yielded,
         ) = state
         self._datapipe_iterator = None
         self.buffer = deque()
@@ -393,6 +397,8 @@ class _DemultiplexerIterDataPipe(IterDataPipe):
             self.buffer_size,
             self.classifier_fn,
             self.drop_none,
+            self._valid_iterator_id,
+            self._number_of_samples_yielded,
         )
         return state
 
@@ -403,6 +409,8 @@ class _DemultiplexerIterDataPipe(IterDataPipe):
             self.buffer_size,
             self.classifier_fn,
             self.drop_none,
+            self._valid_iterator_id,
+            self._number_of_samples_yielded,
         ) = state
         self._datapipe_iterator = None
         self.current_buffer_usage = 0
@@ -470,6 +478,8 @@ class MultiplexerIterDataPipe(IterDataPipe):
         state = (
             self.datapipes,
             self.length,
+            self._valid_iterator_id,
+            self._number_of_samples_yielded,
         )
         return state
 
@@ -477,6 +487,8 @@ class MultiplexerIterDataPipe(IterDataPipe):
         (
             self.datapipes,
             self.length,
+            self._valid_iterator_id,
+            self._number_of_samples_yielded,
         ) = state
         self.buffer = []
 

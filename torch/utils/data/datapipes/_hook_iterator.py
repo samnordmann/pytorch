@@ -1,6 +1,20 @@
 import inspect
 import functools
+from enum import Enum
+
 import torch.autograd
+
+
+class _SnapshotState(Enum):
+    r"""
+    These are the snapshotting-related states that IterDataPipes can be in.
+    `NotStarted` - allows you to restore a snapshot and create an iterator without reset
+    `Restored` - cannot restore again, allows you to create an iterator without resetting the DataPipe
+    `Iterating` - cannot restore, will reset if you create a new iterator
+    """
+    NotStarted = 1
+    Restored = 2
+    Iterating = 3
 
 
 def _simplify_obj_name(obj) -> str:
@@ -140,6 +154,13 @@ def hook_iterator(namespace, profile_name):
         def wrap_generator(*args, **kwargs):
             gen = func(*args, **kwargs)
             datapipe = args[0]
+            if datapipe._fast_forward_iterator:
+                while True:
+                    try:
+                        yield next(datapipe._fast_forward_iterator)
+                    except StopIteration:
+                        datapipe._fast_forward_iterator = None
+                        return
             iterator_id = _set_datapipe_valid_iterator_id(datapipe)  # This ID is tied to each created iterator
             _profiler_enabled = torch.autograd._profiler_enabled()
             try:
@@ -161,7 +182,7 @@ def hook_iterator(namespace, profile_name):
                         _check_iterator_valid(datapipe, iterator_id)
                         response = gen.send(request)
             except StopIteration as e:
-                return e.value
+                return
             except Exception as e:
                 # TODO: Simplify the traceback message to skip over `response = gen.send(None)`
                 #       Part of https://github.com/pytorch/data/issues/284
@@ -206,6 +227,11 @@ def hook_iterator(namespace, profile_name):
         def wrap_iter(*args, **kwargs):
             iter_ret = func(*args, **kwargs)
             datapipe = args[0]
+            if datapipe._fast_forward_iterator:
+                iter_ret = datapipe._fast_forward_iterator
+                datapipe._fast_forward_iterator = None
+                datapipe._snapshot_state = _SnapshotState.Iterating
+                return iter_ret
             iterator_id = _set_datapipe_valid_iterator_id(datapipe)  # This ID is tied to each created iterator
             return IteratorDecorator(iter_ret, datapipe, iterator_id, '__next__' in namespace)
 
