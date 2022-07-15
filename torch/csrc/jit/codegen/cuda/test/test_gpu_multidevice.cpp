@@ -40,6 +40,9 @@
 #include <algorithm>
 #include <iostream>
 
+#include <torch/csrc/distributed/c10d/TCPStore.hpp>
+#include <torch/csrc/distributed/c10d/ProcessGroupBuilder.hpp>
+
 // Tests go in torch::jit
 namespace torch {
 namespace jit {
@@ -302,6 +305,46 @@ TEST_F(NVFuserTest, FusionMultiRankReduction_CUDA) {
       {ref},
       __LINE__,
       __FILE__);
+}
+
+int parse_env(int &grank, int &gsize) {
+    char *env;
+
+    env = std::getenv("OMPI_COMM_WORLD_RANK");
+    if (!env) {
+      env = std::getenv("WORLD_RANK");
+      if (!env) {
+        return 1;
+      }
+    }
+    grank = std::atoi(env);
+
+    env = std::getenv("OMPI_COMM_WORLD_SIZE");
+    if (!env) {
+      env = std::getenv("WORLD_SIZE");
+      if (!env) {
+        return 1;
+      }
+    }
+    gsize = std::atoi(env);
+    return 0;
+}
+
+TEST_F(NVFuserTest, FusionMutiGroupProcessGroup) {
+  int grank, gsize;
+
+  if (parse_env(grank, gsize)) {
+    GTEST_SKIP() << "distributed config is not provided";
+  }
+
+  c10d::TCPStoreOptions store_opts;
+  store_opts.isServer = (grank == 0) ? true : false;
+  auto store = c10::make_intrusive<c10d::TCPStore>("localhost", store_opts);
+
+  c10d::ProcessGroupBuilder pgBuilder;
+  auto pg = pgBuilder.getProcessGroup("nccl", store, grank, gsize);
+  pg->barrier();
+
 }
 
 #undef NVFUSER_TEST_CUDA_ARCH_GUARD
