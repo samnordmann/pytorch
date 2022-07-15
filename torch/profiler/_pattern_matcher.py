@@ -2,6 +2,7 @@ from collections import deque
 import re
 from typing import Dict, List, Set
 
+import torch
 from torch.profiler import profile
 from torch._C._autograd import (_ProfilerEvent, _ExtraFields_TorchOp,
                                 _ExtraFields_Backend, _ExtraFields_Allocation,
@@ -198,6 +199,35 @@ class ForLoopIndexingPattern(Pattern):
         return repeat_count >= 10
 
 
+class FP32MatMulPattern(Pattern):
+
+    def __init__(self, prof: profile):
+        super().__init__(prof)
+        self.description = (
+            "You are currently using GPU that supports TF32. "
+            "Please enable TF32 by setting 'torch.backends.cuda.matmul.allow_tf32 = True'"
+        )
+
+    @property
+    def skip(self):
+        has_tf32 = all(
+            int(arch[3:]) >= 80 for arch in torch.cuda.get_arch_list())
+        return has_tf32
+
+    def match(self, event: _ProfilerEvent):
+        # If we saw this pattern once, we don't need to match it again
+        if event_type(event) != _EventType.TorchOp:
+            return False
+        assert isinstance(event.extra_fields, _ExtraFields_TorchOp)
+        if event.name() == "aten::mm":
+            if event.extra_fields.allow_tf32_cublas is False:
+                return True
+        return False
+
+    def report(self, event: _ProfilerEvent):
+        return self.description
+
+
 def source_code_location(event: _ProfilerEvent):
     while event:
         if event_type(event) == _EventType.PyCall or event_type(
@@ -213,7 +243,8 @@ def source_code_location(event: _ProfilerEvent):
 def report_all_anti_patterns(prof):
     anti_patterns = [
         ExtraCUDACopyPattern(prof),
-        ForLoopIndexingPattern(prof)
+        ForLoopIndexingPattern(prof),
+        FP32MatMulPattern(prof)
     ]
     reported = set()
     print(f"{'-'*40}TorchTidy Report{'-'*40}")
