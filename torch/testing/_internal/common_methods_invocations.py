@@ -22,7 +22,7 @@ from torch.testing import make_tensor
 from torch.testing._internal.common_dtype import (
     _dispatch_dtypes, floating_types, floating_types_and, complex_types, floating_and_complex_types,
     floating_and_complex_types_and, all_types_and_complex_and, all_types_and, all_types_and_complex, integral_types_and,
-    all_types, double_types, empty_types, complex_types_and, integral_types
+    all_types, empty_types, complex_types_and, integral_types
 )
 from torch.testing._internal.common_device_type import \
     (onlyCUDA, onlyNativeDeviceTypes, disablecuDNN, skipCUDAIfNoMagma, skipCUDAIfNoMagmaAndNoCusolver,
@@ -12451,37 +12451,31 @@ op_db: List[OpInfo] = [
                     skips=(
                     )),
     OpInfo('linalg.det',
+           aten_name='linalg_det',
            op=torch.linalg.det,
            aliases=('det',),
            dtypes=floating_and_complex_types(),
            supports_forward_ad=True,
            supports_fwgrad_bwgrad=True,
-           aten_name='linalg_det',
            sample_inputs_func=sample_inputs_linalg_det_logdet_slogdet,
-           decorators=[skipCUDAIfNoMagma, skipCPUIfNoLapack,
-                       DecorateInfo(toleranceOverride({torch.complex64: tol(atol=1e-3, rtol=1e-3)}))],
-           check_batched_gradgrad=False,
-           supports_inplace_autograd=False),
+           decorators=[skipCPUIfNoLapack, skipCUDAIfNoMagmaAndNoCusolver],
+           check_batched_gradgrad=False),
     OpInfo('linalg.det',
+           aten_name='linalg_det',
            op=torch.linalg.det,
            variant_test_name='singular',
            aliases=('det',),
-           dtypes=double_types(),
-           backward_dtypes=double_types(),
+           dtypes=floating_and_complex_types(),
            supports_forward_ad=True,
            supports_fwgrad_bwgrad=True,
-           aten_name='linalg_det',
-           sample_inputs_func=sample_inputs_linalg_det_singular,
-           decorators=[skipCUDAIfNoMagma, skipCPUIfNoLapack,
-                       DecorateInfo(toleranceOverride({torch.complex64: tol(atol=1e-3, rtol=1e-3)}))],
            check_batched_gradgrad=False,
-           supports_inplace_autograd=False,
+           sample_inputs_func=sample_inputs_linalg_det_singular,
+           decorators=[skipCPUIfNoLapack, skipCUDAIfNoMagmaAndNoCusolver],
            skips=(
-               DecorateInfo(unittest.skip("Skipped!"), "TestGradients", 'test_fn_fwgrad_bwgrad'),
-               DecorateInfo(unittest.skip("Skipped!"), 'TestGradients', 'test_fn_gradgrad'),
-               # dtypes are tested in the suite above, no need to repeat it for singular
-               DecorateInfo(unittest.skip("Skipped!"), 'TestCommon', 'test_dtypes'),
-           )),
+               DecorateInfo(unittest.skip("The backward may give different results"), 'TestCommon', 'test_noncontiguous_samples'),
+               # Both Hessians are incorrect on complex inputs??
+               DecorateInfo(unittest.expectedFailure, 'TestGradients', 'test_fn_gradgrad', dtypes=(torch.complex128,)),
+               DecorateInfo(unittest.expectedFailure, "TestGradients", 'test_fn_fwgrad_bwgrad', dtypes=(torch.complex128,)),)),
     OpInfo('linalg.cholesky',
            aten_name='linalg_cholesky',
            dtypes=floating_and_complex_types(),
