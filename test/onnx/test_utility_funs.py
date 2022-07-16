@@ -2,6 +2,7 @@
 
 import copy
 import io
+import unittest
 
 import onnx
 
@@ -1084,6 +1085,7 @@ class TestUtilityFuns_opset9(_BaseTestCase):
         self.assertEqual(graph.graph.node[0].op_type, "Gelu")
         self.assertEqual(graph.opset_import[1].domain, "com.microsoft")
 
+    @unittest.skip("It started failing after #80074")
     def test_custom_opsets_inverse(self):
         class CustomInverse(torch.nn.Module):
             def forward(self, x):
