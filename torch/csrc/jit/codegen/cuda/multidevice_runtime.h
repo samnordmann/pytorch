@@ -9,6 +9,8 @@
 
 #include <c10/core/DeviceType.h>
 #include <c10/cuda/CUDAFunctions.h>
+#include <torch/csrc/distributed/c10d/TCPStore.hpp>
+#include <torch/csrc/distributed/c10d/ProcessGroupBuilder.hpp>
 
 namespace torch {
 namespace jit {
@@ -208,7 +210,8 @@ class TORCH_CUDA_CU_API MultiDeviceRuntime {
   }
 
   // Run kernels with the given global inputs, compile if needed.
-  std::vector<at::Tensor> runWithInput(std::vector<IValue> inputs);
+  std::vector<at::Tensor> runWithInput(std::vector<IValue> inputs,
+    c10::intrusive_ptr<c10d::ProcessGroup> process_group);
 
   // Interface to querry underlying fusion.
   auto multiGroupFusion() const {
@@ -250,7 +253,8 @@ class TORCH_CUDA_CU_API MultiDeviceRuntime {
 
   // Run the kernel corresponding to the given index, with the given
   //  pytorch tensor inputs.
-  void runKernel(int group_idx, std::vector<IValue>& group_inputs);
+  void runKernel(int group_idx, std::vector<IValue>& group_inputs,
+    c10::intrusive_ptr<c10d::ProcessGroup> process_group);
 
   // Build actual fusion graph from segmented group.
   std::unique_ptr<Fusion> getFusionCopyFromGroup(SegmentedGroup* group);
