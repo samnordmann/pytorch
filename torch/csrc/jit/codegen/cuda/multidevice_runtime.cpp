@@ -335,15 +335,16 @@ MultiDeviceRuntime::CompiledKernelPtr MultiDeviceRuntime::compileGroup(
 
   // Infer which device this fusion runs from input device ids.
   // TODO: fix should bind device with group?
-  const int device_index = getCommonDeviceCUDA(group_inputs);
-  TORCH_CHECK(device_index >= 0, "device is not coherent for fusion inputs");
+  // const int device_index = getCommonDeviceCUDA(group_inputs);
+  // TORCH_CHECK(device_index >= 0, "device is not coherent for fusion inputs");
+  const auto device = multi_group_fusion_->getDeviceFor(group);
 
   // Set launch parameters
   LaunchParams launch_params;
 
   // Set compile options
   CompileOptions options;
-  options.device = c10::Device(DeviceType::CUDA, device_index);
+  options.device = device;
 
   // Set parameters inferred by auto scheduler.
   if (maybe_scheduler_entry.has_value()) {
