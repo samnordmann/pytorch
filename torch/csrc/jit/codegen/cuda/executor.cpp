@@ -654,19 +654,10 @@ FusionExecutor::GlobalBuffers FusionExecutor::allocGlobalVals(
 }
 
 std::vector<at::Tensor> FusionExecutor::allocOutputSpace(
-    const at::ArrayRef<IValue>& inputs,
-    c10::Device device_to_alloc) {
-  // Back up device
-  auto current_device = options_.device;
+    const at::ArrayRef<IValue>& inputs) {
 
-  // Temporarily modify device as specified
-  options_.device = device_to_alloc;
-  auto expr_eval = executor_utils::bindKernelInputs(inputs, lowered_->kernel());
-  auto outputs = allocOutputs(inputs, expr_eval);
-
-  // Restore device
-  options_.device = current_device;
-
+    auto expr_eval = executor_utils::bindKernelInputs(inputs, lowered_->kernel());
+    auto outputs = allocOutputs(inputs, expr_eval);
   return outputs;
 }
 

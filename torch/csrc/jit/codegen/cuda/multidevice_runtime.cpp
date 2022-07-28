@@ -335,16 +335,15 @@ MultiDeviceRuntime::CompiledKernelPtr MultiDeviceRuntime::compileGroup(
 
   // Infer which device this fusion runs from input device ids.
   // TODO: fix should bind device with group?
-  // const int device_index = getCommonDeviceCUDA(group_inputs);
-  // TORCH_CHECK(device_index >= 0, "device is not coherent for fusion inputs");
-  const auto device = multi_group_fusion_->getDeviceFor(group);
+  const int device_index = getCommonDeviceCUDA(group_inputs);
+  TORCH_CHECK(device_index >= 0, "device is not coherent for fusion inputs");
 
   // Set launch parameters
   LaunchParams launch_params;
 
   // Set compile options
   CompileOptions options;
-  options.device = device;
+  options.device = c10::Device(DeviceType::CUDA, device_index);
 
   // Set parameters inferred by auto scheduler.
   if (maybe_scheduler_entry.has_value()) {
@@ -373,8 +372,7 @@ MultiDeviceRuntime::CompiledKernelPtr MultiDeviceRuntime::compileGroup(
 //  necessarily launch a kernel.
 void MultiDeviceRuntime::runKernel(
     int group_idx,
-    std::vector<IValue>& group_input,
-    c10::intrusive_ptr<c10d::ProcessGroup> pg) {
+    std::vector<IValue>& group_input) {
   // Segmented group to run:
   auto group = multi_group_fusion_->fusionGroups().at(group_idx).get();
 
@@ -430,24 +428,14 @@ void MultiDeviceRuntime::runKernel(
     auto input_source_rank = input_source_rank_it->second;
     if (input_source_rank != -1 && input_source_rank != process_rank_) {
       // Receive this value here
-      //  NCCL_RECEIVE (source_rank, group_input.at(input_idx))
-
-      auto options = at::TensorOptions().dtype(at::kFloat).device(at::Device("cuda:1")); //.device(at::kCUDA, 1);
-      std::vector<at::Tensor> tensor_to_receive= {at::empty({8, 8}, options)};
-      // In the lines above, I am cheating by forcing the shape and device of tensor_to_receive. We should actually use smth like:
-      // std::vector<at::Tensor> tensor_to_receive= {group_input.at(input_idx).toTensor()};
-      // The reason I am doing this is to avoid a fail with the following warn: "NCCL WARN Duplicate GPU detected : rank 0 and rank 1 both on CUDA device 6000"
-
-      pg->recv(tensor_to_receive, input_source_rank, 0);
-      pg->barrier();// for debug only
-      group_input.at(input_idx) = (IValue)(tensor_to_receive[0]);
-      
-      printf("!!! receive. process_rank_=%i, group_rank=%i, input_source_rank=%i, group_device.index()=%i, group_rank=%i, \n",process_rank_, group_rank, input_source_rank, group_device.index(), group_rank);
-      std::cout << "received tensor: \n" << tensor_to_receive[0] << std::endl; // we can check that the Send/Recv works
-
+      std::vector<at::Tensor> tensor_to_receive = {group_input.at(input_idx).toTensor()}; // holder for the received tensor
+      auto work = process_group_->recv(tensor_to_receive, input_source_rank, 0); // receive the tensor
+      while (!work->isCompleted()); // wait for completion
+      group_input.at(input_idx) = (IValue)(tensor_to_receive[0]); // store the received tensor
     }
   }
   // ========================================================================
+  //  Section for running the kernel:
 
   if (running_kernel) {
     outputs = executor->runFusion(
@@ -460,7 +448,7 @@ void MultiDeviceRuntime::runKernel(
     // For simplicity, just allocate space for all the potential
     //  kernel outputs. Optimization possible but quite open ended
     //  for now.
-    outputs = executor->allocOutputSpace(group_input, group_device);
+    outputs = executor->allocOutputSpace(group_input);
   }
 
   // Run the kernels and pull the output
@@ -494,14 +482,11 @@ void MultiDeviceRuntime::runKernel(
       std::vector<at::Tensor> tensor_to_send = {context_values_.at(output_val).toTensor()};
       auto& rank_vector = destination_it->second;
       if (rank_vector.has(-1)) {
-        // send to all ranks
-        printf("TODO: Implement broadcast of global input tensor");
+        // TODO: send to all ranks
       } else {
         for (auto rank : rank_vector.vector()) {
-          printf("!!! send. process_rank_=%i, group_rank=%i, send to rank=%i, group_device.index()=%i, group_rank=%i\n", process_rank_, group_rank, rank, group_device.index(), group_rank);
-          std::cout << "sent tensor: \n" << tensor_to_send[0] << std::endl;
-          pg->send(tensor_to_send, rank, 0);
-          pg->barrier();// for debug only
+          // Send to rank
+          process_group_->send(tensor_to_send, rank, 0);
         }
       }
     }
@@ -509,12 +494,10 @@ void MultiDeviceRuntime::runKernel(
 }
 
 std::vector<at::Tensor> MultiDeviceRuntime::runWithInput(
-    std::vector<IValue> inputs,
-    c10::intrusive_ptr<c10d::ProcessGroup> process_group) {
+    std::vector<IValue> inputs) {
   // Make sure inputs align at global boundary.
   TORCH_INTERNAL_ASSERT(inputs.size() == globalInputs().size());
 
-  process_group->barrier();
   // Make initial context with input values:
   for (auto input_idx : c10::irange(inputs.size())) {
     context_values_[globalInputs().at(input_idx)] = inputs.at(input_idx);
@@ -534,7 +517,7 @@ std::vector<at::Tensor> MultiDeviceRuntime::runWithInput(
     }
 
     // Launch kernel and record the kernel output into current context
-    runKernel(group_idx, group_input, process_group);
+    runKernel(group_idx, group_input);
   }
 
   // Collect global outputs from context

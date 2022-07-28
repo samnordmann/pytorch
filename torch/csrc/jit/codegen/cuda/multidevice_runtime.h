@@ -202,16 +202,16 @@ class TORCH_CUDA_CU_API MultiDeviceRuntime {
  public:
   explicit MultiDeviceRuntime(
       std::unique_ptr<MultiGroupFusion> multi_group_fusion,
+      c10::intrusive_ptr<c10d::ProcessGroup> process_group,
       MultiGroupFusion::ProcessRankType process_rank = -1)
       : multi_group_fusion_(std::move(multi_group_fusion)),
-        process_rank_(process_rank) {
+        process_group_(process_group), process_rank_(process_rank) {
     // Initialize some rank dependency info
     buildValueToRankMap();
   }
 
   // Run kernels with the given global inputs, compile if needed.
-  std::vector<at::Tensor> runWithInput(std::vector<IValue> inputs,
-    c10::intrusive_ptr<c10d::ProcessGroup> process_group);
+  std::vector<at::Tensor> runWithInput(std::vector<IValue> inputs);
 
   // Interface to querry underlying fusion.
   auto multiGroupFusion() const {
@@ -253,8 +253,7 @@ class TORCH_CUDA_CU_API MultiDeviceRuntime {
 
   // Run the kernel corresponding to the given index, with the given
   //  pytorch tensor inputs.
-  void runKernel(int group_idx, std::vector<IValue>& group_inputs,
-    c10::intrusive_ptr<c10d::ProcessGroup> process_group);
+  void runKernel(int group_idx, std::vector<IValue>& group_inputs);
 
   // Build actual fusion graph from segmented group.
   std::unique_ptr<Fusion> getFusionCopyFromGroup(SegmentedGroup* group);
@@ -287,6 +286,9 @@ class TORCH_CUDA_CU_API MultiDeviceRuntime {
   //  the auto-scheduled kernels.
   std::unordered_map<SegmentedGroup*, std::unique_ptr<SchedulerEntry>>
       auto_scheduler_registry_;
+
+  // Process group. Interface for inter-process collectives
+  c10::intrusive_ptr<c10d::ProcessGroup> process_group_;
 
   // Keeps track of process rank owning this runtime,
   //  not sure if this will ever change throughout the runtime's lifetime.

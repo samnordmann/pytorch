@@ -347,23 +347,6 @@ TEST_F(NVFuserTest, FusionMutiGroupProcessGroup) {
 
 }
 
-TEST_F(NVFuserTest, FusionMutiGroupProcessGroup_gloo) {
-  int grank, gsize;
-
-  if (parse_env(grank, gsize)) {
-    GTEST_SKIP() << "distributed config is not provided";
-  }
-
-  c10d::TCPStoreOptions store_opts;
-  store_opts.isServer = (grank == 0) ? true : false;
-  auto store = c10::make_intrusive<c10d::TCPStore>("localhost", store_opts);
-
-  c10d::ProcessGroupBuilder pgBuilder;
-  auto pg = pgBuilder.getProcessGroup("gloo", store, grank, gsize);
-  pg->barrier();
-
-}
-
 TEST_F(NVFuserTest, SendRecvTest) {
   // Using the new interface to build multi-group fusion
   MultiGroupFusionBuilder fusion_builder;
@@ -379,26 +362,21 @@ TEST_F(NVFuserTest, SendRecvTest) {
 
   c10d::ProcessGroupBuilder pgBuilder;
   auto pg = pgBuilder.getProcessGroup("nccl", store, grank, gsize);
-  pg->barrier();
-
-  printf("process group created\n");
 
 
   if (grank==0){
       auto options = at::TensorOptions().dtype(at::kFloat).device(at::Device("cuda:0"));
-      at::Tensor input = at::randn({8, 8, 8}, options);
+      at::Tensor input = at::randn({8}, options);
       std::vector<at::Tensor> tensor_to_send = {input};
       pg->send(tensor_to_send, 1, 0);
-      pg->barrier();
+      std::cout << "sent tensor:\n" << tensor_to_send[0] << std::endl;
   } else{
         auto options = at::TensorOptions().dtype(at::kFloat).device(at::Device("cuda:1"));
-        std::vector<at::Tensor> tensor_to_receive= {at::empty({8, 8, 8}, options)};
-        pg->recv(tensor_to_receive, 0, 0);
-        pg->barrier();
-        std::cout << tensor_to_receive[0] << std::endl;
+        std::vector<at::Tensor> tensor_to_receive= {at::empty({8}, options)};
+        auto work = pg->recv(tensor_to_receive, 0, 0);
+        while (!work->isCompleted()); // wait for completion
+        std::cout << "received tensor:\n" << tensor_to_receive[0] << std::endl;
   } 
-
-  printf("test finished\n");
 }
 
 
@@ -407,6 +385,7 @@ TEST_F(NVFuserTest, FusionMultiGPU) {
   MultiGroupFusionBuilder fusion_builder;
   int grank, gsize;
 
+  // defining the process group
   if (parse_env(grank, gsize)) {
     GTEST_SKIP() << "distributed config is not provided";
   }
@@ -417,10 +396,7 @@ TEST_F(NVFuserTest, FusionMultiGPU) {
 
   c10d::ProcessGroupBuilder pgBuilder;
   auto pg = pgBuilder.getProcessGroup("nccl", store, grank, gsize);
-  pg->barrier();
-
-  printf("process group created\n");
-
+  // process group defined
 
   // Fusion guard is on the fusion managed within builder.
   FusionGuard fg(fusion_builder.completeFusion());
@@ -473,37 +449,29 @@ TEST_F(NVFuserTest, FusionMultiGPU) {
   //  multi-device runtime.
   MultiDeviceRuntime runtime(
       fusion_builder.build(),
-      grank);
+      pg, grank);
+
+  if (grank == 0) {
+    // See group partitions:
+    runtime.multiGroupFusion()->print();
+  }
+
 
   // Create at input tensors.
-  auto options = at::TensorOptions().dtype(at::kFloat).device(at::Device("cuda:0"));
-  at::Tensor input = at::randn({8, 8, 8}, options);
+  if (grank == 0){
+    auto options = at::TensorOptions().dtype(at::kFloat).device(at::Device("cuda:0"));
+    at::Tensor input = at::randn({8, 8, 8}, options);
+    auto cg_outputs = runtime.runWithInput({input});// Run the multiple kernels created.
 
-  // See group partitions:
-  runtime.multiGroupFusion()->print();
+    std::cout << "Expected result:\n" << input.sum({0}).sum({0}) << std::endl;
+  } else{
+    auto options = at::TensorOptions().dtype(at::kFloat).device(at::Device("cuda:1"));
+    at::Tensor input = at::empty({8, 8, 8}, options); //creates an empty placeholder
+    auto cg_outputs = runtime.runWithInput({input});// Run the multiple kernels created.
 
-  // Run the multiple kernels created.
-  // To see the two kernels generated:
-  // PYTORCH_NVFUSER_DUMP=cuda_kernel ./test_jit
-  // --gtest_filter=*GroupDoubleReduction*
-  auto cg_outputs = runtime.runWithInput({input}, pg);
+    std::cout << "Obtained result:\n" << cg_outputs << std::endl;
+  }
 
-//TODO:
-// Validate result
-
-//   Only the rank holding the output should check the
-//    result here:
-  // if(grank == 1){
-  //   auto ref = input_bis.sum(0).sum(0);
-  //   testValidate(
-  //       runtime.flattenedFusion(),
-  //       cg_outputs,
-  //       {input_bis},
-  //       {ref},
-  //       __LINE__,
-  //       __FILE__);
-  // }
-  printf("test finished\n");
 }
 
 #undef NVFUSER_TEST_CUDA_ARCH_GUARD
