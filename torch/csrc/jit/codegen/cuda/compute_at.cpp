@@ -14,6 +14,35 @@ namespace jit {
 namespace fuser {
 namespace cuda {
 
+// Simple selector that only propagates across tensor views in the provided
+// unordered_set. Will also propagate to all consumers of those tensors, and the
+// siblings of those tensors.
+class ComputeAtSelector : public MaxInfoSpanningTree::Selector {
+  std::unordered_set<TensorView*> selected_;
+
+ public:
+  virtual bool allowC2P(TensorView* from, TensorView* to) override {
+    return selected_.count(to) > 0;
+  }
+
+  virtual bool allowP2C(TensorView* from, TensorView* to) override {
+    // If the producer is in the selected set, then the consumer must also be
+    // replayed to obtain a compatible loop structure so that this producer
+    // can be consumed in this loop.
+    return selected_.count(from) > 0 || selected_.count(to) > 0;
+  }
+
+  virtual bool allowSibling(TensorView* from, TensorView* to) override {
+    return true;
+  }
+
+  ComputeAtSelector(std::unordered_set<TensorView*> selected)
+      : selected_(std::move(selected)) {}
+  const std::unordered_set<TensorView*>& selected() const {
+    return selected_;
+  }
+};
+
 namespace {
 
 // Wrapper around set_intersection
@@ -114,15 +143,18 @@ TensorView* getCommonConsumer(TensorView* producer, TensorView* consumer) {
   return common_consumer;
 }
 
-void pullInSiblings(std::unordered_set<TensorView*>& s) {
+std::unordered_set<TensorView*> pullInSiblings(
+    const std::unordered_set<TensorView*>& s) {
+  auto with_siblings = s;
   for (auto tv : s) {
     for (auto sibling_tv : ir_utils::siblingTvsOf(tv)) {
       if (sibling_tv == tv) {
         continue;
       }
-      s.emplace(sibling_tv);
+      with_siblings.emplace(sibling_tv);
     }
   }
+  return with_siblings;
 }
 
 // I am just trying to get the same set of tensors being transformed matching
@@ -142,7 +174,7 @@ std::unordered_set<TensorView*> getPropagationSubgraph(
   TensorView* common_consumer = getCommonConsumer(producer, consumer);
   if (common_consumer != nullptr) {
     auto result = getAllTVsBetween(producer, common_consumer);
-    pullInSiblings(result);
+    result = pullInSiblings(result);
     return result;
   }
   auto result_vals = DependencyCheck::getAllDependentVals({producer});
@@ -154,7 +186,7 @@ std::unordered_set<TensorView*> getPropagationSubgraph(
       result_tvs.end(),
       std::inserter(result, result.begin()),
       [](TensorView* tv) { return !tv->uses().empty(); });
-  pullInSiblings(result);
+  result = pullInSiblings(result);
   return result;
 }
 
@@ -163,7 +195,7 @@ std::unordered_set<TensorView*> getPropagationSubgraph(
 void ComputeAt::runAt(
     TensorView* producer,
     TensorView* consumer,
-    unsigned int consumer_position,
+    int64_t consumer_position,
     ComputeAtMode mode) {
   FUSER_PERF_SCOPE("ComputeAt::runAt");
 
@@ -176,71 +208,29 @@ void ComputeAt::runAt(
       " are not in the same fusion.");
 
   if (mode == ComputeAtMode::MostInlined) {
-    consumer_position = consumer->nDims();
+    consumer_position = -1;
   }
 
   FusionGuard fg(producer->fusion());
 
   auto selected = getPropagationSubgraph(producer, consumer);
-  InlinePropagatorSelector selector(selected);
-
-  InlinePropagator inline_propagator(
-      selector.selected(), consumer, consumer_position, mode);
-  MaxProducerPosUpdater updater;
+  ComputeAtSelector selector(selected);
 
   MaxRootDomainInfoSpanningTree path(consumer, consumer_position, &selector);
 
   if (mode == ComputeAtMode::MostInlined) {
     MostInlinedTransformPropagator propagator;
     path.traverse(&propagator);
+    inlineMost(selected);
   } else {
     TransformPropagator propagator(consumer, consumer_position);
     path.traverse(&propagator);
+    inlineSelectedAt(
+        selected,
+        consumer,
+        consumer_position,
+        mode == ComputeAtMode::BestEffort);
   }
-
-  path.traverse(&inline_propagator);
-  path.traverse(&updater);
-}
-
-void ComputeAt::runWith(
-    TensorView* producer,
-    TensorView* consumer,
-    unsigned int producer_position,
-    ComputeAtMode mode) {
-  FUSER_PERF_SCOPE("ComputeAt::runWith");
-
-  // Make sure the correct fusion is setup between this and consumer.
-  TORCH_CHECK(
-      producer->fusion() == consumer->fusion(),
-      producer,
-      " and ",
-      consumer,
-      " are not in the same fusion.");
-
-  if (mode == ComputeAtMode::MostInlined) {
-    producer_position = producer->nDims();
-  }
-
-  FusionGuard fg(producer->fusion());
-
-  auto selected = getPropagationSubgraph(producer, consumer);
-  InlinePropagatorSelector selector(selected);
-
-  InlinePropagator inline_propagator(
-      selector.selected(), producer, producer_position, mode);
-  MaxProducerPosUpdater updater;
-
-  MaxRootDomainInfoSpanningTree path(producer, producer_position, &selector);
-
-  if (mode == ComputeAtMode::MostInlined) {
-    MostInlinedTransformPropagator propagator;
-    path.traverse(&propagator);
-  } else {
-    TransformPropagator propagator(producer, producer_position);
-    path.traverse(&propagator);
-  }
-  path.traverse(&inline_propagator);
-  path.traverse(&updater);
 }
 
 } // namespace cuda

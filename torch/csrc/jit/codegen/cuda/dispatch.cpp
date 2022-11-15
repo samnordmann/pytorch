@@ -92,6 +92,15 @@ void Val::dispatch(T handler, Val* val) {
 template <typename T>
 void Expr::dispatch(T handler, Expr* expr) {
   switch (*(expr->getExprType())) {
+    case ExprType::FullOp:
+      ptr(handler)->handle(expr->as<FullOp>());
+      return;
+    case ExprType::ARangeOp:
+      ptr(handler)->handle(expr->as<ARangeOp>());
+      return;
+    case ExprType::EyeOp:
+      ptr(handler)->handle(expr->as<EyeOp>());
+      return;
     case ExprType::UnaryOp:
       ptr(handler)->handle(expr->as<UnaryOp>());
       return;
@@ -100,6 +109,12 @@ void Expr::dispatch(T handler, Expr* expr) {
       return;
     case ExprType::TernaryOp:
       ptr(handler)->handle(expr->as<TernaryOp>());
+      return;
+    case ExprType::SelectOp:
+      ptr(handler)->handle(expr->as<SelectOp>());
+      return;
+    case ExprType::RNGOp:
+      ptr(handler)->handle(expr->as<RNGOp>());
       return;
     case ExprType::ReductionOp:
       ptr(handler)->handle(expr->as<ReductionOp>());
@@ -110,6 +125,9 @@ void Expr::dispatch(T handler, Expr* expr) {
     case ExprType::WelfordOp:
       ptr(handler)->handle(expr->as<WelfordOp>());
       return;
+    case ExprType::GroupedWelfordOp:
+      ptr(handler)->handle(expr->as<GroupedWelfordOp>());
+      return;
     case ExprType::LoadStoreOp:
       ptr(handler)->handle(expr->as<LoadStoreOp>());
       return;
@@ -119,12 +137,18 @@ void Expr::dispatch(T handler, Expr* expr) {
     case ExprType::BroadcastOp:
       ptr(handler)->handle(expr->as<BroadcastOp>());
       return;
+    case ExprType::SqueezeOp:
+      ptr(handler)->handle(expr->as<SqueezeOp>());
+      return;
 
     case ExprType::Split:
       ptr(handler)->handle(expr->as<Split>());
       return;
     case ExprType::Merge:
       ptr(handler)->handle(expr->as<Merge>());
+      return;
+    case ExprType::Swizzle2D:
+      ptr(handler)->handle(expr->as<Swizzle2D>());
       return;
     case ExprType::TransposeOp:
       ptr(handler)->handle(expr->as<TransposeOp>());
@@ -157,6 +181,9 @@ void Expr::dispatch(T handler, Expr* expr) {
     case ExprType::CpAsyncWait:
       ptr(handler)->handle(expr->as<kir::CpAsyncWait>());
       return;
+    case ExprType::CpAsyncCommit:
+      ptr(handler)->handle(expr->as<kir::CpAsyncCommit>());
+      return;
     case ExprType::InitMagicZero:
       ptr(handler)->handle(expr->as<kir::InitMagicZero>());
       return;
@@ -180,6 +207,9 @@ void Expr::dispatch(T handler, Expr* expr) {
       return;
     case ExprType::GridWelford:
       ptr(handler)->handle(expr->as<kir::GridWelford>());
+      return;
+    case ExprType::GroupedGridWelford:
+      ptr(handler)->handle(expr->as<kir::GroupedGridWelford>());
       return;
     case ExprType::AllocateFusedReduction:
       ptr(handler)->handle(expr->as<kir::AllocateFusedReduction>());
@@ -251,6 +281,15 @@ void Val::constDispatch(T handler, const Val* val) {
 template <typename T>
 void Expr::constDispatch(T handler, const Expr* expr) {
   switch (*(expr->getExprType())) {
+    case ExprType::FullOp:
+      ptr(handler)->handle(expr->as<FullOp>());
+      return;
+    case ExprType::ARangeOp:
+      ptr(handler)->handle(expr->as<ARangeOp>());
+      return;
+    case ExprType::EyeOp:
+      ptr(handler)->handle(expr->as<EyeOp>());
+      return;
     case ExprType::UnaryOp:
       ptr(handler)->handle(expr->as<UnaryOp>());
       return;
@@ -259,6 +298,12 @@ void Expr::constDispatch(T handler, const Expr* expr) {
       return;
     case ExprType::TernaryOp:
       ptr(handler)->handle(expr->as<TernaryOp>());
+      return;
+    case ExprType::SelectOp:
+      ptr(handler)->handle(expr->as<SelectOp>());
+      return;
+    case ExprType::RNGOp:
+      ptr(handler)->handle(expr->as<RNGOp>());
       return;
     case ExprType::ReductionOp:
       ptr(handler)->handle(expr->as<ReductionOp>());
@@ -269,6 +314,9 @@ void Expr::constDispatch(T handler, const Expr* expr) {
     case ExprType::WelfordOp:
       ptr(handler)->handle(expr->as<WelfordOp>());
       return;
+    case ExprType::GroupedWelfordOp:
+      ptr(handler)->handle(expr->as<GroupedWelfordOp>());
+      return;
     case ExprType::LoadStoreOp:
       ptr(handler)->handle(expr->as<LoadStoreOp>());
       return;
@@ -278,12 +326,18 @@ void Expr::constDispatch(T handler, const Expr* expr) {
     case ExprType::BroadcastOp:
       ptr(handler)->handle(expr->as<BroadcastOp>());
       return;
+    case ExprType::SqueezeOp:
+      ptr(handler)->handle(expr->as<SqueezeOp>());
+      return;
 
     case ExprType::Split:
       ptr(handler)->handle(expr->as<Split>());
       return;
     case ExprType::Merge:
       ptr(handler)->handle(expr->as<Merge>());
+      return;
+    case ExprType::Swizzle2D:
+      ptr(handler)->handle(expr->as<Swizzle2D>());
       return;
     case ExprType::TransposeOp:
       ptr(handler)->handle(expr->as<TransposeOp>());
@@ -316,6 +370,9 @@ void Expr::constDispatch(T handler, const Expr* expr) {
     case ExprType::CpAsyncWait:
       ptr(handler)->handle(expr->as<kir::CpAsyncWait>());
       return;
+    case ExprType::CpAsyncCommit:
+      ptr(handler)->handle(expr->as<kir::CpAsyncCommit>());
+      return;
     case ExprType::InitMagicZero:
       ptr(handler)->handle(expr->as<kir::InitMagicZero>());
       return;
@@ -339,6 +396,9 @@ void Expr::constDispatch(T handler, const Expr* expr) {
       return;
     case ExprType::GridWelford:
       ptr(handler)->handle(expr->as<kir::GridWelford>());
+      return;
+    case ExprType::GroupedGridWelford:
+      ptr(handler)->handle(expr->as<kir::GroupedGridWelford>());
       return;
     case ExprType::AllocateFusedReduction:
       ptr(handler)->handle(expr->as<kir::AllocateFusedReduction>());
@@ -418,6 +478,15 @@ void Val::mutatorDispatch(T mutator, Val* val) {
 template <typename T>
 void Expr::mutatorDispatch(T mutator, Expr* expr) {
   switch (*(expr->getExprType())) {
+    case ExprType::FullOp:
+      ptr(mutator)->mutate(expr->as<FullOp>());
+      return;
+    case ExprType::ARangeOp:
+      ptr(mutator)->mutate(expr->as<ARangeOp>());
+      return;
+    case ExprType::EyeOp:
+      ptr(mutator)->mutate(expr->as<EyeOp>());
+      return;
     case ExprType::UnaryOp:
       ptr(mutator)->mutate(expr->as<UnaryOp>());
       return;
@@ -426,6 +495,12 @@ void Expr::mutatorDispatch(T mutator, Expr* expr) {
       return;
     case ExprType::TernaryOp:
       ptr(mutator)->mutate(expr->as<TernaryOp>());
+      return;
+    case ExprType::SelectOp:
+      ptr(mutator)->mutate(expr->as<SelectOp>());
+      return;
+    case ExprType::RNGOp:
+      ptr(mutator)->mutate(expr->as<RNGOp>());
       return;
     case ExprType::ReductionOp:
       ptr(mutator)->mutate(expr->as<ReductionOp>());
@@ -436,6 +511,9 @@ void Expr::mutatorDispatch(T mutator, Expr* expr) {
     case ExprType::WelfordOp:
       ptr(mutator)->mutate(expr->as<WelfordOp>());
       return;
+    case ExprType::GroupedWelfordOp:
+      ptr(mutator)->mutate(expr->as<GroupedWelfordOp>());
+      return;
     case ExprType::LoadStoreOp:
       ptr(mutator)->mutate(expr->as<LoadStoreOp>());
       return;
@@ -445,12 +523,18 @@ void Expr::mutatorDispatch(T mutator, Expr* expr) {
     case ExprType::BroadcastOp:
       ptr(mutator)->mutate(expr->as<BroadcastOp>());
       return;
+    case ExprType::SqueezeOp:
+      ptr(mutator)->mutate(expr->as<SqueezeOp>());
+      return;
 
     case ExprType::Split:
       ptr(mutator)->mutate(expr->as<Split>());
       return;
     case ExprType::Merge:
       ptr(mutator)->mutate(expr->as<Merge>());
+      return;
+    case ExprType::Swizzle2D:
+      ptr(mutator)->mutate(expr->as<Swizzle2D>());
       return;
     case ExprType::TransposeOp:
       ptr(mutator)->mutate(expr->as<TransposeOp>());
@@ -483,6 +567,9 @@ void Expr::mutatorDispatch(T mutator, Expr* expr) {
     case ExprType::CpAsyncWait:
       ptr(mutator)->mutate(expr->as<kir::CpAsyncWait>());
       return;
+    case ExprType::CpAsyncCommit:
+      ptr(mutator)->mutate(expr->as<kir::CpAsyncCommit>());
+      return;
     case ExprType::InitMagicZero:
       ptr(mutator)->mutate(expr->as<kir::InitMagicZero>());
       return;
@@ -506,6 +593,9 @@ void Expr::mutatorDispatch(T mutator, Expr* expr) {
       return;
     case ExprType::GridWelford:
       ptr(mutator)->mutate(expr->as<kir::GridWelford>());
+      return;
+    case ExprType::GroupedGridWelford:
+      ptr(mutator)->mutate(expr->as<kir::GroupedGridWelford>());
       return;
     case ExprType::AllocateFusedReduction:
       ptr(mutator)->mutate(expr->as<kir::AllocateFusedReduction>());
@@ -650,6 +740,15 @@ void OptOutConstDispatch::handle(const kir::TensorIndex* stmt) {
 }
 
 // Exprs
+void OptOutConstDispatch::handle(const FullOp* stmt) {
+  unhandled(stmt);
+}
+void OptOutConstDispatch::handle(const ARangeOp* stmt) {
+  unhandled(stmt);
+}
+void OptOutConstDispatch::handle(const EyeOp* stmt) {
+  unhandled(stmt);
+}
 void OptOutConstDispatch::handle(const UnaryOp* stmt) {
   unhandled(stmt);
 }
@@ -657,6 +756,12 @@ void OptOutConstDispatch::handle(const BinaryOp* stmt) {
   unhandled(stmt);
 }
 void OptOutConstDispatch::handle(const TernaryOp* stmt) {
+  unhandled(stmt);
+}
+void OptOutConstDispatch::handle(const SelectOp* stmt) {
+  unhandled(stmt);
+}
+void OptOutConstDispatch::handle(const RNGOp* stmt) {
   unhandled(stmt);
 }
 void OptOutConstDispatch::handle(const ReductionOp* stmt) {
@@ -668,6 +773,9 @@ void OptOutConstDispatch::handle(const GroupedReductionOp* stmt) {
 void OptOutConstDispatch::handle(const WelfordOp* stmt) {
   unhandled(stmt);
 }
+void OptOutConstDispatch::handle(const GroupedWelfordOp* stmt) {
+  unhandled(stmt);
+}
 void OptOutConstDispatch::handle(const LoadStoreOp* stmt) {
   unhandled(stmt);
 }
@@ -677,11 +785,17 @@ void OptOutConstDispatch::handle(const MmaOp* stmt) {
 void OptOutConstDispatch::handle(const BroadcastOp* stmt) {
   unhandled(stmt);
 }
+void OptOutConstDispatch::handle(const SqueezeOp* stmt) {
+  unhandled(stmt);
+}
 
 void OptOutConstDispatch::handle(const Split* stmt) {
   unhandled(stmt);
 }
 void OptOutConstDispatch::handle(const Merge* stmt) {
+  unhandled(stmt);
+}
+void OptOutConstDispatch::handle(const Swizzle2D* stmt) {
   unhandled(stmt);
 }
 void OptOutConstDispatch::handle(const TransposeOp* stmt) {
@@ -715,6 +829,9 @@ void OptOutConstDispatch::handle(const kir::GridSync* stmt) {
 void OptOutConstDispatch::handle(const kir::CpAsyncWait* stmt) {
   unhandled(stmt);
 }
+void OptOutConstDispatch::handle(const kir::CpAsyncCommit* stmt) {
+  unhandled(stmt);
+}
 void OptOutConstDispatch::handle(const kir::InitMagicZero* stmt) {
   unhandled(stmt);
 }
@@ -737,6 +854,9 @@ void OptOutConstDispatch::handle(const kir::GridBroadcast* stmt) {
   unhandled(stmt);
 }
 void OptOutConstDispatch::handle(const kir::GridWelford* stmt) {
+  unhandled(stmt);
+}
+void OptOutConstDispatch::handle(const kir::GroupedGridWelford* stmt) {
   unhandled(stmt);
 }
 void OptOutConstDispatch::handle(const kir::AllocateFusedReduction* stmt) {
@@ -779,6 +899,15 @@ void OptOutDispatch::handle(kir::TensorIndex* stmt) {
 }
 
 // Exprs
+void OptOutDispatch::handle(FullOp* stmt) {
+  unhandled(stmt);
+}
+void OptOutDispatch::handle(ARangeOp* stmt) {
+  unhandled(stmt);
+}
+void OptOutDispatch::handle(EyeOp* stmt) {
+  unhandled(stmt);
+}
 void OptOutDispatch::handle(UnaryOp* stmt) {
   unhandled(stmt);
 }
@@ -786,6 +915,12 @@ void OptOutDispatch::handle(BinaryOp* stmt) {
   unhandled(stmt);
 }
 void OptOutDispatch::handle(TernaryOp* stmt) {
+  unhandled(stmt);
+}
+void OptOutDispatch::handle(SelectOp* stmt) {
+  unhandled(stmt);
+}
+void OptOutDispatch::handle(RNGOp* stmt) {
   unhandled(stmt);
 }
 void OptOutDispatch::handle(ReductionOp* stmt) {
@@ -797,6 +932,9 @@ void OptOutDispatch::handle(GroupedReductionOp* stmt) {
 void OptOutDispatch::handle(WelfordOp* stmt) {
   unhandled(stmt);
 }
+void OptOutDispatch::handle(GroupedWelfordOp* stmt) {
+  unhandled(stmt);
+}
 void OptOutDispatch::handle(LoadStoreOp* stmt) {
   unhandled(stmt);
 }
@@ -806,11 +944,17 @@ void OptOutDispatch::handle(MmaOp* stmt) {
 void OptOutDispatch::handle(BroadcastOp* stmt) {
   unhandled(stmt);
 }
+void OptOutDispatch::handle(SqueezeOp* stmt) {
+  unhandled(stmt);
+}
 
 void OptOutDispatch::handle(Split* stmt) {
   unhandled(stmt);
 }
 void OptOutDispatch::handle(Merge* stmt) {
+  unhandled(stmt);
+}
+void OptOutDispatch::handle(Swizzle2D* stmt) {
   unhandled(stmt);
 }
 void OptOutDispatch::handle(TransposeOp* stmt) {
@@ -844,6 +988,9 @@ void OptOutDispatch::handle(kir::GridSync* stmt) {
 void OptOutDispatch::handle(kir::CpAsyncWait* stmt) {
   unhandled(stmt);
 }
+void OptOutDispatch::handle(kir::CpAsyncCommit* stmt) {
+  unhandled(stmt);
+}
 void OptOutDispatch::handle(kir::InitMagicZero* stmt) {
   unhandled(stmt);
 }
@@ -866,6 +1013,9 @@ void OptOutDispatch::handle(kir::GridBroadcast* stmt) {
   unhandled(stmt);
 }
 void OptOutDispatch::handle(kir::GridWelford* stmt) {
+  unhandled(stmt);
+}
+void OptOutDispatch::handle(kir::GroupedGridWelford* stmt) {
   unhandled(stmt);
 }
 void OptOutDispatch::handle(kir::AllocateFusedReduction* stmt) {

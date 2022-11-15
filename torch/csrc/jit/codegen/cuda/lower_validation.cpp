@@ -1,7 +1,6 @@
 #include <torch/csrc/jit/codegen/cuda/lower_validation.h>
 
 #include <torch/csrc/jit/codegen/cuda/contiguity.h>
-#include <torch/csrc/jit/codegen/cuda/expr_evaluator.h>
 #include <torch/csrc/jit/codegen/cuda/instrumentation.h>
 #include <torch/csrc/jit/codegen/cuda/ir_iostream.h>
 #include <torch/csrc/jit/codegen/cuda/ir_utils.h>
@@ -168,6 +167,24 @@ void validateIterDomainUsage(Fusion* fusion) {
   }
 }
 
+// Check that an expanded dimension and the dimension before can never be
+// contiguous. See note [Contiguity and expand] for explanation.
+void checkContiguityForExpandedDims(TensorView* tv) {
+  auto root_dom = tv->getMaybeRFactorDomain();
+  for (const auto idx : c10::irange(root_dom.size())) {
+    bool is_contiguous = tv->domain()->contiguity()[idx];
+    if (is_contiguous) {
+      TORCH_CHECK(
+          !root_dom[idx]->hasExpandedExtent() &&
+              (idx == root_dom.size() - 1 ||
+               !root_dom[idx + 1]->hasExpandedExtent()),
+          "Validation failed on tensor ",
+          tv,
+          ". The expanded dim and the dim before it can not be contiguous.");
+    }
+  }
+}
+
 } // namespace
 
 void validateIr(Fusion* fusion) {
@@ -181,6 +198,11 @@ void validateIr(Fusion* fusion) {
   ValidateSiblings::validate(fusion);
 
   validateIterDomainUsage(fusion);
+
+  // check that the contiguity of tv is compatible with expand
+  for (auto tv : ir_utils::allTvs(fusion)) {
+    checkContiguityForExpandedDims(tv);
+  }
 }
 
 namespace {
@@ -288,6 +310,14 @@ class VectorizeValidator : public OptInDispatch {
     domains_.insert(m->inner());
   }
 
+  void handle(Swizzle2D* swizzle) final {
+    if (swizzle->outX() == vectorized_id_ || swizzle->inX() == vectorized_id_ ||
+        swizzle->outY() == vectorized_id_ || swizzle->inY() == vectorized_id_) {
+      // Do not (yet) allow vectorization across any swizzled id.
+      is_valid = false;
+    }
+  }
+
   // For the producer tensor, it's indexed first by transformed like
   // the consumer. So, to find its contig merged domain, use the
   // consumer TensorDomain with the producer contiguity info.
@@ -348,22 +378,13 @@ class VectorizeValidator : public OptInDispatch {
       return;
     }
 
-    auto fusion = FusionGuard::getCurFusion();
-
     TORCH_CHECK(
-        v_id->extent()->isConstScalar(),
-        "Vectorizing a domain requires a constant size.");
+        v_id->extent()->isConstInt(),
+        "Vectorizing a domain requires a constant integer size.");
 
-    ExpressionEvaluator const_expr_eval(fusion);
-
-    auto vector_size_optional = const_expr_eval.evaluate(v_id->extent());
-
-    TORCH_CHECK(
-        vector_size_optional.has_value(),
-        "Could not evaluate constant value bound to vectorized dim.");
-
-    auto vector_size = ((int64_t)dataTypeSize(tv->getDataType().value())) *
-        vector_size_optional.value();
+    auto vector_word_size = v_id->extent()->evaluateInt();
+    auto vector_size =
+        ((int64_t)dataTypeSize(tv->getDataType().value())) * vector_word_size;
 
     // Allow half2, float2, float4 and same sized vtypes.
     std::array<int64_t, 4> allowed_vector_sizes = {2, 4, 8, 16}; // NOLINT
@@ -444,22 +465,22 @@ class VectorizeValidator : public OptInDispatch {
         GpuLower::current()->vectorizedAccesses().find(tv);
     if (consumer_word_size_it !=
         GpuLower::current()->vectorizedAccesses().end()) {
-      consumer_word_size_it->second = std::max(
-          (int)vector_size_optional.value(), consumer_word_size_it->second);
+      consumer_word_size_it->second =
+          std::max((int)vector_word_size, consumer_word_size_it->second);
     } else {
       GpuLower::current()->vectorizedAccesses().emplace(
-          tv, (int)vector_size_optional.value());
+          tv, (int)vector_word_size);
     }
     auto producer_tv = tv->definition()->inputs().at(0)->as<TensorView>();
     auto producer_word_size_it =
         GpuLower::current()->vectorizedAccesses().find(producer_tv);
     if (producer_word_size_it !=
         GpuLower::current()->vectorizedAccesses().end()) {
-      producer_word_size_it->second = std::max(
-          (int)vector_size_optional.value(), producer_word_size_it->second);
+      producer_word_size_it->second =
+          std::max((int)vector_word_size, producer_word_size_it->second);
     } else {
       GpuLower::current()->vectorizedAccesses().emplace(
-          producer_tv, (int)vector_size_optional.value());
+          producer_tv, (int)vector_word_size);
     }
 
     VectorizedSetInfo vectorized_set_info;
@@ -468,14 +489,15 @@ class VectorizeValidator : public OptInDispatch {
     // Note that VectorizedSetInfo is about each instance of
     // vectorized set operations, so the word size is the size of this
     // specific vectorized set.
-    vectorized_set_info.word_size = (int)vector_size_optional.value();
+    vectorized_set_info.word_size = (int)vector_word_size;
     vectorized_set_info.vectorized_leaf_id = v_id;
     vectorized_set_info.vectorized_root_id = validator.vectorized_id_;
     // For aligned vectorize, the extent of a vectorized domain must
     // be divisible by the vector word size. The domain is usually
     // just one of the root domains, but can be a merged domain of
     // contiguous domains. Those domains are saved in
-    // VectorizedSetInfo.contig_root_ids at the time of indexing.
+    // VectorizedSetInfo.contig_root_ids in
+    // fillConsumerVectorizedContigRootDomains called in lower_index_compute.
     GpuLower::current()->vectorizedSetInfo().emplace_back(vectorized_set_info);
   }
 };
@@ -685,20 +707,16 @@ std::unordered_map<IterDomain*, std::pair<int64_t, int64_t>> getLiveRangeOffsets
 
   std::unordered_map<IterDomain*, std::pair<int64_t, int64_t>> map;
 
-  ExpressionEvaluator ee(fusion);
-
   for (auto it = exprs.rbegin(); it != exprs.rend(); ++it) {
     auto expr = *it;
     for (auto consumer : ir_utils::filterByType<TensorView>(expr->outputs())) {
       for (auto consumer_root : consumer->getRootDomain()) {
-        auto consumer_start_offset = ee.evaluate(consumer_root->start());
-        auto consumer_stop_offset = ee.evaluate(consumer_root->stopOffset());
         TORCH_INTERNAL_ASSERT(
-            consumer_start_offset.has_value(),
+            consumer_root->start()->isConstInt(),
             "Can't evaluate start value of ",
             consumer_root->start());
         TORCH_INTERNAL_ASSERT(
-            consumer_stop_offset.has_value(),
+            consumer_root->stopOffset()->isConstInt(),
             "Can't evaluate stop value of ",
             consumer_root->stopOffset());
         auto it = map.find(consumer_root);
@@ -714,7 +732,8 @@ std::unordered_map<IterDomain*, std::pair<int64_t, int64_t>> getLiveRangeOffsets
           // is visible to outside of the fusion.
           map.insert(
               {consumer_root,
-               {consumer_start_offset.value(), consumer_stop_offset.value()}});
+               {consumer_root->start()->evaluateInt(),
+                consumer_root->stopOffset()->evaluateInt()}});
         } else {
           // When the range of this root domain is already set, it
           // must be set by its consumers. Make sure the required
@@ -722,9 +741,10 @@ std::unordered_map<IterDomain*, std::pair<int64_t, int64_t>> getLiveRangeOffsets
           // this root domain.
           auto& consumer_range = it->second;
           TORCH_INTERNAL_ASSERT(
-              consumer_start_offset.value() <= consumer_range.first);
+              consumer_root->start()->evaluateInt() <= consumer_range.first);
           TORCH_INTERNAL_ASSERT(
-              consumer_stop_offset.value() <= consumer_range.second);
+              consumer_root->stopOffset()->evaluateInt() <=
+              consumer_range.second);
         }
       }
 
@@ -774,22 +794,18 @@ void validateSplit(
     Val* split_offset,
     int64_t domain_offset,
     const std::string& err_msg_prefix) {
-  ExpressionEvaluator ee(split_offset->fusion());
-
-  TORCH_INTERNAL_ASSERT(split_offset->isA<Int>());
-  auto split_offset_value = ee.evaluate(split_offset);
   TORCH_INTERNAL_ASSERT(
-      split_offset_value.has_value(),
+      split_offset->isConstInt(),
       err_msg_prefix,
       ": Unknown offset of split: ",
       split_offset);
 
   TORCH_INTERNAL_ASSERT(
-      split_offset_value.value() <= domain_offset,
+      split_offset->evaluateInt() <= domain_offset,
       err_msg_prefix,
       ": Split offset is larger than the domain offset.",
       " Split offset: ",
-      split_offset_value.value(),
+      split_offset->evaluateInt(),
       ". Domain offset: ",
       domain_offset);
 }
@@ -852,7 +868,7 @@ namespace {
 //!  higher than provided major.minor.
 void validateMinimumArch(int major, int minor) {
   // Skip checking arch if disabled.
-  if (isDisabled(DisableOption::ArchCheck)) {
+  if (isOptionDisabled(DisableOption::ArchCheck)) {
     return;
   }
 
@@ -899,22 +915,42 @@ void validateMmaTensors(MmaOp* mma) {
   }
 
   // Note: this check will be relaxed in a follow up.
-  auto validate_operand_ids = [](const TensorView* tv) {
+  auto validate_operand = [](const TensorView* tv) {
+    TORCH_INTERNAL_ASSERT(
+        tv->getMemoryType() == MemoryType::Local,
+        "Only supporting register input for mma ops, up to sm80 all mma ops have to take register inputs.");
+
     TORCH_INTERNAL_ASSERT(
         std::all_of(
             tv->domain()->domain().begin() + tv->getComputeAtPosition(),
             tv->domain()->domain().end(),
             [](IterDomain* id) {
               return id->isMmaSwizzled() ||
-                  (id->isBroadcast() &&
+                  // MMA instructions can only take inputs from registers,
+                  //  so we always assume mma op inputs are located on
+                  //  registers.
+                  // Currently requiring that serial ids on the right of the
+                  //  CA axis are constant sized to ensure early detection of
+                  //  invalid mma schedules.
+                  ((id->isBroadcast() || id->extent()->isConstInt()) &&
                    id->getParallelType() == ParallelType::Serial);
             }),
         "All id's on the right of CA pos needs to be mma-swizzled by WarpMmaSwizzler\n",
         tv);
   };
 
-  validate_operand_ids(mma->inA()->as<TensorView>());
-  validate_operand_ids(mma->inB()->as<TensorView>());
+  validate_operand(mma->inA()->as<TensorView>());
+  validate_operand(mma->inB()->as<TensorView>());
+
+  // Additionally validate that mma is not directly taking a double buffered
+  //  register input as the double buffer indexing is currently not compatible
+  //  with fragment iteration. Would need to require a cache stage in this case.
+  TORCH_INTERNAL_ASSERT(
+      !mma->inA()->as<TensorView>()->isDoubleBuffered(),
+      "MMA op cannot directly take double buffered register input, put a set stage before.");
+  TORCH_INTERNAL_ASSERT(
+      !mma->inB()->as<TensorView>()->isDoubleBuffered(),
+      "MMA op cannot directly take double buffered register input, put a set stage before.");
 }
 
 //! Note and TODO:
@@ -1011,6 +1047,7 @@ void validateMma(Fusion* fusion) {
           validateMinimumArch(7, 0);
           break;
         case MmaOptions::MacroType::Turing_16_8_16:
+        case MmaOptions::MacroType::Turing_16_16_16:
           validateMinimumArch(7, 5);
 
           // Check that operands come from ldmatrix, can be
@@ -1019,6 +1056,7 @@ void validateMma(Fusion* fusion) {
           validateTuringMmaInput(mma->inB()->as<TensorView>());
           break;
         case MmaOptions::MacroType::Ampere_16_8_16:
+        case MmaOptions::MacroType::Ampere_16_16_16:
           validateMinimumArch(8, 0);
 
           // Check that operands come from ldmatrix, can be
@@ -1033,6 +1071,80 @@ void validateMma(Fusion* fusion) {
     }
     if (auto ldst = dynamic_cast<LoadStoreOp*>(expr)) {
       validateArchMemoryOp(ldst);
+    }
+  }
+}
+
+namespace {
+
+// Utility function to validate a loop swizzle:
+//  1. Throws an error if any output of the swizzle is not in leaf_domain set.
+//  2. Warns if any output of the swizzle is not the concrete id of the loop
+//  map.
+// The second case would make the codegen ignore this swizzle, as if it was not
+// there at all.
+void validateLoopSwizzle(
+    Expr* swizzle_expr,
+    std::unordered_set<IterDomain*>& leaf_domains) {
+  for (auto out_id :
+       ir_utils::filterByType<IterDomain>(swizzle_expr->outputs())) {
+    TORCH_INTERNAL_ASSERT(
+        leaf_domains.count(out_id),
+        "Loop swizzle can only be direct producer of leaf domains.");
+    if (GpuLower::current()->caMap()->getConcreteMappedID(
+            out_id, IdMappingMode::LOOP) != out_id) {
+      TORCH_WARN_ONCE("Ignored loop swizzle :", swizzle_expr->toString());
+    }
+  }
+}
+
+} // namespace
+
+void validateSwizzle(Fusion* fusion) {
+  auto used_vals = fusion->usedMathVals();
+  for (auto tv : ir_utils::filterByType<TensorView>(used_vals)) {
+    if (tv->hasSwizzleOp()) {
+      std::unordered_set<IterDomain*> tv_leaf_domain_set(
+          tv->domain()->domain().begin(), tv->domain()->domain().end());
+
+      // Make sure no swizzle op is inlined:
+      auto inlined_swizzles = ir_utils::getAllSwizzlesBetween(
+          tv->getMaybeRFactorDomain(),
+          {tv->domain()->domain().begin(),
+           tv->domain()->domain().begin() + tv->getComputeAtPosition()});
+
+      auto not_inlined_swizzles = ir_utils::getAllSwizzlesBetween(
+          tv->getMaybeRFactorDomain(),
+          {tv->domain()->domain().begin() + tv->getComputeAtPosition(),
+           tv->domain()->domain().end()});
+
+      // Check inlined swizzles: only loop swizzles can be inlined currently
+      //  as inlining data swizzles would require addtional support of unswizzle
+      //  operator, which currently doesn't have important use cases.
+      for (auto swizzle_expr : inlined_swizzles) {
+        TORCH_INTERNAL_ASSERT(
+            swizzle_expr->as<Swizzle2D>()->swizzleMode() == SwizzleMode::Loop,
+            "Only support inlining loop swizzles");
+        validateLoopSwizzle(swizzle_expr, tv_leaf_domain_set);
+      }
+
+      std::unordered_set<Expr*> inlined_swizzle_set(
+          inlined_swizzles.begin(), inlined_swizzles.end());
+
+      // Check not inlined swizzles:
+      //  Apply the loop swizzle check when it applies, and
+      // also make sure that the no swizzle is also in inlined_swizzle set.
+      // The latter would mean that one output of the swizzle is inlined while
+      //  the other is not. Such case will not be supported.
+      for (auto swizzle_expr : not_inlined_swizzles) {
+        TORCH_INTERNAL_ASSERT(
+            !inlined_swizzle_set.count(swizzle_expr),
+            "Cannot partially inline across swizzle domains.",
+            swizzle_expr->toString());
+        if (swizzle_expr->as<Swizzle2D>()->swizzleMode() == SwizzleMode::Loop) {
+          validateLoopSwizzle(swizzle_expr, tv_leaf_domain_set);
+        }
+      }
     }
   }
 }
@@ -1086,7 +1198,7 @@ void validateAndConvertIterDomainGrouping(Fusion* fusion) {
 
       // Halo is not allowed
       TORCH_CHECK(
-          GpuLower::current()->haloInfo().getExtent(id) == nullptr,
+          GpuLower::current()->haloInfo()->getExtent(id) == nullptr,
           "Invalid use of ParallelType::Group.",
           " Grouping of halo-extended IterDomain, ",
           id->toString(),
@@ -1108,8 +1220,10 @@ void validateAndConvertIterDomainGrouping(Fusion* fusion) {
 
     TORCH_CHECK(
         tv->definition()->isA<ReductionOp>() ||
-            tv->definition()->isA<GroupedReductionOp>(),
-        "Invalid use of ParallelType::Group. Only ReductionOp and GroupedReductionOp are allowed. ",
+            tv->definition()->isA<GroupedReductionOp>() ||
+            tv->definition()->isA<WelfordOp>() ||
+            tv->definition()->isA<GroupedWelfordOp>(),
+        "Invalid use of ParallelType::Group. Only ReductionOp, GroupedReductionOp, WelfordOp and GroupedWelfordOp are allowed. ",
         tv->definition()->toString());
 
     // Convert ReductionOp to GroupedReductionOp
@@ -1141,6 +1255,36 @@ void validateAndConvertIterDomainGrouping(Fusion* fusion) {
           init_vals,
           outputs,
           inputs,
+          is_allreduce);
+    } else if (tv->definition()->isA<WelfordOp>()) {
+      // Convert WelfordOp to GroupedWelfordOp
+      auto wop = def->as<WelfordOp>();
+      auto is_allreduce = wop->isAllreduce();
+
+      TORCH_CHECK(
+          is_allreduce,
+          "Invalid use of ParallelType::Group.",
+          " Only enabled for allreduce reductions: ",
+          wop->toString());
+
+      TORCH_CHECK(
+          tv->domain()->hasGridReduction(),
+          "Invalid use of ParallelType::Group.",
+          " Only enabled for grid reductions: ",
+          wop->toString());
+
+      std::vector<WelfordTriplet> output_vals(
+          {{wop->outAvg(), wop->outVar(), wop->outN()}});
+      std::vector<WelfordTriplet> input_vals(
+          {{wop->inAvg(), wop->inVar(), wop->inN()}});
+      std::vector<WelfordTriplet> init_vals(
+          {{wop->initAvg(), wop->initVar(), wop->initN()}});
+      fusion->removeExpr(wop);
+      IrBuilder::create<GroupedWelfordOp>(
+          static_cast<IrContainer*>(fusion),
+          output_vals,
+          input_vals,
+          init_vals,
           is_allreduce);
     }
   }

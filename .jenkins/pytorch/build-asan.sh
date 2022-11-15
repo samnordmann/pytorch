@@ -6,9 +6,13 @@
 
 # shellcheck source=./common.sh
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
+# shellcheck source=./common-build.sh
+source "$(dirname "${BASH_SOURCE[0]}")/common-build.sh"
 
 echo "Clang version:"
 clang --version
+
+python tools/stats/export_test_times.py
 
 # detect_leaks=0: Python is very leaky, so we need suppress it
 # symbolize=1: Gives us much better errors when things go wrong
@@ -22,7 +26,7 @@ CC="clang" CXX="clang++" LDSHARED="clang --shared" \
   CFLAGS="-fsanitize=address -fsanitize=undefined -fno-sanitize-recover=all -fsanitize-address-use-after-scope -shared-libasan" \
   USE_ASAN=1 USE_CUDA=0 USE_MKLDNN=0 \
   python setup.py bdist_wheel
-  python -mpip install dist/*.whl
+  pip_install_whl "$(echo dist/*.whl)"
 
 # Test building via the sdist source tarball
 python setup.py sdist

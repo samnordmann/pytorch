@@ -324,7 +324,7 @@ def build_class_def(ctx, py_def, methods, properties, self_name, assigns):
 
 def build_def(ctx, py_def, type_line, def_name, self_name=None, pdt_arg_types=None):
     body = py_def.body
-    r = ctx.make_range(py_def.lineno + len(py_def.decorator_list),
+    r = ctx.make_range(py_def.lineno,
                        py_def.col_offset,
                        py_def.col_offset + len("def"))
 
@@ -1019,6 +1019,11 @@ class ExprBuilder(Builder):
         iter_expr = build_expr(ctx, stmt.generators[0].iter)
 
         return ListComp(r, elt_expr, target_expr, iter_expr)
+
+    @staticmethod
+    def build_GeneratorExp(ctx, stmt):
+        # Convert Generator expression to ListComp
+        return ExprBuilder.build_ListComp(ctx, stmt)
 
     @staticmethod
     def build_DictComp(ctx, stmt):

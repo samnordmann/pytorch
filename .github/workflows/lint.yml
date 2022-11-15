@@ -7,25 +7,32 @@ on:
       - master
       - main
       - release/*
+      - landchecks/*
   workflow_dispatch:
 
 jobs:
   lintrunner:
     runs-on: ubuntu-18.04
     steps:
-      - name: Setup Python
-        uses: actions/setup-python@v2
-        with:
-          python-version: 3.8
-          architecture: x64
-
       - name: Checkout PyTorch
         uses: csarofeen/pytorch/.github/actions/checkout-pytorch@master
         with:
           submodules: false
+          fetch-depth: 1
 
-      - name: Install lintrunner
-        run: pip install lintrunner==0.9.*
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.8'
+          architecture: x64
+          check-latest: false
+          cache: pip
+          cache-dependency-path: |
+            **/.github/requirements-gha-cache.txt
+
+      - name: Install requirements
+        run: |
+          pip install -r .github/requirements-gha-cache.txt --user
 
       - name: Initialize lint dependencies
         run: lintrunner init

@@ -9,11 +9,11 @@
 
 #include <torch/csrc/jit/ir/ir.h>
 
+#include <torch/csrc/jit/codegen/cuda/executor_kernel_arg.h>
 #include <torch/csrc/jit/codegen/cuda/expr_evaluator.h>
 #include <torch/csrc/jit/codegen/cuda/fusion.h>
 #include <torch/csrc/jit/codegen/cuda/ir_all_nodes.h>
 #include <torch/csrc/jit/codegen/cuda/kernel.h>
-#include <torch/csrc/jit/codegen/cuda/kernel_expr_evaluator.h>
 #include <torch/csrc/jit/codegen/cuda/lower2device.h>
 
 #include <string>
@@ -30,7 +30,7 @@ std::string kernelPreamble();
 
 void validateKernelInputs(
     Fusion* fusion,
-    const at::ArrayRef<IValue>& inputs,
+    const KernelArgumentHolder& args,
     const c10::Device& device);
 
 void validateKernelOutputs(
@@ -39,14 +39,14 @@ void validateKernelOutputs(
     const c10::Device& device);
 
 //! Bind kernel input values to runtime values
-kir::ExpressionEvaluator bindKernelInputs(
-    const at::ArrayRef<IValue>& aten_inputs,
+ExpressionEvaluator bindKernelInputs(
+    const KernelArgumentHolder& args,
     kir::Kernel* kernel,
     bool check_consistency = true);
 
 //! Bind fusion input values to runtime values
 TORCH_CUDA_CU_API ExpressionEvaluator
-bindFusionInputs(const at::ArrayRef<IValue>& aten_inputs, Fusion* fusion);
+bindFusionInputs(const KernelArgumentHolder& args, Fusion* fusion);
 
 struct NvrtcFunction {
   CUmodule module = CUmodule();
@@ -303,10 +303,10 @@ std::unique_ptr<caching::WarpPaddedExtentsInfo> getWarpPaddedExtentsInfo(
 
 void validateVectorizedTensors(
     kir::Kernel* kernel,
-    const at::ArrayRef<IValue>& inputs,
+    const KernelArgumentHolder& args,
     const std::vector<at::Tensor>& outputs,
     caching::ExecutorCompileTimeInfoCache* data_cache,
-    kir::ExpressionEvaluator& expr_eval);
+    ExpressionEvaluator& expr_eval);
 
 } // namespace executor_utils
 } // namespace cuda

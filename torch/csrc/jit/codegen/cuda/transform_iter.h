@@ -2,6 +2,7 @@
 
 #include <c10/macros/Export.h>
 
+#include <torch/csrc/jit/codegen/cuda/disjoint_set.h>
 #include <torch/csrc/jit/codegen/cuda/ir_all_nodes.h>
 #include <torch/csrc/jit/codegen/cuda/ir_iostream.h>
 #include <torch/csrc/jit/codegen/cuda/iter_visitor.h>
@@ -56,6 +57,8 @@ class TORCH_CUDA_CU_API ReplayTransformations : public IterVisitor {
   bool error_on_failure_ = true;
   // NOLINTNEXTLINE(cppcoreguidelines-non-private-member-variables-in-classes)
   bool ran_replay = false; // Mark if replay has been run
+  // NOLINTNEXTLINE(cppcoreguidelines-non-private-member-variables-in-classes)
+  bool replay_swizzle_ = false;
   using IterVisitor::handle;
 
   // Transform dispatch
@@ -67,11 +70,25 @@ class TORCH_CUDA_CU_API ReplayTransformations : public IterVisitor {
   // We're going to replay this merge operation on the corresponding IDs
   void handle(Merge* m) override;
 
+  // We're going to replay this swizzle operation on the corresponding IDs
+  //  if replaying swizzle is enabled.
+  void handle(Swizzle2D* m) override;
+
  public:
   ReplayTransformations(
       const std::vector<IterDomain*>& _target_domain,
       std::unordered_map<IterDomain*, IterDomain*> _id_map,
-      bool _error_on_failure = true);
+      bool _error_on_failure = true,
+
+      // Indicates if we want to replay swizzle ops on the replayed
+      //  tensor.
+      // The swizzle op will be replayed if true,
+      // The swizzle inputs will be directly forwarded, and therefore skipping
+      //  the swizzle op if false.
+      // Currently this options should always be off but
+      //  later we may have cases in scheduling large fusions where
+      //  this functionality could be useful.
+      bool replay_swizzle = false);
 
   // Replays outputs that were generated from ids.first on ids.second
   void runReplay();
@@ -177,6 +194,44 @@ class TORCH_CUDA_CU_API BestEffortReplay {
   // deterministicly
   size_t counter = 0;
 
+  // Determine if current replay will ignore swizzle ops.
+  // When not skipping swizzles, swizzle ops will have to be matched
+  //  same way as split and merge to progress forward on the mapping.
+  //
+  // When skipping swizzles, mismatched swizzle ops will not stop matching
+  //  further down the tensor domains but only the swizzle outputs will be on
+  //  the target to replay map, since we only generate one-to-one maps in
+  //  BestEffortReplay and the swizzle outputs is just picked as a convention
+  //  for simpler and uniform mapping behavior. The swizzle op inputs will be
+  //  added by the disjoint set passes when building the iterdomain graph.
+  //
+  // Example:
+  //   Target:
+  //     I0o, I0i   = split I0
+  //     Ix0o, Ix0i = swizzle I0o, I0i
+  //     I02        = merge Ix0o, Ix0i
+  //   Replay:
+  //     I1o, I1i = split I1
+  //     I12      = merge I1o, I1i
+  //
+  //   BestEffortReplay **no** skip swizzle gives:
+  //  {
+  //   I0->I1,
+  //   I0o->I1o,
+  //   I0i->I1i,
+  //  }
+  //
+  //   BestEffortReplay skip swizzle gives:
+  //  {
+  //    I0->I1,
+  //    Ix0o->I1o,
+  //    Ix0i->I1i,
+  //    I02->I12
+  //  }
+  //
+  bool skip_replay_swizzle_ = true;
+  bool skip_target_swizzle_ = true;
+
   bool inReplayForwardMap(IterDomain* id) const {
     return replay_forward_id_map_.find(id) != replay_forward_id_map_.end();
   }
@@ -209,13 +264,24 @@ class TORCH_CUDA_CU_API BestEffortReplay {
       const std::unordered_map<IterDomain*, std::vector<IterDomain*>>&
           compliment_map);
 
+  // Skip swizzle step to make sure both target and
+  //  replay swizzles are skipped while the mapping
+  //  makes progress. This makes sure that, for example
+  //  different tensors can still be inlined despite
+  //  different local swizzle patterns.
+  void skipSwizzles(
+      const std::unordered_map<IterDomain*, Expr*>& target_id2expr,
+      const std::unordered_map<IterDomain*, Expr*>& replay_id2expr);
+
  public:
   BestEffortReplay(
       const std::vector<IterDomain*>& replay_domain,
       const std::vector<IterDomain*>& target_domain,
       std::unordered_map<IterDomain*, IterDomain*> target2replay_map,
       std::unordered_map<IterDomain*, IterDomain*> replay_forward_id_map = {},
-      std::unordered_map<IterDomain*, IterDomain*> target_forward_id_map = {});
+      std::unordered_map<IterDomain*, IterDomain*> target_forward_id_map = {},
+      bool skip_replay_swizzle = true,
+      bool skip_target_swizzle = true);
 
   // Return iter domain map from target_domain IDs to their "replayed"
   // replay_domain IDs. If not in map, was not replayed.
@@ -244,13 +310,28 @@ class TORCH_CUDA_CU_API BestEffortReplay {
     return leaf_vec_;
   }
 
+  // Get a disjoint sets representing the equivalence of IterDomains. The
+  // equivalence is defined by forwarding and replay. Two IterDomains are
+  // equivalent if:
+  // - They are mapped together through forwarding, or
+  // - They are mapped together through replay
+  // For example, if I have the following producer-consumer pair:
+  //   T0[I0, I1]
+  //   T1[(I0'*b1)*b2, I1'] = broadcast(T0)
+  // Then there will be two equivalent sets"
+  //   - {I1, I1'}
+  //   - {I0, I0', I0'*b1, (I0'*b1)*b2}
+  DisjointSets<IterDomain*> getIterDomainEquivalence();
+
   // Runs a best effort replay that ignores broadcast axes that appear in
   // consumer that are not mapped to producer in root_map.
   static BestEffortReplay replayCasP(
       const TensorView* consumer,
       const TensorView* producer,
       int producer_compute_at_axis,
-      const RootDomainMap& root_map);
+      const RootDomainMap& root_map,
+      bool skip_consumer_swizzle = true,
+      bool skip_producer_swizzle = true);
 
   // Runs a best effort replay that ignores broadcast axes that appear in
   // consumer that are not mapped to producer in root_map.
@@ -258,7 +339,9 @@ class TORCH_CUDA_CU_API BestEffortReplay {
       const TensorView* producer,
       const TensorView* consumer,
       int consumer_compute_at_axis,
-      const RootDomainMap& root_map);
+      const RootDomainMap& root_map,
+      bool skip_producer_swizzle = true,
+      bool skip_consumer_swizzle = true);
 
   // Find the first position i where td1[i] is not the same as td2[i]. "Same"
   // means the DAG and input IDs to generate td1[i] and td2[i] are the same.

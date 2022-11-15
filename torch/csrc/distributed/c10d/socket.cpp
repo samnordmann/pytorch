@@ -4,7 +4,7 @@
 // This source code is licensed under the BSD-style license found in the
 // LICENSE file in the root directory of this source tree.
 
-#include <c10d/socket.h>
+#include <torch/csrc/distributed/c10d/socket.h>
 
 #include <cstring>
 #include <system_error>
@@ -30,9 +30,11 @@
 #include <fmt/chrono.h>
 #include <fmt/format.h>
 
-#include <c10d/error.h>
-#include <c10d/exception.h>
-#include <c10d/logging.h>
+#include <torch/csrc/distributed/c10d/error.h>
+#include <torch/csrc/distributed/c10d/exception.h>
+#include <torch/csrc/distributed/c10d/logging.h>
+
+#include <c10/util/CallOnce.h>
 
 namespace c10d {
 namespace detail {
@@ -864,11 +866,11 @@ void SocketConnectOp::throwTimeoutError() const {
 
 void Socket::initialize() {
 #ifdef _WIN32
-  static std::once_flag init_flag{};
+  static c10::once_flag init_flag{};
 
   // All processes that call socket functions on Windows must first initialize
   // the Winsock library.
-  std::call_once(init_flag, []() {
+  c10::call_once(init_flag, []() {
     WSADATA data{};
     if (::WSAStartup(MAKEWORD(2, 2), &data) != 0) {
       throw SocketError{"The initialization of Winsock has failed."};

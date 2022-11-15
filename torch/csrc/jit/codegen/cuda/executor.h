@@ -1,11 +1,11 @@
 #pragma once
 #include <torch/csrc/jit/codegen/cuda/executor_launch_params.h>
 #include <torch/csrc/jit/codegen/cuda/executor_utils.h>
+#include <torch/csrc/jit/codegen/cuda/expr_evaluator.h>
 #include <torch/csrc/jit/codegen/cuda/fusion.h>
 #include <torch/csrc/jit/codegen/cuda/ir_all_nodes.h>
 #include <torch/csrc/jit/codegen/cuda/ir_cloner.h>
 #include <torch/csrc/jit/codegen/cuda/ir_printer.h>
-#include <torch/csrc/jit/codegen/cuda/kernel_expr_evaluator.h>
 #include <torch/csrc/jit/codegen/cuda/lower2device.h>
 #include <torch/csrc/jit/codegen/cuda/utils.h>
 
@@ -15,6 +15,9 @@ namespace torch {
 namespace jit {
 namespace fuser {
 namespace cuda {
+
+TORCH_CUDA_CU_API bool shouldFillAllocationWithNan();
+TORCH_CUDA_CU_API void setFillAllocationWithNan(bool value);
 
 // TODO: Should this actually be in launch params?
 struct TORCH_CUDA_CU_API CompileOptions {
@@ -33,17 +36,46 @@ class TORCH_CUDA_CU_API FusionExecutor : public NonCopyable {
       int id,
       CompileOptions options = CompileOptions());
 
+  //! infers output sizes via returning non-allocated KernelArgumentHolder.
+  //! this function is useful for async compilation for segmented fusion
+  KernelArgumentHolder inferOutputSizes(
+      const KernelArgumentHolder& args,
+      const LaunchParams& launch_constraints);
+
+  void compileFusion(
+      Fusion* fusion,
+      const KernelArgumentHolder& args,
+      const LaunchParams& launch_constraints = LaunchParams());
+
+  // TODO: merge it with the overload above.
+  //! This API is merely here so we don't have to go back and update all cpp
+  //! tests.
   void compileFusion(
       Fusion* fusion,
       const at::ArrayRef<IValue>& inputs = {},
+      const LaunchParams& launch_constraints = LaunchParams()) {
+    KernelArgumentHolder args =
+        KernelArgumentHolder::createKernelArgumentHolder(inputs);
+    compileFusion(fusion, args, launch_constraints);
+  }
+
+  std::vector<at::Tensor> runFusion(
+      KernelArgumentHolder& args,
       const LaunchParams& launch_constraints = LaunchParams(),
-      CompileOptions options = CompileOptions());
+      const std::vector<at::Tensor>& outputs = {});
 
   std::vector<at::Tensor> runFusion(
       const at::ArrayRef<IValue>& inputs,
       const std::vector<at::Tensor>& outputs,
       const LaunchParams& launch_constraints = LaunchParams(),
-      const c10::optional<size_t>& opt_code = c10::nullopt);
+      const c10::optional<size_t>& opt_code = c10::nullopt) {
+    KernelArgumentHolder args =
+        KernelArgumentHolder::createKernelArgumentHolder(inputs);
+    if (opt_code.has_value()) {
+      args.setCacheId(*opt_code);
+    }
+    return runFusion(args, launch_constraints, outputs);
+  }
 
   std::vector<at::Tensor> runFusion(
       const at::ArrayRef<IValue>& inputs,
@@ -141,7 +173,8 @@ class TORCH_CUDA_CU_API FusionExecutor : public NonCopyable {
   void compileRtc(
       const std::string& code,
       const std::string& name,
-      bool structured = false);
+      bool structured = false,
+      CompileOptions options = CompileOptions());
 
   //! Internal tests only. Runs the compiled CUDA kernel from compileRtc.
   void runRtc(
@@ -176,25 +209,25 @@ class TORCH_CUDA_CU_API FusionExecutor : public NonCopyable {
 
   LaunchParams computeLaunchParams(
       const LaunchParams& launch_constraints,
-      kir::ExpressionEvaluator& expr_eval,
+      ExpressionEvaluator& expr_eval,
       const int warp_size);
 
   uint64_t computeSharedMemory(
-      kir::ExpressionEvaluator& expr_eval,
+      ExpressionEvaluator& expr_eval,
       const std::vector<const kir::Allocate*>& buffers,
       bool align_padding = false,
       uint64_t total = 0);
 
   // return a pair of vector of tensors, where tensors in the first vector are
   // not initialized, while the second vector contains zero-initiliazed tensors
-  GlobalBuffers allocGlobalVals(kir::ExpressionEvaluator& expr_eval);
+  GlobalBuffers allocGlobalVals(ExpressionEvaluator& expr_eval);
 
   // alias_index: index of outputs that are aliases to inputs, hence we should
   // skip allocating real storage for those, but still maintain its spot to
   // maintain the indexing from output aliases to inputs
   std::vector<at::Tensor> allocOutputs(
-      const at::ArrayRef<IValue>& inputs,
-      kir::ExpressionEvaluator& expr_eval,
+      const KernelArgumentHolder& args,
+      ExpressionEvaluator& expr_eval,
       const std::unordered_set<int>& alias_indices = {});
 
   void setUsedTVs();
@@ -206,6 +239,15 @@ class TORCH_CUDA_CU_API FusionExecutor : public NonCopyable {
   ExecutorCompileTimeInfoCache* compileTimeDataCache() {
     return &compile_time_info_cache_;
   }
+
+  //! returns KernelArgumentHolder representing the output sizes from kernel
+  //! execution. Note: 1. this API would ignoring aliased outputs and instead
+  //! pushing scalar int 0 as a place holder; 2. this API doesn't actually
+  //! allocate output in memory, but rather is used just to infer output sizes.
+  KernelArgumentHolder evaluateOutputSizes(
+      const KernelArgumentHolder& args,
+      ExpressionEvaluator& expr_eval,
+      const std::unordered_set<int>& alias_indices = {});
 
  private:
   CompileOptions options_;
@@ -255,8 +297,7 @@ class TORCH_CUDA_CU_API FusionExecutor : public NonCopyable {
   ExecutorCompileTimeInfoCache compile_time_info_cache_;
 
   // Cached expr eval
-  std::unique_ptr<KernelPrecomputedIntegers> evaluator_precomputed_integers_ =
-      nullptr;
+  std::unique_ptr<PrecomputedValues> evaluator_precomputed_values_ = nullptr;
 
   // Profiling support: knob to control wheter we actually execute the
   // kernel on the GPU or not
@@ -275,7 +316,10 @@ class TORCH_CUDA_CU_API FusionExecutor : public NonCopyable {
   // Profiling support: the last launch param used
   LaunchParams launch_params_;
 
-  // Profiling support: knob to disable caching of launch params
+  // Profiling support: disable caching of launch params and output allocation
+  // output allocation is also disable when output sizes are dependent on
+  // runtime scalar inputs, such as for the case of tensor factory. see
+  // https://github.com/csarofeen/pytorch/issues/2002
   bool disable_parameter_cache_ = false;
 
   // Profiling support: kept copy of the cuda kernel

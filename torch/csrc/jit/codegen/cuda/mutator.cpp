@@ -58,8 +58,14 @@ void OptOutMutator::mutate(NamedScalar* ns) {}
 void OptOutMutator::mutate(IterDomain* id) {
   Val* start = maybeMutated(id->start());
   Val* extent = maybeMutated(id->extent());
+  Val* expanded_extent = nullptr;
+  if (id->hasExpandedExtent()) {
+    expanded_extent = maybeMutated(id->expandedExtent());
+  }
   Val* stop_offset = maybeMutated(id->stopOffset());
   if (start->sameAs(id->start()) && extent->sameAs(id->extent()) &&
+      (!id->hasExpandedExtent() ||
+       expanded_extent->sameAs(id->expandedExtent())) &&
       stop_offset->sameAs(id->stopOffset())) {
     return;
   }
@@ -69,6 +75,7 @@ void OptOutMutator::mutate(IterDomain* id) {
           .start(start)
           .extent(extent)
           .stop_offset(stop_offset)
+          .expanded_extent(expanded_extent)
           .build());
 }
 
@@ -118,7 +125,65 @@ void OptOutMutator::mutate(kir::TensorIndex*) {
   TORCH_INTERNAL_ASSERT(false, "Not implemented yet.");
 }
 
-// MUTATE FUNCTIONS FOR EXPRESSIONS.
+void OptOutMutator::mutate(FullOp* fop) {
+  Val* out = maybeMutated(fop->output(0));
+  Val* fill_value = maybeMutated(fop->getFillValue());
+
+  if (out->sameAs(fop->output(0))) {
+    return;
+  }
+  auto container = fop->container();
+  container->removeExpr(fop);
+  IrBuilder::create<FullOp>(container, out, fill_value, fop->dtype());
+}
+
+void OptOutMutator::mutate(SelectOp* sop) {
+  Val* out = maybeMutated(sop->output(0));
+  Val* in = maybeMutated(sop->input(0));
+  Val* index = maybeMutated(sop->input(1));
+  IterDomain* select_axis =
+      maybeMutated(sop->getSelectAxis())->as<IterDomain>();
+
+  if (out->sameAs(sop->output(0)) && in->sameAs(sop->output(0)) &&
+      index->sameAs(sop->output(1)) &&
+      select_axis->sameAs(sop->getSelectAxis())) {
+    return;
+  }
+  auto container = sop->container();
+  container->removeExpr(sop);
+  IrBuilder::create<SelectOp>(container, out, in, select_axis, index);
+}
+
+void OptOutMutator::mutate(ARangeOp* aop) {
+  Val* out = maybeMutated(aop->output(0));
+
+  if (out->sameAs(aop->output(0))) {
+    return;
+  }
+  auto container = aop->container();
+  container->removeExpr(aop);
+  IrBuilder::create<ARangeOp>(
+      container,
+      out,
+      aop->start(),
+      aop->end(),
+      aop->step(),
+      aop->dtype(),
+      aop->getLinearLogicalIndex());
+}
+
+void OptOutMutator::mutate(EyeOp* eop) {
+  Val* out = maybeMutated(eop->output(0));
+
+  if (out->sameAs(eop->output(0))) {
+    return;
+  }
+  auto container = eop->container();
+  container->removeExpr(eop);
+  IrBuilder::create<EyeOp>(
+      container, out, eop->dtype(), eop->getIndex1(), eop->getIndex2());
+}
+
 void OptOutMutator::mutate(UnaryOp* uop) {
   Val* out = maybeMutated(uop->out());
   Val* in = maybeMutated(uop->in());
@@ -137,7 +202,8 @@ void OptOutMutator::mutate(BinaryOp* bop) {
   Val* lhs = maybeMutated(bop->lhs());
   Val* rhs = maybeMutated(bop->rhs());
 
-  if (out == bop->out() && lhs == bop->lhs() && rhs == bop->rhs()) {
+  if (out->sameAs(bop->out()) && lhs->sameAs(bop->lhs()) &&
+      rhs->sameAs(bop->rhs())) {
     return;
   }
 
@@ -153,8 +219,8 @@ void OptOutMutator::mutate(TernaryOp* top) {
   Val* in2 = maybeMutated(top->in2());
   Val* in3 = maybeMutated(top->in3());
 
-  if (out == top->out() && in1 == top->in1() && in2 == top->in2() &&
-      in3 == top->in3()) {
+  if (out->sameAs(top->out()) && in1->sameAs(top->in1()) &&
+      in2->sameAs(top->in2()) && in3->sameAs(top->in3())) {
     return;
   }
 
@@ -162,6 +228,38 @@ void OptOutMutator::mutate(TernaryOp* top) {
   auto top_type = top->getTernaryOpType();
   container->removeExpr(top);
   IrBuilder::create<TernaryOp>(container, top_type, out, in1, in2, in3);
+}
+
+void OptOutMutator::mutate(RNGOp* rop) {
+  Val* out = maybeMutated(rop->output(0));
+  Val* philox_idx = maybeMutated(rop->getPhiloxIndex());
+
+  auto& parameters = rop->getParameters();
+  std::vector<Val*> mutated_parameters;
+  bool all_mutated_same = true;
+  for (auto v : parameters) {
+    mutated_parameters.emplace_back(maybeMutated(v));
+    all_mutated_same = all_mutated_same && mutated_parameters.back()->sameAs(v);
+  }
+
+  if (out->sameAs(rop->output(0)) &&
+      ((philox_idx == nullptr && rop->getPhiloxIndex() == nullptr) ||
+       philox_idx->sameAs(rop->getPhiloxIndex())) &&
+      all_mutated_same) {
+    return;
+  }
+
+  auto container = rop->container();
+  auto rop_type = rop->getRNGOpType();
+  container->removeExpr(rop);
+  IrBuilder::create<RNGOp>(
+      container,
+      rop_type,
+      out,
+      rop->dtype(),
+      mutated_parameters,
+      rop->getRNGOffset(),
+      philox_idx);
 }
 
 void OptOutMutator::mutate(ReductionOp* rop) {
@@ -256,13 +354,50 @@ void OptOutMutator::mutate(WelfordOp* wop) {
       out_avg,
       out_var,
       out_N,
-      init_avg,
-      init_var,
-      init_N,
       in_avg,
       in_var,
       in_N,
+      init_avg,
+      init_var,
+      init_N,
       wop->isAllreduce());
+}
+
+void OptOutMutator::mutate(GroupedWelfordOp* wop) {
+  bool is_same = true;
+
+  std::vector<WelfordTriplet> output_vals;
+  for (const auto& out : wop->outputVals()) {
+    auto maybe_mutated =
+        out.transform([&](Val* val) { return maybeMutated(val); });
+    is_same = is_same && maybe_mutated.sameAs(out);
+    output_vals.push_back(maybe_mutated);
+  }
+
+  std::vector<WelfordTriplet> input_vals;
+  for (const auto& inp : wop->inputVals()) {
+    auto maybe_mutated =
+        inp.transform([&](Val* val) { return maybeMutated(val); });
+    is_same = is_same && maybe_mutated.sameAs(inp);
+    input_vals.push_back(maybe_mutated);
+  }
+
+  std::vector<WelfordTriplet> init_vals;
+  for (const auto& init : wop->initVals()) {
+    auto maybe_mutated =
+        init.transform([&](Val* val) { return maybeMutated(val); });
+    is_same = is_same && maybe_mutated.sameAs(init);
+    init_vals.push_back(maybe_mutated);
+  }
+
+  if (is_same) {
+    return;
+  }
+
+  auto container = wop->container();
+  container->removeExpr(wop);
+  IrBuilder::create<GroupedWelfordOp>(
+      container, output_vals, input_vals, init_vals, wop->isAllreduce());
 }
 
 void OptOutMutator::mutate(MmaOp* mma) {
@@ -309,6 +444,20 @@ void OptOutMutator::mutate(BroadcastOp* bop) {
   auto flags = bop->getBroadcastDimFlags();
   container->removeExpr(bop);
   IrBuilder::create<BroadcastOp>(container, out, in, flags);
+}
+
+void OptOutMutator::mutate(SqueezeOp* sop) {
+  Val* out = maybeMutated(sop->out());
+  Val* in = maybeMutated(sop->in());
+
+  if (out->sameAs(sop->out()) && in->sameAs(sop->in())) {
+    return;
+  }
+
+  auto container = sop->container();
+  auto flags = sop->getSqueezeDimFlags();
+  container->removeExpr(sop);
+  IrBuilder::create<SqueezeOp>(container, out, in, flags);
 }
 
 void OptOutMutator::mutate(TransposeOp* top) {
@@ -384,15 +533,19 @@ void OptOutMutator::mutate(GatherOp* op) {
 void OptOutMutator::mutate(ViewAsScalar* vop) {
   TensorView* out = maybeMutated(vop->out())->as<TensorView>();
   TensorView* in = maybeMutated(vop->in())->as<TensorView>();
+  IterDomain* vid = maybeMutated(vop->vector_id())->as<IterDomain>();
+  Val* idx = maybeMutated(vop->index());
 
-  if (out->sameAs(vop->out()) && in->sameAs(vop->in())) {
+  if (out->sameAs(vop->out()) && in->sameAs(vop->in()) &&
+      vid->sameAs(vop->vector_id()) &&
+      ((idx == nullptr && vop->index() == nullptr) ||
+       idx->sameAs(vop->index()))) {
     return;
   }
 
   auto container = vop->container();
   container->removeExpr(vop);
-  IrBuilder::create<ViewAsScalar>(
-      container, out, in, vop->vector_id(), vop->index());
+  IrBuilder::create<ViewAsScalar>(container, out, in, vid, idx);
 }
 
 void OptOutMutator::mutate(ViewOp* vop) {
@@ -445,6 +598,26 @@ void OptOutMutator::mutate(Merge* m) {
   C10_UNUSED auto new_node = IrBuilder::create<Merge>(container, ot, otr, in);
 }
 
+void OptOutMutator::mutate(Swizzle2D* m) {
+  IterDomain* outx = maybeMutated(m->outX())->as<IterDomain>();
+  IterDomain* outy = maybeMutated(m->outY())->as<IterDomain>();
+
+  IterDomain* inx = maybeMutated(m->inX())->as<IterDomain>();
+  IterDomain* iny = maybeMutated(m->inY())->as<IterDomain>();
+
+  auto swizzle_type = m->swizzleType();
+
+  if (outx->sameAs(m->outX()) && outy->sameAs(m->outY()) &&
+      inx->sameAs(m->inX()) && iny->sameAs(m->inY())) {
+    return;
+  }
+  auto container = m->container();
+  container->removeExpr(m);
+  FusionGuard::getCurFusion()->removeExpr(m);
+  C10_UNUSED auto new_node = IrBuilder::create<Swizzle2D>(
+      container, outx, outy, inx, iny, swizzle_type);
+}
+
 void OptOutMutator::mutate(kir::Allocate*) {
   TORCH_INTERNAL_ASSERT(false, "Not implemented yet.");
 }
@@ -455,6 +628,9 @@ void OptOutMutator::mutate(kir::GridSync*) {
   TORCH_INTERNAL_ASSERT(false, "Not implemented yet.");
 }
 void OptOutMutator::mutate(kir::CpAsyncWait*) {
+  TORCH_INTERNAL_ASSERT(false, "Not implemented yet.");
+}
+void OptOutMutator::mutate(kir::CpAsyncCommit*) {
   TORCH_INTERNAL_ASSERT(false, "Not implemented yet.");
 }
 void OptOutMutator::mutate(kir::InitMagicZero*) {
@@ -479,6 +655,9 @@ void OptOutMutator::mutate(kir::GridBroadcast*) {
   TORCH_INTERNAL_ASSERT(false, "Not implemented yet.");
 }
 void OptOutMutator::mutate(kir::GridWelford*) {
+  TORCH_INTERNAL_ASSERT(false, "Not implemented yet.");
+}
+void OptOutMutator::mutate(kir::GroupedGridWelford*) {
   TORCH_INTERNAL_ASSERT(false, "Not implemented yet.");
 }
 void OptOutMutator::mutate(kir::AllocateFusedReduction*) {

@@ -48,6 +48,7 @@ class Expr;
 class Val;
 class UnaryOp;
 class BinaryOp;
+class RNGOp;
 class IterDomain;
 class IrCloner;
 class IrContainer;
@@ -160,6 +161,8 @@ class TORCH_CUDA_CU_API Statement : public NonCopyable, public PolymorphicBase {
     return this == other;
   }
 
+  static bool lessThan(const Statement* stmt1, const Statement* stmt2);
+
   std::string toString() const;
   std::string toInlineString() const;
 
@@ -250,16 +253,46 @@ class TORCH_CUDA_CU_API Val : public Statement {
     return isScalar() && dtype_ == DataType::Int;
   }
 
+  bool isADouble() const {
+    return isScalar() && dtype_ == DataType::Double;
+  }
+
+  bool isABool() const {
+    return isScalar() && dtype_ == DataType::Bool;
+  }
+
   // If this Val is an integer with a direct constant value associated with it,
   // will return the value of that constant integer. If this integer has
   // defining expressions it will return a c10::nullopt. Those values should be
   // infered using evaluateInt.
   c10::optional<int64_t> getInt() const;
 
+  // If this Val is a double with a direct constant value associated with it,
+  // will return the value of that constant double. If this double has
+  // defining expressions it will return a c10::nullopt. Those values should be
+  // infered using evaluateDouble.
+  c10::optional<double> getDouble() const;
+
+  // If this Val is a bool with a direct constant value associated with it,
+  // will return the value of that constant bool. If this bool has defining
+  // expressions it will return a c10::nullopt. Those values should be infered
+  // using evaluateBool.
+  c10::optional<bool> getBool() const;
+
   // If this Val is a constant integer, and its history is comprised only of
-  // constant integers, will return the value of that constant integer. Cannot
+  // constant values, will return the value of that constant integer. Cannot
   // make constant as expression evaluator takes non-constant Vals.
   int64_t evaluateInt();
+
+  // If this Val is a constant double, and its history is comprised only of
+  // constant values, will return the value of that constant double. Cannot
+  // make constant as expression evaluator takes non-constant Vals.
+  double evaluateDouble();
+
+  // If this Val is a constant bool, and its history is comprised only of
+  // constant values, will return the value of that constant bool. Cannot
+  // make constant as expression evaluator takes non-constant Vals.
+  bool evaluateBool();
 
   // Returns if no dependencies and is a constant scalar.
   virtual bool isConst() const {
@@ -410,6 +443,10 @@ class TORCH_CUDA_CU_API Expr : public Statement {
 
   Expr(const Expr* src, IrCloner* ir_cloner);
 
+  // Creates a new instance of the expression with all its field copied.
+  // Note that unlike IrCloner, this function only do a shallow copy
+  virtual Expr* shallowCopy() const = 0;
+
   c10::optional<ExprType> getExprType() const override {
     return etype_;
   }
@@ -450,16 +487,27 @@ class TORCH_CUDA_CU_API Expr : public Statement {
   // TODO: Protect based on being in kernel container
   kir::Predicate* predicate() const;
 
+  // Creates a shallow copy the expression with the given predicate attached.
   // TODO: Protect based on being in kernel container
-  void setPredicate(kir::Predicate* predicate);
+  Expr* withPredicate(kir::Predicate* predicate);
 
   // TODO: Protect based on being in kernel container
   kir::Predicate* writePredicate() const;
 
+  // Creates a shallow copy the expression with the given write-predicate
+  // attached.
+  // TODO: Protect based on being in kernel container
+  Expr* withWritePredicate(kir::Predicate* write_predicate);
+
+ protected:
+  // TODO: Protect based on being in kernel container
+  void setPredicate(kir::Predicate* predicate);
+
   // TODO: Protect based on being in kernel container
   void setWritePredicate(kir::Predicate* write_predicate);
 
- protected:
+  void copyPredicatesFrom(const Expr* expr);
+
   // TODO: Add Fusion passkey
   void addInput(Val* input) {
     TORCH_INTERNAL_ASSERT(input != nullptr);

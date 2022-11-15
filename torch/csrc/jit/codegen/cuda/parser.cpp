@@ -15,6 +15,8 @@
 
 #include <ATen/native/Activation.h>
 
+#include <c10/util/CallOnce.h>
+
 #include <unordered_map>
 #include <utility>
 
@@ -28,7 +30,7 @@ namespace fuser {
 namespace cuda {
 
 constexpr auto kNumUnaryOps = 10;
-constexpr auto kNumUnaryFloatOps = 23;
+constexpr auto kNumUnaryFloatOps = 27;
 constexpr auto kNumUnaryIsOps = 6;
 
 constexpr auto kNumBinaryFloatOps = 3;
@@ -851,7 +853,7 @@ class IrParser {
   }
 
   static void initRegistry() {
-    std::call_once(once_flag_, []() {
+    c10::call_once(once_flag_, []() {
       std::lock_guard<std::mutex> lock(parser_mutex_);
       registerJitOperator();
     });
@@ -1187,14 +1189,18 @@ class IrParser {
         "aten::log2(Tensor self) -> Tensor",
         "aten::lgamma(Tensor self) -> Tensor",
         "aten::exp(Tensor self) -> Tensor",
+        "aten::exp2(Tensor self) -> Tensor",
         "aten::expm1(Tensor self) -> Tensor",
         "aten::erf(Tensor self) -> Tensor",
         "aten::erfc(Tensor self) -> Tensor",
+        "aten::erfinv(Tensor self) -> Tensor",
         "aten::cos(Tensor self) -> Tensor",
         "aten::acos(Tensor self) -> Tensor",
+        "aten::acosh(Tensor self) -> Tensor",
         "aten::cosh(Tensor self) -> Tensor",
         "aten::sin(Tensor self) -> Tensor",
         "aten::asin(Tensor self) -> Tensor",
+        "aten::asinh(Tensor self) -> Tensor",
         "aten::sinh(Tensor self) -> Tensor",
         "aten::tan(Tensor self) -> Tensor",
         "aten::atan(Tensor self) -> Tensor",
@@ -1216,14 +1222,18 @@ class IrParser {
                 {aten::log2, UnaryOpType::Log2},
                 {aten::lgamma, UnaryOpType::Lgamma},
                 {aten::exp, UnaryOpType::Exp},
+                {aten::exp2, UnaryOpType::Exp2},
                 {aten::expm1, UnaryOpType::Expm1},
                 {aten::erf, UnaryOpType::Erf},
                 {aten::erfc, UnaryOpType::Erfc},
+                {aten::erfinv, UnaryOpType::Erfinv},
                 {aten::cos, UnaryOpType::Cos},
                 {aten::acos, UnaryOpType::Acos},
+                {aten::acosh, UnaryOpType::Acosh},
                 {aten::cosh, UnaryOpType::Cosh},
                 {aten::sin, UnaryOpType::Sin},
                 {aten::asin, UnaryOpType::Asin},
+                {aten::asinh, UnaryOpType::Asinh},
                 {aten::sinh, UnaryOpType::Sinh},
                 {aten::tan, UnaryOpType::Tan},
                 {aten::tanh, UnaryOpType::Tanh},
@@ -1319,7 +1329,7 @@ class IrParser {
               }
             }
 
-            auto out = randlike(operand);
+            auto out = rand_like(operand);
             value_map.emplace(
                 node->output()->unique(), ValueHolder(out, format));
           },
@@ -2310,7 +2320,7 @@ class IrParser {
 
               auto data_type = DataType::Null;
               if (const auto opt_ivalue = toIValue(node->input(2))) {
-                if (!opt_ivalue.value().isNone()) {
+                if (!opt_ivalue->isNone()) {
                   data_type = aten_to_data_type(opt_ivalue->toScalarType());
                 }
               }
@@ -2455,8 +2465,8 @@ class IrParser {
 
     {
       std::array<const char*, kNumVarOps> Variance = {
-          "aten::var.dim(Tensor self, int[1] dim, bool unbiased=True, bool keepdim=False) -> Tensor",
-          "aten::std.dim(Tensor self, int[1] dim, bool unbiased=True, bool keepdim=False) -> Tensor"};
+          "aten::var.dim(Tensor self, int[1]? dim, bool unbiased=True, bool keepdim=False) -> Tensor",
+          "aten::std.dim(Tensor self, int[1]? dim, bool unbiased=True, bool keepdim=False) -> Tensor"};
       for (auto signature : Variance) {
         auto ptr_op = getOperatorForLiteral(signature);
         REGISTER_PARSE_RULE(
@@ -2478,8 +2488,13 @@ class IrParser {
               TORCH_INTERNAL_ASSERT(
                   dims_list.has_value(), "Cannot fuse with dynamic axes");
               std::vector<int> dims;
-              for (const auto dim : dims_list->vec()) {
-                dims.emplace_back(static_cast<int>(dim));
+              if (!dims_list->empty()) {
+                for (const auto dim : dims_list->vec()) {
+                  dims.emplace_back(static_cast<int>(dim));
+                }
+              } else {
+                dims.resize(input->as<TensorView>()->nDims());
+                std::iota(dims.begin(), dims.end(), 0);
               }
 
               auto unbiased = constant_as<bool>(node->input(2));
@@ -2511,7 +2526,7 @@ class IrParser {
 
     {
       auto ptr_op = getOperatorForLiteral(
-          "aten::sum.dim_IntList(Tensor self, int[1] dim, bool keepdim=False, *, int? dtype=None) -> (Tensor)");
+          "aten::sum.dim_IntList(Tensor self, int[1]? dim, bool keepdim=False, *, int? dtype=None) -> (Tensor)");
       REGISTER_PARSE_RULE(
           ptr_op,
           {
@@ -2576,7 +2591,7 @@ class IrParser {
 
     {
       auto ptr_op = getOperatorForLiteral(
-          "aten::mean.dim(Tensor self, int[1] dim, bool keepdim=False, *, ScalarType? dtype=None) -> Tensor");
+          "aten::mean.dim(Tensor self, int[1]? dim, bool keepdim=False, *, ScalarType? dtype=None) -> Tensor");
       REGISTER_PARSE_RULE(
           ptr_op,
           {
@@ -2899,6 +2914,34 @@ class IrParser {
             }
           },
           isInputNonSizeZeroTensor,
+          nullptr);
+    }
+
+    {
+      auto ptr_op = getOperatorForLiteral(
+          "aten::leaky_relu(Tensor self, Scalar negative_slope=0.01) -> Tensor");
+      REGISTER_PARSE_RULE(
+          ptr_op,
+          {
+            MemoryFormat format;
+            std::list<Val*> list_val;
+            std::tie(format, list_val) = getConsistentValues(
+                c10::nullopt, value_map[node->inputs()[0]->unique()]);
+            auto self = list_val.front()->as<TensorView>();
+            list_val.pop_front();
+
+            Val* negative_slope = value_map[node->inputs()[1]->unique()];
+
+            auto out = leaky_relu(self, negative_slope);
+            value_map.emplace(
+                node->output()->unique(), ValueHolder(out, format));
+          },
+          [](const Node* node) -> bool {
+            if (!isInputNonSizeZeroTensor(node)) {
+              return false;
+            }
+            return true;
+          },
           nullptr);
     }
 
@@ -3343,6 +3386,115 @@ class IrParser {
           },
           nullptr);
     }
+
+    {
+      auto ptr_op = getOperatorForLiteral(
+          "prim::permute_copy.int(Tensor(a) self, int[] dims) -> Tensor");
+      REGISTER_PARSE_RULE(
+          ptr_op,
+          {
+            MemoryFormat format;
+            std::list<Val*> list_val;
+            std::tie(format, list_val) = getConsistentValues(
+                c10::nullopt, value_map[node->inputs()[0]->unique()]);
+            auto self_t = list_val.front();
+            list_val.pop_front();
+            auto self = self_t->as<TensorView>();
+
+            auto dims = constant_as<c10::List<int64_t>>(node->input(1));
+            TORCH_INTERNAL_ASSERT(
+                dims.has_value(), "The dims parameter is required.");
+            TORCH_INTERNAL_ASSERT(
+                dims.value().size() == self->getMaybeRFactorDomain().size());
+
+            auto output = permute(self, dims->vec());
+            value_map.emplace(
+                node->output()->unique(), ValueHolder(output, format));
+          },
+          [](const Node* node) -> bool {
+            if (!isInputNonSizeZeroTensor(node)) {
+              return false;
+            }
+            auto dims = constant_as<c10::List<int64_t>>(node->input(1));
+            if (!dims.has_value()) {
+              return false;
+            }
+
+            return true;
+          },
+          nullptr);
+    }
+
+    {
+      auto ptr_op = getOperatorForLiteral(
+          "prim::transpose_copy.int(Tensor(a) self, int dim0, int dim1) -> Tensor");
+      REGISTER_PARSE_RULE(
+          ptr_op,
+          {
+            MemoryFormat format;
+            std::list<Val*> list_val;
+            std::tie(format, list_val) = getConsistentValues(
+                c10::nullopt, value_map[node->inputs()[0]->unique()]);
+            auto self_t = list_val.front();
+            list_val.pop_front();
+            auto self = self_t->as<TensorView>();
+
+            auto dim0 = constant_as<int>(node->input(1));
+            TORCH_INTERNAL_ASSERT(
+                dim0.has_value(), "dim0 in transpose is not valid.");
+
+            auto dim1 = constant_as<int>(node->input(2));
+            TORCH_INTERNAL_ASSERT(
+                dim1.has_value(), "dim1 in transpose is not valid.");
+
+            auto output = transpose(self, dim0.value(), dim1.value());
+            value_map.emplace(
+                node->output()->unique(), ValueHolder(output, format));
+          },
+          [](const Node* node) -> bool {
+            if (!isInputNonSizeZeroTensor(node)) {
+              return false;
+            }
+            if (node->input(1)->node()->kind() != prim::Constant) {
+              return false;
+            }
+            if (node->input(2)->node()->kind() != prim::Constant) {
+              return false;
+            }
+            return true;
+          },
+          nullptr);
+    }
+
+    {
+      auto ptr_op =
+          getOperatorForLiteral("prim::t_copy(Tensor(a) self) -> Tensor");
+      REGISTER_PARSE_RULE(
+          ptr_op,
+          {
+            MemoryFormat format;
+            std::list<Val*> list_val;
+            std::tie(format, list_val) = getConsistentValues(
+                c10::nullopt, value_map[node->inputs()[0]->unique()]);
+            auto self_t = list_val.front();
+            list_val.pop_front();
+            auto self = self_t->as<TensorView>();
+
+            TORCH_INTERNAL_ASSERT(self->getMaybeRFactorDomain().size() <= 2);
+
+            auto output = transpose(self);
+            value_map.emplace(
+                node->output()->unique(), ValueHolder(output, format));
+          },
+          [](const Node* node) -> bool {
+            if (!isInputNonSizeZeroTensor(node)) {
+              return false;
+            }
+
+            return true;
+          },
+          nullptr);
+    }
   }
 
   void processJitNode(const JitOp* node) {
@@ -3531,7 +3683,7 @@ class IrParser {
       cached_registry_lookup_; // NOLINT
 
   // NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
-  static std::once_flag once_flag_;
+  static c10::once_flag once_flag_;
 };
 std::unordered_set<Symbol> IrParser::parser_symbol_set_; // NOLINT
 std::unordered_set<Symbol> IrParser::parser_skip_set_; // NOLINT
@@ -3542,7 +3694,7 @@ std::unordered_map<const FunctionSchema*, const IrParser::RegistrationEntry*>
     IrParser::cached_registry_lookup_; // NOLINT
 
 // NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
-std::once_flag IrParser::once_flag_;
+c10::once_flag IrParser::once_flag_;
 
 ProfileIValueOp* insertProfileIValueOp(
     Node* node,
@@ -3997,7 +4149,7 @@ bool insertProfileIValue(ProfilingRecord* pr, Node* node, size_t offset) {
 
   static auto reduction_operator_schema =
       getOperatorForLiteral(
-          "aten::sum.dim_IntList(Tensor self, int[1] dim, bool keepdim=False, *, int? dtype=None) -> (Tensor)")
+          "aten::sum.dim_IntList(Tensor self, int[1]? dim, bool keepdim=False, *, int? dtype=None) -> (Tensor)")
           ->schema();
   if (node->matches(reduction_operator_schema)) {
     switch (offset) {
@@ -4098,6 +4250,49 @@ bool insertProfileIValue(ProfilingRecord* pr, Node* node, size_t offset) {
     switch (offset) {
       // argument 1: unsqueeze dim;
       case 1:
+        profileInt(pr, node, offset);
+        break;
+      default:
+        return false;
+    }
+    return true;
+  }
+
+  static auto permute_schema =
+      getOperatorForLiteral(
+          "aten::permute(Tensor(a) self, int[] dims) -> Tensor(a)")
+          ->schema();
+  static auto permute_copy_schema =
+      getOperatorForLiteral(
+          "prim::permute_copy(Tensor(a) self, int[] dims) -> Tensor")
+          ->schema();
+  if (node->matches(permute_schema) || node->matches(permute_copy_schema)) {
+    switch (offset) {
+      // argument 1: dims;
+      case 1:
+        profileIntList(pr, node, offset);
+        break;
+      default:
+        return false;
+    }
+    return true;
+  }
+
+  static auto transpose_int_copy_schema =
+      getOperatorForLiteral(
+          "aten::transpose.int(Tensor(a) self, int dim0, int dim1) -> Tensor(a)")
+          ->schema();
+  static auto transpose_int_schema =
+      getOperatorForLiteral(
+          "prim::transpose_copy.int(Tensor(a) self, int dim0, int dim1) -> Tensor")
+          ->schema();
+  if (node->matches(transpose_int_copy_schema) ||
+      node->matches(transpose_int_schema)) {
+    switch (offset) {
+      // argument 1: dim0;
+      // argument 2: dim1;
+      case 1:
+      case 2:
         profileInt(pr, node, offset);
         break;
       default:
@@ -4311,6 +4506,30 @@ bool insertProfileIValue(ProfilingRecord* pr, Node* node, size_t offset) {
         return true;
       case 3:
         profileInt(pr, node, offset);
+        return true;
+      default:
+        return false;
+    }
+  }
+
+  static auto var_dim_schema =
+      getOperatorForLiteral(
+          "aten::var.dim(Tensor self, int[1]? dim, bool unbiased=True, bool keepdim=False) -> Tensor")
+          ->schema();
+  static auto std_dim_schema =
+      getOperatorForLiteral(
+          "aten::std.dim(Tensor self, int[1]? dim, bool unbiased=True, bool keepdim=False) -> Tensor")
+          ->schema();
+  if (node->matches(var_dim_schema) || node->matches(std_dim_schema)) {
+    switch (offset) {
+      case 1:
+        profileIntList(pr, node, offset);
+        return true;
+      case 2:
+        profileBool(pr, node, offset);
+        return true;
+      case 3:
+        profileBool(pr, node, offset);
         return true;
       default:
         return false;

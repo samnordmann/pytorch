@@ -3,6 +3,7 @@
 #include <torch/csrc/jit/codegen/cuda/ir_builder.h>
 #include <torch/csrc/jit/codegen/cuda/ir_iostream.h>
 #include <torch/csrc/jit/codegen/cuda/ir_utils.h>
+#include <torch/csrc/jit/codegen/cuda/lower_utils.h>
 
 #include <set>
 
@@ -179,6 +180,48 @@ struct SubstituteInExpr : public OptInDispatch {
     OptInDispatch::handle(expr);
   }
 
+  void handle(FullOp* full_expr) final {
+    auto out = reference_->sameAs(full_expr->output(0)) ? substitute_
+                                                        : full_expr->output(0);
+    expr_ = IrBuilder::create<FullOp>(
+        full_expr->container(),
+        out,
+        full_expr->getFillValue(),
+        full_expr->dtype());
+  }
+
+  void handle(ARangeOp* arange_expr) final {
+    auto start = reference_->sameAs(arange_expr->start())
+        ? substitute_
+        : arange_expr->start();
+    auto end = reference_->sameAs(arange_expr->end()) ? substitute_
+                                                      : arange_expr->end();
+    auto step = reference_->sameAs(arange_expr->step()) ? substitute_
+                                                        : arange_expr->step();
+    auto out = reference_->sameAs(arange_expr->output(0))
+        ? substitute_
+        : arange_expr->output(0);
+    expr_ = IrBuilder::create<ARangeOp>(
+        arange_expr->container(),
+        out,
+        start,
+        end,
+        step,
+        arange_expr->dtype(),
+        arange_expr->getLinearLogicalIndex());
+  }
+
+  void handle(EyeOp* eye_expr) final {
+    auto out = reference_->sameAs(eye_expr->output(0)) ? substitute_
+                                                       : eye_expr->output(0);
+    expr_ = IrBuilder::create<EyeOp>(
+        eye_expr->container(),
+        out,
+        eye_expr->dtype(),
+        eye_expr->getIndex1(),
+        eye_expr->getIndex2());
+  }
+
   void handle(UnaryOp* unary_expr) final {
     auto in =
         reference_->sameAs(unary_expr->in()) ? substitute_ : unary_expr->in();
@@ -220,6 +263,41 @@ struct SubstituteInExpr : public OptInDispatch {
         in1,
         in2,
         in3);
+  }
+
+  void handle(SelectOp* select_expr) final {
+    auto input = reference_->sameAs(select_expr->input(0))
+        ? substitute_
+        : select_expr->input(0);
+    auto index = reference_->sameAs(select_expr->input(1))
+        ? substitute_
+        : select_expr->input(1);
+    auto out = reference_->sameAs(select_expr->output(0))
+        ? substitute_
+        : select_expr->output(0);
+    expr_ = IrBuilder::create<SelectOp>(
+        select_expr->container(),
+        out,
+        input,
+        select_expr->getSelectAxis(),
+        index);
+  }
+
+  void handle(RNGOp* rng_expr) final {
+    std::vector<Val*> subsituted_params;
+    for (auto v : rng_expr->getParameters()) {
+      subsituted_params.emplace_back(reference_->sameAs(v) ? substitute_ : v);
+    }
+    auto out = reference_->sameAs(rng_expr->output(0)) ? substitute_
+                                                       : rng_expr->output(0);
+    expr_ = IrBuilder::create<RNGOp>(
+        rng_expr->container(),
+        rng_expr->getRNGOpType(),
+        out,
+        rng_expr->dtype(),
+        subsituted_params,
+        rng_expr->getRNGOffset(),
+        rng_expr->getPhiloxIndex());
   }
 
   void handle(ReductionOp* reduction_expr) final {
@@ -282,6 +360,16 @@ struct SubstituteInExpr : public OptInDispatch {
         out,
         in,
         broadcast_expr->getBroadcastDimFlags());
+  }
+
+  void handle(SqueezeOp* squeeze_expr) final {
+    auto out = reference_->sameAs(squeeze_expr->out()) ? substitute_
+                                                       : squeeze_expr->out();
+    auto in = reference_->sameAs(squeeze_expr->in()) ? substitute_
+                                                     : squeeze_expr->in();
+
+    expr_ = IrBuilder::create<SqueezeOp>(
+        squeeze_expr->container(), out, in, squeeze_expr->getSqueezeDimFlags());
   }
 
   void handle(TransposeOp* transpose_expr) final {
@@ -410,12 +498,12 @@ struct SubstituteInExpr : public OptInDispatch {
         out_avg,
         out_var,
         out_N,
-        init_avg,
-        init_var,
-        init_N,
         in_avg,
         in_var,
         in_N,
+        init_avg,
+        init_var,
+        init_N,
         welford_expr->isAllreduce());
   }
 
@@ -473,25 +561,23 @@ TensorView* rfactorHelper(
     TensorView* reduction_tv,
     const std::vector<int>& axes) {
   TORCH_INTERNAL_ASSERT(reduction_tv->definition() != nullptr);
-  const bool is_welford = reduction_tv->definition()->isA<WelfordOp>();
-  if (!is_welford) {
+  const bool has_multiple_tvs = reduction_tv->definition()->inputs().size() > 1;
+  if (!has_multiple_tvs) {
     return reduction_tv->rFactor(axes);
   }
-  auto welford = reduction_tv->definition()->as<WelfordOp>();
-  auto w_avg = welford->outAvg()->as<TensorView>();
-  auto w_var = welford->outVar()->as<TensorView>();
-  auto w_n = welford->outN()->as<TensorView>();
 
-  auto rtvs =
-      reduction_tv->rFactor(axes, std::vector<TensorView*>{w_avg, w_var, w_n});
+  std::vector<TensorView*> out_tvs;
+  std::transform(
+      reduction_tv->definition()->outputs().begin(),
+      reduction_tv->definition()->outputs().end(),
+      std::back_inserter(out_tvs),
+      [](Val* val) { return val->as<TensorView>(); });
 
-  if (reduction_tv == w_n) {
-    return rtvs.at(2);
-  } else if (reduction_tv == w_var) {
-    return rtvs.at(1);
-  } else {
-    return rtvs.at(0);
-  }
+  auto rf_tvs = reduction_tv->rFactor(axes, out_tvs);
+
+  return rf_tvs.at(std::distance(
+      out_tvs.begin(),
+      std::find(out_tvs.begin(), out_tvs.end(), reduction_tv)));
 }
 
 namespace {
@@ -652,41 +738,42 @@ std::vector<TensorView*> allTvs(Fusion* fusion) {
   return uniqueEntries<TensorView>(all_tvs);
 }
 
-std::vector<Expr*> getReductionOps(Fusion* fusion, bool ignore_trivial) {
+std::vector<TensorView*> allTvsExcept(
+    Fusion* fusion,
+    const std::unordered_set<TensorView*>& except) {
+  auto all_tvs = allTvs(fusion);
+  std::vector<TensorView*> result;
+  for (auto tv : all_tvs) {
+    if (except.count(tv) == 0) {
+      result.emplace_back(tv);
+    }
+  }
+  return result;
+}
+
+std::vector<Expr*> getReductionOps(Fusion* fusion) {
   std::vector<Expr*> red_ops;
 
-  auto isReduction = [&ignore_trivial](Val* out_val) {
-    if (out_val == nullptr || !out_val->isA<TensorView>()) {
-      return false;
-    }
-    auto out_tv = out_val->as<TensorView>();
-    return std::any_of(
-        out_tv->getRootDomain().begin(),
-        out_tv->getRootDomain().end(),
-        [&ignore_trivial](IterDomain* id) {
-          return id->isReduction() &&
-              !(ignore_trivial && id->isTrivialReduction());
-        });
-  };
-
   for (auto expr : fusion->exprs()) {
-    bool is_reduction = false;
-    if (expr->isA<ReductionOp>()) {
-      is_reduction = isReduction(expr->as<ReductionOp>()->out());
-    } else if (expr->isA<GroupedReductionOp>()) {
-      is_reduction = std::any_of(
-          expr->as<GroupedReductionOp>()->outputs().begin(),
-          expr->as<GroupedReductionOp>()->outputs().end(),
-          isReduction);
-    } else if (expr->isA<WelfordOp>()) {
-      is_reduction = isReduction(expr->as<WelfordOp>()->outAvg());
-    }
-    if (is_reduction) {
+    if (expr->isA<ReductionOp>() || expr->isA<GroupedReductionOp>() ||
+        expr->isA<WelfordOp>()) {
       red_ops.push_back(expr);
     }
   }
 
   return red_ops;
+}
+
+std::vector<SelectOp*> getSelectOps(Fusion* fusion) {
+  std::vector<SelectOp*> select_ops;
+
+  for (auto expr : fusion->exprs()) {
+    if (expr->isA<SelectOp>()) {
+      select_ops.push_back(expr->as<SelectOp>());
+    }
+  }
+
+  return select_ops;
 }
 
 namespace {
@@ -704,13 +791,29 @@ class ValReplacementMutator : private OptOutMutator {
     // would be a tensorview that doesn't get updated extents. Therefore, first
     // grab all leaves towards outputs and grab stmts from there.
     auto stmts = StmtSort::getStmts(fusion, allLeafOuts(fusion), true);
-    for (auto stmt : stmts) {
+
+    // Some fusions, such as standalone rand_like, can have disconnected DAG, so
+    // we need some mechanism to make sure our replacement set is as complete as
+    // possible
+    // TODO: I think we need a more general mechanism to support disconnected
+    // DAG
+    std::vector<Val*> more;
+    for (auto v : fusion->inputs()) {
+      if (std::find(stmts.begin(), stmts.end(), v) == stmts.end()) {
+        more.emplace_back(v);
+      }
+    }
+    auto more_stmts = StmtSort::getStmts(fusion, more, true);
+    more_stmts.insert(more_stmts.end(), stmts.begin(), stmts.end());
+
+    for (auto stmt : more_stmts) {
       mutate(stmt);
     }
   }
 
  private:
   using OptOutMutator::mutate;
+
   void mutate(Val* val) final {
     if (replacement_map_.find(val) == replacement_map_.end()) {
       return OptOutMutator::mutate(val);
@@ -766,34 +869,221 @@ Val* getReductionInitValOf(TensorView* tv) {
   if (auto rop = dynamic_cast<ReductionOp*>(def)) {
     init = rop->init();
   } else if (auto grop = dynamic_cast<GroupedReductionOp*>(def)) {
-    int output_idx = -1;
-    for (const auto i : c10::irange(grop->numExprs())) {
-      if (tv == grop->output(i)) {
-        output_idx = static_cast<int>(i);
-        break;
-      }
-    }
-    TORCH_INTERNAL_ASSERT(
-        output_idx >= 0,
-        "Matching output not found for GroupedReductionOp: ",
-        tv->toString(),
-        ". Defined by: ",
-        def->toString());
+    int output_idx = grop->getExprIndexOfOutput(tv);
     init = grop->initVal(output_idx);
   } else if (auto wop = dynamic_cast<WelfordOp*>(def)) {
-    if (tv == wop->outAvg()) {
-      init = wop->initAvg();
-    } else if (tv == wop->outVar()) {
-      init = wop->initVar();
-    } else {
-      TORCH_INTERNAL_ASSERT(tv == wop->outN());
-      init = wop->initN();
-    }
+    return wop->getInitValOfOutput(tv);
+  } else if (auto gwop = dynamic_cast<GroupedWelfordOp*>(def)) {
+    init = gwop->getInitValOfOutput(tv);
   } else if (auto mma = dynamic_cast<MmaOp*>(def)) {
     init = mma->init();
   }
 
   return init;
+}
+
+// TODO: Should mma be in here? Should we return true if it's a trivial
+// reduction?
+bool isReductionOp(const Expr* expr) {
+  // Note that GridReduction inherits ReductionOp
+  return expr->isA<ReductionOp>() || expr->isA<GroupedReductionOp>() ||
+      expr->isA<WelfordOp>() || expr->isA<GroupedWelfordOp>() ||
+      expr->isA<kir::GridWelford>() || expr->isA<kir::GroupedGridWelford>();
+}
+
+bool isReductionTvOp(const Expr* expr) {
+  return ir_utils::isTvOp(expr) && isReductionOp(expr);
+}
+
+TORCH_CUDA_CU_API std::vector<ViewOp*> getViewOps(Fusion* fusion) {
+  auto all_exprs = fusion->exprs();
+
+  auto all_view_ops = ir_utils::filterByType<ViewOp>(all_exprs);
+
+  std::vector<ViewOp*> view_ops;
+
+  std::copy_if(
+      all_view_ops.begin(),
+      all_view_ops.end(),
+      std::back_inserter(view_ops),
+      [](ViewOp* view) {
+        return std::any_of(
+            view->outputs().begin(), view->outputs().end(), [](Val* v) {
+              if (!v->isA<TensorView>()) {
+                return false;
+              }
+              return v->as<TensorView>()->hasRFactor();
+            });
+      });
+
+  return view_ops;
+}
+
+namespace {
+
+struct ReplaceValInIndexVal : public OptInDispatch {
+ public:
+  //! Apply replacements to index as specified in
+  //! replacement_map. index is assumed to consist only from Int and
+  //! NamedScalar
+  static Val* replace(
+      Val* index,
+      const std::unordered_map<Val*, Val*>& replacement_map) {
+    ReplaceValInIndexVal replace_index_val(replacement_map);
+    replace_index_val.handle(index);
+    // Return the original index if not replaced
+    if (replace_index_val.is_replaced_) {
+      return replace_index_val.last_visited_val_;
+    } else {
+      return index;
+    }
+  }
+
+ private:
+  ReplaceValInIndexVal(const std::unordered_map<Val*, Val*>& replacement_map)
+      : replacement_map_(replacement_map) {}
+
+  using OptOutDispatch::handle;
+
+  void handle(Val* val) override {
+    TORCH_INTERNAL_ASSERT(
+        val->isA<Int>() || val->isA<Bool>() || val->isA<NamedScalar>(),
+        "Invalid Val type: ",
+        val->toString());
+
+    // if val appears in the replacement map, stop traversing and set
+    // the current val with the replacement
+    auto it = replacement_map_.find(val);
+    if (it != replacement_map_.end()) {
+      last_visited_val_ = it->second;
+      is_replaced_ = true;
+      return;
+    }
+
+    // Recursively traverse its defining expr
+    auto def = val->definition();
+    if (def != nullptr) {
+      switch (def->etype()) {
+        case ExprType::UnaryOp:
+        case ExprType::BinaryOp:
+        case ExprType::TernaryOp:
+        case ExprType::Swizzle2DInt:
+        case ExprType::PairSelect:
+          handle(val->definition());
+          break;
+        default:
+          TORCH_INTERNAL_ASSERT(
+              false, "Unexpected definition: ", def->toString())
+      }
+      // last_visited_val_ is set in the expr handlers
+    } else {
+      last_visited_val_ = val;
+    }
+  }
+
+  // Clone expression after recurisvely replacing inputs
+  void handle(UnaryOp* uop) override {
+    handle(uop->in());
+    auto inp = last_visited_val_;
+    TORCH_INTERNAL_ASSERT(
+        uop->out()->isA<Int>() || uop->out()->isA<Bool>(),
+        "Unknown output type for expr ",
+        uop->toInlineString());
+    auto out = IrBuilder::create<Int>(c10::nullopt);
+    IrBuilder::create<UnaryOp>(uop->getUnaryOpType(), out, inp);
+    last_visited_val_ = out;
+  }
+
+  // Clone expression after recurisvely replacing inputs
+  void handle(BinaryOp* bop) override {
+    handle(bop->lhs());
+    auto lhs = last_visited_val_;
+    handle(bop->rhs());
+    auto rhs = last_visited_val_;
+    TORCH_INTERNAL_ASSERT(
+        bop->out()->isA<Int>() || bop->out()->isA<Bool>(),
+        "Unknown output type for expr ",
+        bop->toInlineString());
+    auto out = IrBuilder::create<Int>(c10::nullopt);
+    IrBuilder::create<BinaryOp>(bop->getBinaryOpType(), out, lhs, rhs);
+    last_visited_val_ = out;
+  }
+
+  // Clone expression after recurisvely replacing inputs
+  void handle(TernaryOp* top) override {
+    handle(top->in1());
+    auto in1 = last_visited_val_;
+    handle(top->in2());
+    auto in2 = last_visited_val_;
+    handle(top->in3());
+    auto in3 = last_visited_val_;
+    TORCH_INTERNAL_ASSERT(
+        top->out()->isA<Int>() || top->out()->isA<Bool>(),
+        "Unknown output type for expr ",
+        top->toInlineString());
+    auto out = IrBuilder::create<Int>(c10::nullopt);
+    IrBuilder::create<TernaryOp>(top->getTernaryOpType(), out, in1, in2, in3);
+    last_visited_val_ = out;
+  }
+
+ private:
+  const std::unordered_map<Val*, Val*>& replacement_map_;
+  Val* last_visited_val_ = nullptr;
+  bool is_replaced_ = false;
+};
+
+} // namespace
+
+Val* replaceValInIndexVal(
+    Val* index,
+    const std::unordered_map<Val*, Val*>& replacement_map) {
+  return ReplaceValInIndexVal::replace(index, replacement_map);
+}
+
+bool isSqueezeInput(const TensorView* tv) {
+  for (auto expr : tv->uses()) {
+    if (expr->isA<SqueezeOp>()) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool isSqueezedID(const TensorView* tv, const IterDomain* id) {
+  auto root_dom = TensorDomain::noReductions(tv->getMaybeRFactorDomain());
+  auto squeezes = ir_utils::filterByType<SqueezeOp>(tv->uses());
+  for (auto i : c10::irange(root_dom.size())) {
+    if (root_dom[i] != id) {
+      continue;
+    }
+    for (auto squeeze : squeezes) {
+      if (squeeze->isSqueezeDim(i)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+std::vector<IterDomain*> allIDsOf(const TensorView* tv) {
+  const auto& root_domain = tv->getRootDomain();
+  const auto& domain = tv->domain()->domain();
+  // Grab all values in the history of the tensor view's domain
+  auto all_vals = DependencyCheck::getAllValsBetween(
+      {root_domain.begin(), root_domain.end()}, {domain.begin(), domain.end()});
+
+  // Filter so we only have iteration domains (ignore Ints used in split)
+  auto all_ids = ir_utils::filterByType<IterDomain>(all_vals);
+  return std::vector<IterDomain*>(all_ids.begin(), all_ids.end());
+}
+
+bool isSelectInput(TensorView* tv) {
+  for (auto expr : tv->uses()) {
+    if (expr->isA<SelectOp>()) {
+      return true;
+    }
+  }
+  return false;
 }
 
 } // namespace ir_utils

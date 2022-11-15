@@ -38,7 +38,7 @@ struct KernelSummary {
   std::vector<const kir::Allocate*> static_smem_allocations;
 
   //! Indicate the need to generate random numbers
-  bool is_stochastic = false;
+  int max_rng_offsets = -1;
 
   //! Do we have any block reductions?
   bool has_block_reductions = false;
@@ -88,7 +88,7 @@ struct KernelSummary {
 
   // Sync map is needed to figure out if global memory buffers need to be marked
   // as volatile because they're used for communication.
-  SyncMap sync_map;
+  std::shared_ptr<const SyncMap> sync_map;
 
   // Parallel dimension map needed to set the correct properties of grid buffers
   // (is a dim inactive)

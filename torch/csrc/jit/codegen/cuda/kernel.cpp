@@ -1,7 +1,7 @@
+#include <torch/csrc/jit/codegen/cuda/expr_evaluator.h>
 #include <torch/csrc/jit/codegen/cuda/instrumentation.h>
 #include <torch/csrc/jit/codegen/cuda/ir_iostream.h>
 #include <torch/csrc/jit/codegen/cuda/kernel.h>
-#include <torch/csrc/jit/codegen/cuda/kernel_expr_evaluator.h>
 #include <torch/csrc/jit/codegen/cuda/kernel_ir_dispatch.h>
 #include <torch/csrc/jit/codegen/cuda/lower2device.h>
 
@@ -72,19 +72,19 @@ class KernelIrScanner : private IrVisitor {
         summary_.dynamic_smem_allocations.push_back(allocate);
         break;
       case MemoryType::Local:
-        if (!ExpressionEvaluator::isConst(allocate->size())) {
+        if (!allocate->size()->isConstInt()) {
           summary_.has_dynamic_local_memory_allocations = true;
           summary_.dynamic_lmem_allocations.emplace_back(allocate);
         }
         break;
+      default:
+        TORCH_INTERNAL_ASSERT(false, "Unknown memory type to allocate.");
     }
   }
 
-  void handle(UnaryOp* unary_op) final {
-    if (unary_op->getUnaryOpType() == UnaryOpType::RandLike) {
-      // This kernel is using random numbers
-      summary_.is_stochastic = true;
-    }
+  void handle(RNGOp* rng_op) final {
+    summary_.max_rng_offsets =
+        std::max<int>(summary_.max_rng_offsets, rng_op->getRNGOffset());
   }
 
   void handle(TensorIndex* tensor_index) final {
@@ -133,6 +133,15 @@ class KernelIrScanner : private IrVisitor {
   void handle(GroupedGridReduction* grid_reduction) final {
     summary_.has_grid_reductions = true;
     if (grid_reduction->isAllreduce()) {
+      summary_.has_cooperative_grid_reduction = true;
+    }
+  }
+
+  void handle(GroupedGridWelford* grid_welford) final {
+    summary_.has_welford = true;
+    summary_.has_grid_welford = true;
+    summary_.has_grid_reductions = true;
+    if (grid_welford->isAllreduce()) {
       summary_.has_cooperative_grid_reduction = true;
     }
   }

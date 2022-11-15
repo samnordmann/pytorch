@@ -319,7 +319,7 @@ class TORCH_CUDA_CU_API SegmentedFusion {
 
   //! Make heuristics for all groups in this segmented fusion
   std::unique_ptr<FusionHeuristics> makeInitialHeuristics(
-      const at::ArrayRef<IValue>& inputs);
+      const KernelArgumentHolder& inputs);
 
   //! Inline Debug print for segmented fusion
   std::string toString(int verbosity) const;
@@ -457,7 +457,7 @@ class TORCH_CUDA_CU_API SegmentCandidateFinder {
   // Perform segmentation on a copy of the given fusion
   static std::unique_ptr<SegmentedFusion> segment(
       const Fusion* fusion,
-      const at::ArrayRef<IValue>& inputs,
+      const KernelArgumentHolder& inputs,
       SegmentCandidateFinderOptions options = SegmentCandidateFinderOptions()) {
     auto fusion_copy = std::make_unique<Fusion>(*fusion);
     if (isDebugDumpEnabled(DebugDumpOption::FusionSegments)) {
@@ -472,7 +472,7 @@ class TORCH_CUDA_CU_API SegmentCandidateFinder {
   // Perform segmentation on and take ownership of the given fusion
   static std::unique_ptr<SegmentedFusion> segment(
       std::unique_ptr<Fusion> fusion,
-      const at::ArrayRef<IValue>& inputs,
+      const KernelArgumentHolder& inputs,
       SegmentCandidateFinderOptions options = SegmentCandidateFinderOptions()) {
     SegmentCandidateFinder scf(std::move(fusion), inputs, options);
     if (isDebugDumpEnabled(DebugDumpOption::FusionSegments)) {
@@ -485,13 +485,13 @@ class TORCH_CUDA_CU_API SegmentCandidateFinder {
 
   static bool TranslateWelfordInFusion(
       Fusion* fusion,
-      const at::ArrayRef<IValue>& runtime_inputs);
+      const KernelArgumentHolder& runtime_inputs);
 
  private:
   // Perform segmentation on and take ownership of the given fusion
   SegmentCandidateFinder(
       std::unique_ptr<Fusion> fusion,
-      const at::ArrayRef<IValue>& inputs,
+      const KernelArgumentHolder& inputs,
       SegmentCandidateFinderOptions options);
 
   void resetTraversal();
@@ -500,7 +500,7 @@ class TORCH_CUDA_CU_API SegmentCandidateFinder {
 
   SegmentedGroup* mergeNodes();
 
-  bool codeGenSupportedMerge(SegmentedEdge* edge);
+  bool codeGenSupportedMerge(SegmentedGroup* group1, SegmentedGroup* group2);
 
   void findSegments();
 
@@ -624,7 +624,7 @@ class TORCH_CUDA_CU_API SegmentCandidateFinder {
   //! TODO:
   //!  implement the expression evaluator transfer and
   //!  remove runtime_inputs_ in a follow up.
-  const at::ArrayRef<IValue>& runtime_inputs_;
+  const KernelArgumentHolder& runtime_inputs_;
 };
 
 // TODO: Make as member functions on classes instead of global scope

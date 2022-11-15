@@ -3,7 +3,7 @@
 #include <torch/csrc/jit/codegen/cuda/disjoint_set.h>
 #include <torch/csrc/jit/codegen/cuda/ir_all_nodes.h>
 #include <torch/csrc/jit/codegen/cuda/kernel_ir.h>
-#include <torch/csrc/jit/codegen/cuda/lower_trivial_reductions.h>
+#include <torch/csrc/jit/codegen/cuda/lower_trivial_broadcast.h>
 
 #include <deque>
 #include <unordered_map>
@@ -52,15 +52,25 @@ namespace cuda {
 // IdMappingMode::EXACT
 //   Don't map any broadcast axes to non-broadcast axes
 //   Do not forward through any broadcast IDs
+// IdMappingMode::AlmostExact
+//   Forward through broadcast axes, but not through to a non-broadcast axis
+//     i.e. id{b1*i0}, id{i0} are mapped
+//          id{i1*i0}, id{i0} are not mapped (this part is the difference from
+//          PERMISSIVE)
+//   Forward through split one axes, i.e. id{ceilDiv(i0, 1)}, id{i0} are mapped
+//
 class TORCH_CUDA_CU_API IterDomainGraph {
  public:
-  IterDomainGraph(Fusion* fusion);
+  IterDomainGraph(Fusion* fusion, bool allow_self_mapping = false);
 
   const DisjointSets<IterDomain*>& permissiveNodes() const {
     return permissive_nodes_;
   }
   const DisjointSets<IterDomain*>& exactNodes() const {
     return exact_nodes_;
+  }
+  const DisjointSets<IterDomain*>& almostExactNodes() const {
+    return almost_exact_nodes_;
   }
   const DisjointSets<IterDomain*>& loopNodes() const {
     return loop_nodes_;
@@ -88,13 +98,32 @@ class TORCH_CUDA_CU_API IterDomainGraph {
     return view_rfactor_ids_;
   }
 
+  // Returns if first and second are expressions through which the provided
+  // id_map have matching inputs (if forward), or outputs (if not forward).
+  // Returning true means the expressions are "the same", in terms they modify
+  // matching original extents, by the same amount.
+  static bool exprsMap(
+      Expr* first,
+      Expr* second,
+      bool forward,
+      const DisjointSets<IterDomain*>& id_map);
+
+  bool hasSelfMapping() const {
+    return self_mapping_info_.has_value();
+  }
+
  private:
   void build(Fusion* fusion);
 
   void initializeId(IterDomain* id, bool is_view_rfactor_id, bool is_leaf_id);
 
+  // Checks if exprsMap then if forward will map outputs else inputs in exact
+  // and permissive map.
+  void mapThroughExpr(Expr* first, Expr* second, bool forward);
+
   DisjointSets<IterDomain*> permissive_nodes_;
   DisjointSets<IterDomain*> exact_nodes_;
+  DisjointSets<IterDomain*> almost_exact_nodes_;
   DisjointSets<IterDomain*> loop_nodes_;
 
   // Consumers and producers is not symmetric like the other sets
@@ -108,15 +137,20 @@ class TORCH_CUDA_CU_API IterDomainGraph {
   VectorOfUniqueEntries<IterDomain*> all_ids_;
 
   std::unordered_set<IterDomain*> view_rfactor_ids_;
-};
 
-class TrivialReductionInfo;
+  c10::optional<std::tuple<TensorView*, IterDomain*, IterDomain*, std::string>>
+      self_mapping_info_ = c10::nullopt;
+};
 
 using DoubleBufferIndices = std::unordered_map<DoubleBufferLoopStage, Int*>;
 
 class TORCH_CUDA_CU_API ComputeAtMap {
  public:
   ComputeAtMap() = delete;
+  ComputeAtMap(const ComputeAtMap&) = delete;
+  ComputeAtMap& operator=(const ComputeAtMap&) = delete;
+  ComputeAtMap(ComputeAtMap&&) = default;
+  ComputeAtMap& operator=(ComputeAtMap&&) = default;
   ComputeAtMap(Fusion* fusion);
 
   //! Run through disjoint sets in the LOOP map, make sure there's only one
@@ -152,6 +186,31 @@ class TORCH_CUDA_CU_API ComputeAtMap {
   //! guarenteed to return iter domains in the same disjoint set.
   IterDomain* getConcreteMappedID(IterDomain* id, IdMappingMode mode) const;
 
+  //! Returns a list of expressions that produce the iter domains of all exact
+  //! mapped id's to 'id'. Expressions that are the same exact transformations
+  //! are deduplicated in the returned expressions.
+  std::vector<Expr*> uniqueExactDefinitions(IterDomain* id) const {
+    auto disjoint_set = disjointSetOf(id, IdMappingMode::EXACT);
+    auto unique_exact_definition_it =
+        unique_exact_definitions_.find(disjoint_set);
+    if (unique_exact_definition_it == unique_exact_definitions_.end()) {
+      return {};
+    }
+    return unique_exact_definition_it->second;
+  }
+
+  //! Returns a list of expressions that *use* the iter domains of all exact
+  //! mapped id's to 'id'. Expressions that are the same exact transformations
+  //! are deduplicated in the returned expressions.
+  std::vector<Expr*> uniqueExactUses(IterDomain* id) const {
+    auto disjoint_set = disjointSetOf(id, IdMappingMode::EXACT);
+    auto unique_exact_use_it = unique_exact_uses_.find(disjoint_set);
+    if (unique_exact_use_it == unique_exact_uses_.end()) {
+      return {};
+    }
+    return unique_exact_use_it->second;
+  }
+
   // Prints mapping information, forwards to an internal IterDomainGraph
   std::string toString() const;
 
@@ -172,6 +231,10 @@ class TORCH_CUDA_CU_API ComputeAtMap {
   //! Get the ID sets for a provided IdMappingMode
   const DisjointSets<IterDomain*>& getIdSets(IdMappingMode mode) const;
 
+  // Returns if the ID actually has a disjoint set meaning it has been processed
+  // in the creation of the compute at map.
+  bool idExistsInMap(IterDomain* id) const;
+
   //! Returns the pre-allocated index variable integer used in
   //!  the kir::ForLoop corresponding to the given IterDomain.
   //!  this interface is only valid if the ID has a loop mapping,
@@ -182,7 +245,42 @@ class TORCH_CUDA_CU_API ComputeAtMap {
       DoubleBufferLoopStage double_buffer_loop_stage =
           DoubleBufferLoopStage::NotApplicable) const;
 
+  // Returns if expr_1 and expr_2 have exact mapped IterDomains in
+  // inputs/outputs (order matters) and if the expressions have matching
+  // parameters.
+  bool areExactExprs(Expr* expr_1, Expr* expr_2);
+
+  // Produce the disjoint set containing provided id with mapping mode.
+  const std::shared_ptr<VectorOfUniqueEntries<IterDomain*>>& disjointSetOf(
+      IterDomain* id,
+      IdMappingMode mode) const;
+
  private:
+  // Traverses through definitions of exact maps (unique_exact_definitions_) to
+  // input ID's from provided ID. Returns all the exact map concrete IDs of the
+  // exact sets that are inputs required to construct the exact concrete id of
+  // of_id.
+  VectorOfUniqueEntries<std::shared_ptr<VectorOfUniqueEntries<IterDomain*>>>
+  getInputDisjointSetsOf(IterDomain* of_id, bool stop_at_rfactor = true);
+
+  // Traverses through definitions of exact maps (unique_exact_definitions_) to
+  // all input ID's from provided exact_sets. Returns all the exact map concrete
+  // IDs of all the exact sets that on the path to and including the inputs
+  // required to construct the exact concrete id of of_id.
+  VectorOfUniqueEntries<std::shared_ptr<VectorOfUniqueEntries<IterDomain*>>>
+  getAllDisjointSetProducers(
+      const VectorOfUniqueEntries<
+          std::shared_ptr<VectorOfUniqueEntries<IterDomain*>>>& exact_sets);
+
+  // Traverses through uses of exact maps (unique_exact_uses_) to
+  // all input ID's from provided exact_sets. Returns all the exact map concrete
+  // IDs of all the exact sets that on the path to and including the inputs
+  // required to construct the exact concrete id of of_id.
+  VectorOfUniqueEntries<std::shared_ptr<VectorOfUniqueEntries<IterDomain*>>>
+  getAllDisjointSetConsumers(
+      const VectorOfUniqueEntries<
+          std::shared_ptr<VectorOfUniqueEntries<IterDomain*>>>& exact_sets);
+
   // Build id_graph_
   void build(Fusion* fusion);
 
@@ -191,14 +289,14 @@ class TORCH_CUDA_CU_API ComputeAtMap {
   IterDomain* computeConcreteId(IterDomain* id, IdMappingMode mode);
   void buildConcreteIds();
 
-  // Produce the disjoint set containing provided id with mapping mode.
-  const std::shared_ptr<VectorOfUniqueEntries<IterDomain*>>& disjointSetOf(
-      IterDomain* id,
-      IdMappingMode mode) const;
+  // Relies on concrete_id_cache_, buildConcreteIds() must be run before this.
+  void buildUniqueExactExprMaps();
 
   // Should be built once and never modified again.
-  const IterDomainGraph id_graph_;
-  TrivialReductionInfo trivial_reduction_info_;
+  IterDomainGraph id_graph_;
+
+  // Used specifically for concrete ID computation
+  ConcretizedBroadcastDomains concretized_bcasts_;
 
   // Prevent needing to recompute concrete_id's in compute at map.
   // VectorOfUniqueEntries is unique across mapping modes, so don't need to use
@@ -209,6 +307,23 @@ class TORCH_CUDA_CU_API ComputeAtMap {
       std::shared_ptr<VectorOfUniqueEntries<IterDomain*>>,
       IterDomain*>
       concrete_id_cache_;
+
+  // Unique expressions operating on exact disjoint set. For each IterDomain in
+  // each exact disjoint set will log its definition in the std::vector<Expr*>.
+  // If another expression is already in the set where inputs and outputs
+  // exactly match with the expression to add along with the other parameters of
+  // the transformation (like split's factor, or swizzles types) then the
+  // expression will not be added as it would be an "duplicate" transformation.
+  std::unordered_map<
+      std::shared_ptr<VectorOfUniqueEntries<IterDomain*>>,
+      std::vector<Expr*>>
+      unique_exact_definitions_;
+
+  // Same as unique_exact_definitions_ but for uses instead of definitions
+  std::unordered_map<
+      std::shared_ptr<VectorOfUniqueEntries<IterDomain*>>,
+      std::vector<Expr*>>
+      unique_exact_uses_;
 
   //! Allocated Loop index variable through the CA map.
   //!   only valid for disjoint sets on the loop ca map.
