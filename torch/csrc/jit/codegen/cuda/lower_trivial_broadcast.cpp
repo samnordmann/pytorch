@@ -1,6 +1,5 @@
 #include <torch/csrc/jit/codegen/cuda/ir_utils.h>
 #include <torch/csrc/jit/codegen/cuda/iter_visitor.h>
-#include <torch/csrc/jit/codegen/cuda/lower2device.h>
 #include <torch/csrc/jit/codegen/cuda/root_domain_map.h>
 
 #include <torch/csrc/jit/codegen/cuda/lower_trivial_broadcast.h>
@@ -10,12 +9,13 @@ namespace jit {
 namespace fuser {
 namespace cuda {
 
-void ConcretizedBroadcastDomains::build(Fusion* fusion) {
+ConcretizedBroadcastDomains::ConcretizedBroadcastDomains(Fusion* fusion) {
   exact_map_ = std::make_unique<ExactRootDomainMap>(fusion);
 
   // Initialize the origin map with input broadcast domains
+  auto inputs = fusion->inputsAndCreated();
   for (const auto fusion_input_tv :
-       ir_utils::filterByType<TensorView>(fusion->inputs())) {
+       ir_utils::filterByType<TensorView>(inputs)) {
     for (auto root_id : fusion_input_tv->getRootDomain()) {
       if (root_id->isBroadcast()) {
         broadcast_origin_map_.emplace(
@@ -27,19 +27,25 @@ void ConcretizedBroadcastDomains::build(Fusion* fusion) {
 }
 
 bool ConcretizedBroadcastDomains::isConcretized(IterDomain* id) const {
-  auto it = broadcast_to_concrete_map_.find(id);
-  return it != broadcast_to_concrete_map_.end();
+  return allConcretizedDomains(id).size() >= 1;
 }
 
 bool ConcretizedBroadcastDomains::isUniquelyConcretized(IterDomain* id) const {
-  auto it = broadcast_to_concrete_map_.find(id);
-  return it != broadcast_to_concrete_map_.end() && it->second.size() == 1;
+  return allConcretizedDomains(id).size() == 1;
 }
 
 bool ConcretizedBroadcastDomains::maybeNonUniquelyConcretized(
     IterDomain* id) const {
+  return allConcretizedDomains(id).size() > 1;
+}
+
+std::unordered_set<IterDomain*> ConcretizedBroadcastDomains::
+    allConcretizedDomains(IterDomain* id) const {
   auto it = broadcast_to_concrete_map_.find(id);
-  return it != broadcast_to_concrete_map_.end() && it->second.size() > 1;
+  if (it != broadcast_to_concrete_map_.end()) {
+    return it->second;
+  }
+  return {};
 }
 
 void ConcretizedBroadcastDomains::handle(BroadcastOp* bop) {

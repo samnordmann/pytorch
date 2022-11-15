@@ -131,10 +131,6 @@ class WarSyncInserter : private kir::ExprMutator {
   //! Insert Sync nodes at the end of a given for-loop when a WAR
   //! hazard may happen.
   WarSyncInserter(const std::vector<Expr*>& exprs) {
-    auto& lower_alloc_info_map = GpuLower::current()->localAllocationInfoMap();
-    for (const auto& entry : lower_alloc_info_map) {
-      alloc_map_.insert(entry.first);
-    }
     kir::ExprMutator::traverseAndInsert(exprs);
   }
 
@@ -196,6 +192,10 @@ class WarSyncInserter : private kir::ExprMutator {
     return false;
   }
 
+  void handle(kir::Allocate* allocate) final {
+    alloc_map_.insert(allocate);
+  }
+
   void handle(Expr* expr) final {
     // If not a tensor view expression continue with dispatch
     if (!ir_utils::isTvOp(expr)) {
@@ -207,7 +207,7 @@ class WarSyncInserter : private kir::ExprMutator {
     auto out_tvs = ir_utils::filterByType<TensorView>(expr->outputs());
     for (auto out_tv : out_tvs) {
       if (out_tv->getMemoryType() != MemoryType::Shared ||
-          GpuLower::current()->syncMap().needsRawSync(out_tv).none()) {
+          GpuLower::current()->syncMap()->needsRawSync(out_tv).none()) {
         continue;
       }
 
@@ -225,7 +225,7 @@ class WarSyncInserter : private kir::ExprMutator {
     auto inp_tvs = ir_utils::filterByType<TensorView>(expr->inputs());
     for (auto inp_tv : inp_tvs) {
       if (inp_tv->getMemoryType() != MemoryType::Shared ||
-          GpuLower::current()->syncMap().needsRawSync(inp_tv).none()) {
+          GpuLower::current()->syncMap()->needsRawSync(inp_tv).none()) {
         continue;
       }
 
@@ -293,7 +293,7 @@ class WarSyncInserter : private kir::ExprMutator {
     auto maybe_aliased_tv = alloc_map_.getRealBuffer(tv);
     auto alloc_it = smem_allocations_.find(maybe_aliased_tv);
     auto ca_loop =
-        loop_utils::getAllocInformation(tv, for_loops_).init_for_loop;
+        lower_utils::getAllocInformation(tv, for_loops_).init_for_loop;
     if (alloc_it == smem_allocations_.end()) {
       WarMemoryInfo mem_info;
       mem_info.ca_loop = ca_loop;
@@ -486,7 +486,7 @@ class ReadAfterWriteSyncs : public kir::ExprMutator {
       Expr* sync_expr = nullptr;
       kir::Allocate* maybe_alloc = nullptr;
       if (sync_bitmap.hasBID()) {
-        maybe_alloc = ir_utils::allocGlobalBufferForGridComm(
+        maybe_alloc = lower_utils::allocGlobalBufferForGridComm(
             getGridSyncBufferSize(sync_bitmap), DataType::Int, true);
         sync_expr = IrBuilder::create<kir::GridSync>(
             sync_bitmap, maybe_alloc->buffer());
@@ -609,7 +609,7 @@ class ReadAfterWriteSyncs : public kir::ExprMutator {
     std::unordered_set<Expr*> last_writes;
     for (auto tv : ir_utils::filterByType<TensorView>(tvs)) {
       if (check_sync_map &&
-          GpuLower::current()->syncMap().needsRawSync(tv).none()) {
+          GpuLower::current()->syncMap()->needsRawSync(tv).none()) {
         continue;
       }
       if (tv->getMemoryType() != MemoryType::Shared) {
@@ -628,7 +628,7 @@ class ReadAfterWriteSyncs : public kir::ExprMutator {
       const std::vector<Val*>& tvs) const {
     std::unordered_set<Expr*> last_writes;
     for (auto tv : ir_utils::filterByType<TensorView>(tvs)) {
-      if (GpuLower::current()->syncMap().needsRawSync(tv).none()) {
+      if (GpuLower::current()->syncMap()->needsRawSync(tv).none()) {
         continue;
       }
       auto it = gmem.find(tv);
@@ -664,7 +664,7 @@ class ReadAfterWriteSyncs : public kir::ExprMutator {
         ParallelTypeBitmap bitmap;
         for (auto entry : gmem) {
           TORCH_INTERNAL_ASSERT(entry.first->isA<TensorView>());
-          auto sync_bits = GpuLower::current()->syncMap().needsRawSync(
+          auto sync_bits = GpuLower::current()->syncMap()->needsRawSync(
               entry.first->as<TensorView>());
           bitmap |= sync_bits;
         }
@@ -710,7 +710,7 @@ class ReadAfterWriteSyncs : public kir::ExprMutator {
           //  require a RAW block sync.
           if (GpuLower::current()
                   ->syncMap()
-                  .needsRawSync(it.first->as<TensorView>())
+                  ->needsRawSync(it.first->as<TensorView>())
                   .hasTID()) {
             smem_writes.insert(it.second);
           }
@@ -724,7 +724,7 @@ class ReadAfterWriteSyncs : public kir::ExprMutator {
         // here, except for the initial load part, which is taken care
         // separately by DoubleBufferInserter.
         if (tv->getMemoryType() == MemoryType::Shared &&
-            !tv->isDoubleBuffered()) {
+            !(tv->isDoubleBuffered() || tv->isCircularBuffered())) {
           smem[tv] = expr;
 
           // only keep track of async writes in smem_async

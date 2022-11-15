@@ -17,6 +17,12 @@ namespace jit {
 namespace fuser {
 namespace cuda {
 
+namespace {
+
+using GroupSet = VectorOfUniqueEntries<SegmentedGroup*>;
+
+} // namespace
+
 std::vector<SegmentedGroup::NeighborGroup> SegmentedGroup::getNeighborGroups() {
   std::vector<NeighborGroup> neighbors;
   for (auto inp : producer_edges) {
@@ -76,7 +82,7 @@ std::vector<SegmentedGroup::NeighborGroup> SegmentedGroup::
     return {};
   }
 
-  std::vector<bool> can_merge(true, neighbors.size());
+  std::vector<bool> can_merge(neighbors.size(), true);
 
   // Find neighbors with a level that is only 1 differant than this groups level
   for (const auto i : c10::irange(neighbors.size())) {
@@ -156,16 +162,16 @@ void insertUniquePredicated(
     std::vector<Val*>& v,
     const std::vector<SegmentedEdge*>& e,
     PREDICATE pred) {
-  std::unordered_set<Val*> to_add;
-  std::transform(
-      e.cbegin(),
-      e.cend(),
-      std::inserter(to_add, to_add.end()),
-      [](SegmentedEdge* se) { return se->val; });
+  VectorOfUniqueEntries<Val*> to_add;
+  for (auto edge : e) {
+    to_add.pushBack(edge->val);
+  }
+
   std::copy_if(
-      to_add.begin(), to_add.end(), std::back_inserter(v), [pred](Val* val) {
-        return pred(val);
-      });
+      to_add.vector().begin(),
+      to_add.vector().end(),
+      std::back_inserter(v),
+      [pred](Val* val) { return pred(val); });
 }
 
 void SegmentedGroup::finalize() {
@@ -692,7 +698,8 @@ TensorView* castIntermediateValueInCompleteFusion(
     // Create the actual domain and tv.
     return IrBuilder::create<TensorView>(
         IrBuilder::create<TensorDomain>(
-            new_root_domain, std::vector<bool>(new_root_domain.size(), true)),
+            new_root_domain,
+            TensorDomain::getContiguousContiguity(new_root_domain)),
         data_type);
   };
 
@@ -812,7 +819,6 @@ void SegmentedFusion::finalize() {
 //!        currently O(n^2). O(nlogn) would be a reasonable
 //!        goal to achieve.
 class GroupDependencyAnalysis : public NonCopyable, public SegmenterAnalysis {
-  using GroupSet = std::unordered_set<SegmentedGroup*>;
   using GroupSetOwningPtr = std::unique_ptr<GroupSet>;
   using DependencyMap = std::unordered_map<SegmentedGroup*, GroupSetOwningPtr>;
 
@@ -830,7 +836,7 @@ class GroupDependencyAnalysis : public NonCopyable, public SegmenterAnalysis {
       const std::vector<SegmentedGroup*>& groups_to_check) {
     auto& producers_of_group = getAllKnownProducersSet(group);
     for (const auto& potential_producer : groups_to_check) {
-      if (producers_of_group->count(potential_producer)) {
+      if (producers_of_group->has(potential_producer)) {
         return true;
       }
     }
@@ -842,7 +848,7 @@ class GroupDependencyAnalysis : public NonCopyable, public SegmenterAnalysis {
     if (it == known_producers_of_.end()) {
       return false;
     }
-    return it->second->count(b);
+    return it->second->has(b);
   }
 
   bool isProducerOf(SegmentedGroup* a, SegmentedGroup* b) {
@@ -873,18 +879,14 @@ class GroupDependencyAnalysis : public NonCopyable, public SegmenterAnalysis {
     GroupSet values_between;
     auto& all_producers_of_consumer = known_producers_of_.at(consumer);
     TORCH_INTERNAL_ASSERT(
-        all_producers_of_consumer->count(producer),
+        all_producers_of_consumer->has(producer),
         "Fusion segment: Trying to compute path between two nodes that are not producer-consumer pairs");
 
-    std::copy_if(
-        all_producers_of_consumer->begin(),
-        all_producers_of_consumer->end(),
-        std::inserter(values_between, values_between.end()),
-        [this, producer](SegmentedGroup* producer_of_consumer) {
-          // Checks if producer is on the producer path of this intermediate
-          // node
-          return known_producers_of_.at(producer_of_consumer)->count(producer);
-        });
+    for (auto producer_of_consumer : *all_producers_of_consumer) {
+      if (known_producers_of_.at(producer_of_consumer)->has(producer)) {
+        values_between.pushBack(producer_of_consumer);
+      }
+    }
 
     return values_between;
   }
@@ -893,7 +895,7 @@ class GroupDependencyAnalysis : public NonCopyable, public SegmenterAnalysis {
   //!  used for generating assertions after transforms
   bool isproducerMapDAG() const {
     for (auto& it : known_producers_of_) {
-      if (it.second->count(it.first)) {
+      if (it.second->has(it.first)) {
         return false;
       }
     }
@@ -910,7 +912,7 @@ class GroupDependencyAnalysis : public NonCopyable, public SegmenterAnalysis {
   void addConsumersToWorkList(SegmentedGroup* producer, GroupSet& to_visit) {
     for (auto e : producer->consumer_edges) {
       // A consumer wouldn't have been worked before any of its producer
-      to_visit.insert(e->to);
+      to_visit.pushBack(e->to);
     }
   }
 
@@ -923,7 +925,7 @@ class GroupDependencyAnalysis : public NonCopyable, public SegmenterAnalysis {
       SegmentedGroup* from) {
     auto& producer_set_to_merge = *getAllKnownProducersSet(from);
     for (auto group : producer_set_to_merge) {
-      getAllKnownProducersSet(into)->insert(group);
+      getAllKnownProducersSet(into)->pushBack(group);
     }
   }
 
@@ -944,8 +946,8 @@ class GroupDependencyAnalysis : public NonCopyable, public SegmenterAnalysis {
 
     GroupSet intersection;
     for (auto group : smaller_group_set) {
-      if (bigger_group_set.count(group)) {
-        intersection.insert(group);
+      if (bigger_group_set.has(group)) {
+        intersection.pushBack(group);
       }
     }
     return intersection;
@@ -957,7 +959,7 @@ class GroupDependencyAnalysis : public NonCopyable, public SegmenterAnalysis {
 };
 
 //! Finds the common producers of given set of groups
-GroupDependencyAnalysis::GroupSet GroupDependencyAnalysis::getCommonProducersOf(
+GroupSet GroupDependencyAnalysis::getCommonProducersOf(
     std::vector<SegmentedGroup*> groups) {
   if (groups.empty()) {
     return {};
@@ -1007,9 +1009,9 @@ void GroupDependencyAnalysis::mergeGroups(
   // update producer maps of other groups
   for (auto& it : known_producers_of_) {
     // for all groups that are produced by either a or b
-    if (it.second->count(a) || it.second->count(b)) {
+    if (it.second->has(a) || it.second->has(b)) {
       // insert ab as the new producer
-      it.second->insert(ab);
+      it.second->pushBack(ab);
       // all producers of both a and b are now producers of `it`
       mergeAllKnownProducersIntoFrom(it.first, ab);
     }
@@ -1055,7 +1057,7 @@ void GroupDependencyAnalysis::mergeGroups(
         it.second->erase(merged_producer);
       }
       // insert the new group as producer
-      it.second->insert(merged);
+      it.second->pushBack(merged);
     }
   }
 }
@@ -1069,11 +1071,11 @@ void GroupDependencyAnalysis::computeAllProducers() {
 
   // Collect source nodes, with no producers we are guaranteed
   //  a source node on a DAG
-  std::copy_if(
-      segmented_fusion_->cgroups().begin(),
-      segmented_fusion_->cgroups().end(),
-      std::inserter(visited, visited.end()),
-      [](SegmentedGroup* group) { return group->producer_edges.empty(); });
+  for (auto group : segmented_fusion_->cgroups()) {
+    if (group->producer_edges.empty()) {
+      visited.pushBack(group);
+    }
+  }
 
   // visited now only contain source nodes
   //  they can go backward to nowhere
@@ -1087,20 +1089,18 @@ void GroupDependencyAnalysis::computeAllProducers() {
       if (std::all_of(
               visiting_group->producer_edges.begin(),
               visiting_group->producer_edges.end(),
-              [&visited](SegmentedEdge* e) {
-                return visited.count(e->from);
-              })) {
+              [&visited](SegmentedEdge* e) { return visited.has(e->from); })) {
         // filter multi-edges
         GroupSet producers_of_visiting_group;
         for (auto edge : visiting_group->producer_edges) {
-          producers_of_visiting_group.insert(edge->from);
+          producers_of_visiting_group.pushBack(edge->from);
         }
 
         // populate all possible paths
         // from producer backward, including
         // the producer
         for (auto producer : producers_of_visiting_group) {
-          getAllKnownProducersSet(visiting_group)->insert(producer);
+          getAllKnownProducersSet(visiting_group)->pushBack(producer);
           mergeAllKnownProducersIntoFrom(visiting_group, producer);
         }
         to_update = visiting_group;
@@ -1110,7 +1110,7 @@ void GroupDependencyAnalysis::computeAllProducers() {
     if (to_update) {
       addConsumersToWorkList(to_update, to_visit);
       to_visit.erase(to_update);
-      visited.insert(to_update);
+      visited.pushBack(to_update);
     } else {
       TORCH_INTERNAL_ASSERT(false, "unreachable, original graph not a DAG");
     }
@@ -1724,7 +1724,7 @@ class TranslateApplicableWelford {
   //!  returns true if any welford has been translated
   static bool run(
       SegmentedFusion* segmented_fusion,
-      const at::ArrayRef<IValue>& runtime_inputs) {
+      const KernelArgumentHolder& runtime_inputs) {
     TranslateApplicableWelford translate_welford(
         segmented_fusion, runtime_inputs);
     return translate_welford.translated_any_welford_;
@@ -1732,7 +1732,7 @@ class TranslateApplicableWelford {
 
   //! Try translation on complete fusion,
   //!  returns true if any welford has been translated
-  static bool run(Fusion* fusion, const at::ArrayRef<IValue>& runtime_inputs) {
+  static bool run(Fusion* fusion, const KernelArgumentHolder& runtime_inputs) {
     TranslateApplicableWelford translate_welford(fusion, runtime_inputs);
     return translate_welford.translated_any_welford_;
   }
@@ -1740,11 +1740,11 @@ class TranslateApplicableWelford {
  private:
   explicit TranslateApplicableWelford(
       SegmentedFusion* segmented_fusion,
-      const at::ArrayRef<IValue>& runtime_inputs);
+      const KernelArgumentHolder& runtime_inputs);
 
   explicit TranslateApplicableWelford(
       Fusion* fusion,
-      const at::ArrayRef<IValue>& runtime_inputs);
+      const KernelArgumentHolder& runtime_inputs);
 
   //! Given vector of welford ops from the same fusion,
   //!  checks if translating all of them result in a
@@ -1776,7 +1776,7 @@ class TranslateApplicableWelford {
   bool translated_any_welford_ = false;
 
   //! a reference to global fusion runtime inputs
-  const at::ArrayRef<IValue>& runtime_inputs_;
+  const KernelArgumentHolder& runtime_inputs_;
 
   //! For translation within group only,
   //!  group boundary at test copy
@@ -1787,7 +1787,7 @@ class TranslateApplicableWelford {
 
 TranslateApplicableWelford::TranslateApplicableWelford(
     Fusion* fusion,
-    const at::ArrayRef<IValue>& runtime_inputs)
+    const KernelArgumentHolder& runtime_inputs)
     : runtime_inputs_(runtime_inputs) {
   auto exprs = fusion->exprs();
   std::vector<WelfordOp*> orignal_welfords(
@@ -1804,7 +1804,7 @@ TranslateApplicableWelford::TranslateApplicableWelford(
 
 TranslateApplicableWelford::TranslateApplicableWelford(
     SegmentedFusion* segmented_fusion,
-    const at::ArrayRef<IValue>& runtime_inputs)
+    const KernelArgumentHolder& runtime_inputs)
     : runtime_inputs_(runtime_inputs) {
   std::vector<SegmentedGroup*> translated_groups;
   std::vector<WelfordOp*> welford_to_translate;
@@ -2048,7 +2048,7 @@ void TranslateApplicableWelford::translateSingleWelford(WelfordOp* welford) {
 
 bool SegmentCandidateFinder::TranslateWelfordInFusion(
     Fusion* fusion,
-    const at::ArrayRef<IValue>& runtime_inputs) {
+    const KernelArgumentHolder& runtime_inputs) {
   return TranslateApplicableWelford::run(fusion, runtime_inputs);
 }
 
@@ -2061,7 +2061,6 @@ bool SegmentCandidateFinder::TranslateWelfordInFusion(
 //!   This pass tries to merge nodes with the same reduction type based
 //!   on the graph structure.
 class CombineReductions {
-  using GroupSet = std::unordered_set<SegmentedGroup*>;
   using GroupVec = std::vector<SegmentedGroup*>;
   class ReductionSignature;
 
@@ -2078,15 +2077,10 @@ class CombineReductions {
 
     // Collect segmented groups with reductions in them,
     //  Assuming running before any merge happened, so
-    //  should see exactly one non-trivial reduction in each group
+    //  should see exactly one reduction in each group
     for (auto group : segment_candidate_finder_->groups()) {
       if (auto rop_signature =
               ReductionSignature::makeReductionSignature(group)) {
-        // Ignore pure squeeze operations in this analysis
-        if (!rop_signature->hasNonTrivialReduction()) {
-          continue;
-        }
-
         groups_with_reductions_.push_back(group);
         // Check if this reduction signature is one that we have seen before
         auto signature_match_it = std::find_if(
@@ -2241,7 +2235,7 @@ class CombineReductions {
             groups_with_reductions_.begin(),
             groups_with_reductions_.end(),
             [&all_groups_to_merge](SegmentedGroup* group) {
-              return all_groups_to_merge.count(group);
+              return all_groups_to_merge.has(group);
             }),
         groups_with_reductions_.end());
 
@@ -2375,7 +2369,7 @@ class CombineReductions {
                     groups_with_reductions_.begin(),
                     groups_with_reductions_.end(),
                     [&groups_to_merge_set](SegmentedGroup* group) {
-                      return groups_to_merge_set.count(group);
+                      return groups_to_merge_set.has(group);
                     }),
                 groups_with_reductions_.end());
 
@@ -2415,8 +2409,8 @@ class CombineReductions {
                    maybe_consumer, maybe_producer)) {
       auto groups_to_check =
           dependency_analysis->valuesBetween(maybe_producer, maybe_consumer);
-      groups_to_check.insert(maybe_producer);
-      groups_to_check.insert(maybe_consumer);
+      groups_to_check.pushBack(maybe_producer);
+      groups_to_check.pushBack(maybe_consumer);
 
       // Check that either no group has a reduction or all groups have the same
       // reduction signature
@@ -2429,13 +2423,13 @@ class CombineReductions {
         //   output edge does not generate much saving of global memory access
         //   we want to postpone merging these edges till the very final pass
         for (auto producer_edge_of_group : group->producer_edges) {
-          if (groups_to_check.count(producer_edge_of_group->from) &&
+          if (groups_to_check.has(producer_edge_of_group->from) &&
               producer_edge_of_group->val->isFusionOutput()) {
             return {};
           }
         }
         for (auto consumer_edge_of_group : group->consumer_edges) {
-          if (groups_to_check.count(consumer_edge_of_group->to) &&
+          if (groups_to_check.has(consumer_edge_of_group->to) &&
               consumer_edge_of_group->val->isFusionOutput()) {
             return {};
           }
@@ -2478,8 +2472,7 @@ class CombineReductions {
       }
 
       if (root_domain_size_ != reduction_signature->root_domain_size_ ||
-          has_nontrivial_reduction_ !=
-              reduction_signature->has_nontrivial_reduction_ ||
+          has_reduction_ != reduction_signature->has_reduction_ ||
           reduction_axes_.size() !=
               reduction_signature->reduction_axes_.size()) {
         return false;
@@ -2498,8 +2491,8 @@ class CombineReductions {
       return sameAs(&reduction_signature);
     }
 
-    bool hasNonTrivialReduction() const {
-      return has_nontrivial_reduction_;
+    bool hasReduction() const {
+      return has_reduction_;
     }
 
     static std::unique_ptr<ReductionSignature> makeReductionSignature(
@@ -2518,8 +2511,8 @@ class CombineReductions {
 
         if (new_signature != nullptr) {
           TORCH_INTERNAL_ASSERT(
-              signature == nullptr || !signature->has_nontrivial_reduction_ ||
-                  !new_signature->has_nontrivial_reduction_ ||
+              signature == nullptr || !signature->has_reduction_ ||
+                  !new_signature->has_reduction_ ||
                   signature->sameAs(new_signature.get()),
               "Conflicting signature found in this group");
           signature = std::move(new_signature);
@@ -2531,29 +2524,14 @@ class CombineReductions {
     template <typename REDUCTION = ReductionOp>
     ReductionSignature(REDUCTION* rop) {
       auto out_tv = rop->out()->template as<TensorView>();
-      has_nontrivial_reduction_ = out_tv->hasReduction();
       TORCH_INTERNAL_ASSERT(out_tv != nullptr);
+      has_reduction_ = out_tv->hasReduction();
       auto& root_domain = out_tv->getRootDomain();
       root_domain_size_ = root_domain.size();
 
-      // Trivial reduction i.e. squeeze is tricky here:
-      //  this pass doesn't want to touch any pure squeeze, i.e.:
-      //    T0 [R(1), I(i0), I(i1)]
-      //  meanwhile, for two reductions having
-      //  squeezes, we do require they have squeeze at the
-      //  same position so that they can be easily root domain mapped
-      //  So T0 and T1 are the same signature,
-      //    T0 [R(1), R(i0), I(i1)]
-      //    T1 [R(1), R(i0), I(i1)]
-      //  but T2 and T3 below are not
-      //    T0 [R(1), R(1), R(i0), I(i1)]
-      //    T1 [R(1), R(i0), I(i1)]
       for (const auto i : c10::irange(root_domain_size_)) {
         if (root_domain[i]->isReduction()) {
           reduction_axes_.push_back(i);
-        }
-        if (!root_domain[i]->isTrivialReduction()) {
-          has_nontrivial_reduction_ = true;
         }
       }
     }
@@ -2561,7 +2539,7 @@ class CombineReductions {
    private:
     size_t root_domain_size_ = 0;
     std::vector<int> reduction_axes_;
-    bool has_nontrivial_reduction_ = false;
+    bool has_reduction_ = false;
   };
 
   //! Keeps track of groups with reduction expressions,
@@ -2585,7 +2563,7 @@ bool CombineReductions::shouldRun(
   for (auto group : segment_candidate_finder->groups()) {
     if (auto reduction_signature =
             ReductionSignature::makeReductionSignature(group)) {
-      if (reduction_signature->hasNonTrivialReduction() &&
+      if (reduction_signature->hasReduction() &&
           std::any_of(
               known_reductions.begin(),
               known_reductions.end(),
@@ -2601,9 +2579,39 @@ bool CombineReductions::shouldRun(
   return false;
 }
 
-bool SegmentCandidateFinder::codeGenSupportedMerge(SegmentedEdge* edge) {
+namespace {
+
+//! Returns true if group1 and group2 are an immediate producer-consumer pair.
+bool areDirectlyConnected(SegmentedGroup* group1, SegmentedGroup* group2) {
+  // Check if group1 is a immediate consumer of group2
+  if (std::any_of(
+          group1->producer_edges.begin(),
+          group1->producer_edges.end(),
+          [group2](SegmentedEdge* edge) { return edge->from == group2; })) {
+    return true;
+  }
+
+  // Check if group1 is a immediate producer of group2
+  if (std::any_of(
+          group1->consumer_edges.begin(),
+          group1->consumer_edges.end(),
+          [group2](SegmentedEdge* edge) { return edge->to == group2; })) {
+    return true;
+  }
+
+  return false;
+}
+
+} // namespace
+
+bool SegmentCandidateFinder::codeGenSupportedMerge(
+    SegmentedGroup* group1,
+    SegmentedGroup* group2) {
+  TORCH_INTERNAL_ASSERT(
+      areDirectlyConnected(group1, group2),
+      "only support testing immediate producer-consumer groups");
   Fusion* fusion = segmented_fusion_->completeFusion();
-  auto h = tryMerge(fusion, runtime_info_, edge->from, edge->to);
+  auto h = tryMerge(fusion, runtime_info_, group1, group2);
   return h.has_value();
 }
 
@@ -2613,13 +2621,14 @@ ScheduleHeuristic SegmentCandidateFinder::deriveHeuristic(
     SegmentedGroup* group) {
   Fusion* fusion = segmented_fusion_->completeFusion();
   auto h = tryMerge(fusion, runtime_info_, group);
-  TORCH_INTERNAL_ASSERT(h.has_value());
+  TORCH_INTERNAL_ASSERT(
+      h.has_value(), "Can not find a scheduler to schedule fusion segment");
   return h.value();
 }
 
 SegmentCandidateFinder::SegmentCandidateFinder(
     std::unique_ptr<Fusion> fusion,
-    const at::ArrayRef<IValue>& inputs,
+    const KernelArgumentHolder& inputs,
     SegmentCandidateFinderOptions options)
     : options_(options),
       runtime_info_(fusion.get(), inputs, true),
@@ -2654,11 +2663,11 @@ void SegmentCandidateFinder::findSegments() {
 
   // Expressions to exclude from segmentation because they're just derived from
   // unary ops on inputs to the complete fusion
-  std::unordered_set<Expr*> excluded_inp_unary_exprs;
+  VectorOfUniqueEntries<Expr*> excluded_inp_unary_exprs;
 
   // "Terminating" outputs from the excluded input unary exprs, these will be
   // treated as complete fusion inputs.
-  std::unordered_set<Val*> forwarded_inputs;
+  VectorOfUniqueEntries<Val*> forwarded_inputs;
   {
     std::deque<Expr*> to_visit;
     for (auto inp : completeFusion()->inputs()) {
@@ -2678,8 +2687,8 @@ void SegmentCandidateFinder::findSegments() {
       }
 
       if (expr->output(0)->uses().size() > 1) {
-        excluded_inp_unary_exprs.emplace(expr);
-        forwarded_inputs.emplace(expr->output(0));
+        excluded_inp_unary_exprs.pushBack(expr);
+        forwarded_inputs.pushBack(expr->output(0));
         continue;
       }
 
@@ -2736,7 +2745,7 @@ void SegmentCandidateFinder::findSegments() {
       continue;
     }
 
-    if (excluded_inp_unary_exprs.count(expr)) {
+    if (excluded_inp_unary_exprs.has(expr)) {
       continue;
     }
 
@@ -2776,8 +2785,8 @@ void SegmentCandidateFinder::findSegments() {
     }
   }
 
-  auto reduction_ops = ir_utils::getReductionOps(
-      segmented_fusion_->completeFusion(), true /* ignore_trivial */);
+  auto reduction_ops =
+      ir_utils::getReductionOps(segmented_fusion_->completeFusion());
   auto welford_ops = ir_utils::filterByType<WelfordOp>(reduction_ops);
 
   if (options_.run_translate_welford &&
@@ -2830,7 +2839,7 @@ void SegmentCandidateFinder::findSegments() {
 
         auto candidate_it = candidates.begin();
         while (candidate_it != candidates.end() &&
-               !codeGenSupportedMerge(candidate_it->edge)) {
+               !codeGenSupportedMerge(group, candidate_it->group)) {
           candidate_it++;
         }
         if (candidate_it == candidates.end()) {
@@ -2899,7 +2908,7 @@ void SegmentCandidateFinder::finalMerge() {
       for (auto consumer : all_consumers_of_producer_group) {
         if (!producer_check->isConsumerOfAny(
                 consumer, all_consumers_of_producer_group) &&
-            codeGenSupportedMerge(consumer_edge_map.at(consumer))) {
+            codeGenSupportedMerge(producer_group, consumer)) {
           to_merge_.emplace_back(producer_group);
           to_merge_.emplace_back(consumer);
           producer_group->merged_ = true;
@@ -3103,7 +3112,7 @@ FusionKernelRuntime::SchedulerEntryPtr SegmentedFusion::
 }
 
 std::unique_ptr<FusionHeuristics> SegmentedFusion::makeInitialHeuristics(
-    const at::ArrayRef<IValue>& inputs) {
+    const KernelArgumentHolder& inputs) {
   auto ret = std::make_unique<FusionHeuristics>();
   SchedulerRuntimeInfo runtime_info(completeFusion(), inputs, true);
   for (auto g : groups()) {
@@ -3163,7 +3172,7 @@ class ForceHalfAnnotation : public IterVisitor {
                val->getDataType().value() == DataType::BFloat16);
         });
 
-    annotation.traverseFrom(fusion, fp16_outputs);
+    annotation.traverseTo(fusion, fp16_outputs);
     return annotation.force_fp16_tv_set_;
   }
 

@@ -131,24 +131,28 @@ class TORCH_CUDA_CU_API TransformReplay {
   static std::pair<TensorDomain*, unsigned int> replayPasC(
       const TensorView* producer,
       const TensorView* consumer,
-      int consumer_compute_at_axis);
+      int consumer_compute_at_axis,
+      bool replay_swizzle = false);
   static std::pair<TensorDomain*, unsigned int> replayPasC(
       const TensorView* producer,
       const TensorView* consumer,
       int consumer_compute_at_axis,
-      const RootDomainMap& root_map);
+      const RootDomainMap& root_map,
+      bool replay_swizzle = false);
 
   // Replay producer as consumer, returns {replayed_consumer_domain,
   // consumer_compute_at_axis}.
   static std::pair<TensorDomain*, unsigned int> replayCasP(
       const TensorView* consumer,
       const TensorView* producer,
-      int producer_compute_at_axis);
+      int producer_compute_at_axis,
+      bool replay_swizzle = false);
   static std::pair<TensorDomain*, unsigned int> replayCasP(
       const TensorView* consumer,
       const TensorView* producer,
       int producer_compute_at_axis,
-      const RootDomainMap& root_map);
+      const RootDomainMap& root_map,
+      bool replay_swizzle = false);
 
   // Self replay.
   static TensorDomain* fullSelfReplay(

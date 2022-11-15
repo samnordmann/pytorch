@@ -9,6 +9,7 @@
 #include <torch/csrc/jit/codegen/cuda/scheduler/debug_utils.h>
 #include <torch/csrc/jit/codegen/cuda/scheduler/pointwise.h>
 #include <torch/csrc/jit/codegen/cuda/scheduler/registry.h>
+#include <torch/csrc/jit/codegen/cuda/scheduler/transpose.h>
 #include <torch/csrc/jit/codegen/cuda/scheduler/utils.h>
 
 #include <limits>
@@ -122,8 +123,7 @@ class SchedulerTopologyChecker {
           for (auto entry : forward_p2c_root_map) {
             auto p_id = entry.first;
             auto c_id = entry.second;
-            if (p_id->isBroadcast() &&
-                (!c_id->isBroadcast() && !c_id->isTrivialReduction())) {
+            if (p_id->isBroadcast() && !c_id->isBroadcast()) {
               ids_to_resolve.emplace_back(std::make_pair(c_id, c_id));
             }
           }
@@ -239,8 +239,8 @@ class SchedulerTopologyChecker {
   static bool hasPostReductionBCast(Fusion* fusion) {
     auto all_vals = fusion->usedMathVals();
     for (auto tv : ir_utils::filterByType<TensorView>(all_vals)) {
-      // Welford can have 2 outputs, so do this on all found reduction tensor
-      // views
+      // Reductions can have multiple outputs, so do this on all found reduction
+      // tensor views
       if (tv->hasReduction() && !tv->isFusionInput()) {
         auto tv_chains = tvChains(DependencyCheck::getAllUseChains(tv));
         // Propagate forward from reduction through all uses of the reduction
@@ -262,8 +262,7 @@ class SchedulerTopologyChecker {
             for (auto entry : p2c_root_map) {
               auto p_id = entry.first;
               auto c_id = entry.second;
-              if (p_id->isBroadcast() &&
-                  (!c_id->isBroadcast() && !c_id->isTrivialReduction())) {
+              if (p_id->isBroadcast() && !c_id->isBroadcast()) {
                 return true;
               }
             }
@@ -287,8 +286,7 @@ class SchedulerTopologyChecker {
     bool fastest_dim_reduction = true;
     auto red_root_dom = reduction_tvs[0]->getRootDomain();
     for (size_t i = red_root_dom.size(); i > 0; i--) {
-      if (red_root_dom[i - 1]->isBroadcast() ||
-          red_root_dom[i - 1]->isTrivialReduction()) {
+      if (red_root_dom[i - 1]->isBroadcast()) {
         continue;
       } else if (red_root_dom[i - 1]->isReduction()) {
         fastest_dim_reduction = true;
@@ -301,18 +299,17 @@ class SchedulerTopologyChecker {
 
     // When checking post reduction vals, we need to make sure
     //  we are really checking paths starting from all outputs
-    //  of multi-output reductions, i.e. welford. The reduction_tv
-    //  vector is assumed to only have one of them.
+    //  of multi-output reductions, i.e. welford/grouped reduction. The
+    //  reduction_tv vector is assumed to only have one of them.
     std::unordered_set<Val*> reduction_tv_set(
         reduction_tvs.begin(), reduction_tvs.end());
 
     for (auto red : reduction_tvs) {
       if (red->definition()) {
-        if (auto wop = dynamic_cast<WelfordOp*>(red->definition())) {
-          for (auto wop_output : wop->outputs()) {
-            if (wop_output->isA<TensorView>()) {
-              reduction_tv_set.insert(wop_output);
-            }
+        if (ir_utils::isReductionOp(red->definition())) {
+          auto outs = red->definition()->outputs();
+          for (auto out_tv : ir_utils::filterByType<TensorView>(outs)) {
+            reduction_tv_set.insert(out_tv);
           }
         }
       }
@@ -358,6 +355,45 @@ class SchedulerTopologyChecker {
 
     return true;
   }
+
+  /* Returns if any non-trivial views are not before the reference. For example:
+   *     t0
+   *    /  \
+   *  view ref
+   *   |
+   *   t1
+   * This could be important as transform propagation from a reference backwards
+   * through a view should always work, but transform propagation form a
+   * reference forward through a view could interfere with the view transforms.
+   */
+  static bool hasViewNotBeforeRef(
+      Fusion* fusion,
+      std::vector<TensorView*> reference_tvs) {
+    std::vector<TensorView*> view_tvs;
+    auto view_ops = ir_utils::getViewOps(fusion);
+    for (auto view_op : view_ops) {
+      auto tv_outs = ir_utils::filterByType<TensorView>(view_op->outputs());
+      for (auto entry : tv_outs) {
+        view_tvs.push_back(entry);
+      }
+    }
+
+    if (view_tvs.empty()) {
+      return false;
+    }
+
+    // Terrible complexity, may be worth improving, but is a compile time
+    // check.
+    for (auto ref_tv : reference_tvs) {
+      for (auto view_tv : view_tvs) {
+        if (!DependencyCheck::isDependencyOf(view_tv, ref_tv)) {
+          return true;
+        }
+      }
+    }
+
+    return false;
+  }
 };
 
 bool isConnectedFusionGraph(Fusion* fusion) {
@@ -369,19 +405,24 @@ bool isConnectedFusionGraph(Fusion* fusion) {
   // A set of connected components on the fusion graph
   DisjointSets<Val*> component_sets;
 
+  TORCH_INTERNAL_ASSERT(
+      !fusion->outputs().empty(), "Fusion without output is not supported");
+  auto output0 = fusion->outputs()[0];
+  component_sets.initializeSet(output0);
+
   // Iterate through all used exprs
   for (auto expr : fusion->exprs()) {
     TORCH_INTERNAL_ASSERT(
-        !expr->inputs().empty(), "unknown expr with zero input");
+        !expr->outputs().empty(), "unknown expr with zero output");
 
     // Each expr maps all its inputs and
     //  outputs to the same component
-    auto input0 = expr->inputs()[0];
-    for (auto input : expr->inputs()) {
-      component_sets.mapEntries(input0, input);
+    auto output0 = expr->output(0);
+    for (auto input : ir_utils::filterByType<TensorView>(expr->inputs())) {
+      component_sets.mapEntries(output0, input);
     }
     for (auto output : expr->outputs()) {
-      component_sets.mapEntries(input0, output);
+      component_sets.mapEntries(output0, output);
     }
   }
 
@@ -394,7 +435,6 @@ bool isConnectedFusionGraph(Fusion* fusion) {
   //  If there is no independent compute flow
   // on this fusion graph, all outputs will be
   // equivalent/connected to the first output.
-  auto output0 = fusion->outputs()[0];
   for (auto output : fusion->outputs()) {
     if (!component_sets.strictAreMapped(output0, output)) {
       return false;
@@ -403,32 +443,319 @@ bool isConnectedFusionGraph(Fusion* fusion) {
   return true;
 }
 
-} // namespace
+// Returns if a fusion cannot transformed into a consistent format since we
+// can't transform forward through view operations, for exmaple:
+//
+// tv0[I0, I1, I2]
+// tv1[I0*I1, I2] = view(tv0)
+// tv2[I0, I1*I2] = view(tv0)
+//
+// If we start transform propagation at either tv1 or tv2, it would require
+// "replaying forward" through the other. If we started at tv1 we'd have to be
+// able to take tv2[I0, I1*I2] and transform it to [I0*I1, I2], however this
+// would "undo" the view transformation which we do not support today.
+//
+// Returns true if a scenario like above is found in the fusion.
+bool requiresForwardViewReplay(Fusion* fusion, ComputeAtMap& ca_map) {
+  // Track the uses of the rfactor domains in the fusion. If an rfactor domain
+  // is used in more than one way it means the above situation is being
+  // encountered.
+  //
+  // tv1 root: [I0rf, I1rf, I2] -> rfactor [I0*I1rf, I2]
+  // tv1 root: [I0, I1rf, I2rf] -> rfactor [I0, I1*I2rf]
+  //
+  // Here we can see I1rf is used in two view transformations, one to I0*I1rf,
+  // and the other to I1*I2rf.
 
-SchedulerRuntimeInfo::SchedulerRuntimeInfo(
-    Fusion* complete_fusion,
-    const at::ArrayRef<IValue>& inputs,
-    bool create_expr_evaluator)
-    : complete_fusion_(complete_fusion) {
-  TORCH_INTERNAL_ASSERT(
-      complete_fusion_->inputs().size() == inputs.size(),
-      "Invalid number of arguments passed in for provided fusion group.");
+  // Track the transformation each exact disjoint rfactor set is used in. If
+  // more than one is detected we can't support transforming the fusion into a
+  // consistent format.
+  std::unordered_map<std::shared_ptr<VectorOfUniqueEntries<IterDomain*>>, Expr*>
+      unique_exact_uses;
 
-  for (auto inp_i : c10::irange(inputs.size())) {
-    auto aten_inp = inputs[inp_i];
-    if (aten_inp.isTensor()) {
-      auto fusion_inp = complete_fusion_->inputs()[inp_i];
-      auto data_ptr = aten_inp.toTensor().data_ptr();
-      input_ptrs_[fusion_inp] = (size_t)data_ptr;
+  // Don't check compute uses directly, as IterDomain->uses() isn't protected
+  // from going outside the TensorViews between registered inputs and outputs of
+  // the fusion. If there are view operations defined in the fusion container
+  // (because of how segmentation works) but not between registered input and
+  // outputs, that could be picked up as inconsistent view transformations.
+  //
+  // It would be unlikely this would be picked up as a conflict as we check
+  // which definitions were registered in the compute at map for matching
+  // transformations. However, we may want to support scheduling after
+  // transformations which could map to those views not on the input->output
+  // path.
+
+  // Look through all definitions associated with producing rfactor outputs.
+  // Mark those as an active use of the rfactor, if two are detected, return
+  // true.
+  for (const auto& disjoint_set_shared_ptr :
+       ca_map.idGraph().exactNodes().disjointSets()) {
+    // Make sure there's at least one rfactor domain in the set, otherwise we
+    // don't need to check anything from this set.
+    if (!std::any_of(
+            disjoint_set_shared_ptr->vector().begin(),
+            disjoint_set_shared_ptr->vector().end(),
+            [](IterDomain* id) { return id->isRFactorProduct(); })) {
+      continue;
+    }
+
+    // Grab all the unique definitions detected to consume the iter domains in
+    // this set
+    auto unique_defs =
+        ca_map.uniqueExactDefinitions(disjoint_set_shared_ptr->back());
+
+    // Iterate through the all the rfactor iter domains
+    for (auto id_rfactor_product : disjoint_set_shared_ptr->vector()) {
+      if (!id_rfactor_product->isRFactorProduct()) {
+        continue;
+      }
+
+      // Grab the rfactor definition
+      auto rfactor_def = id_rfactor_product->definition();
+
+      if (rfactor_def == nullptr) {
+        // Guard segfault if there isn't a definition for this iter domain
+        continue;
+      }
+
+      // If one output of the expression is an rfactor ID all of them should be
+      auto def_outs =
+          ir_utils::filterByType<IterDomain>(rfactor_def->outputs());
+      TORCH_INTERNAL_ASSERT(
+          std::all_of(
+              def_outs.begin(),
+              def_outs.end(),
+              [](IterDomain* id) { return id->isRFactorProduct(); }),
+          "This function does not support outputs of transformations with mismatching rfactor flags. ",
+          "If one output is rfactor all should be rfactor.");
+
+      // If outputs are rfactor all the inputs should be as well. It doesn't
+      // make sense to have transforms on non-rfactor domains that produce
+      // rfactor domains.
+      auto def_inps = ir_utils::filterByType<IterDomain>(rfactor_def->inputs());
+      TORCH_INTERNAL_ASSERT(
+          std::all_of(
+              def_inps.begin(),
+              def_inps.end(),
+              [](IterDomain* id) { return id->isRFactorProduct(); }),
+          "Inputs producing an rfactor domain, should be marked as rfactor but found:\n  ",
+          rfactor_def->toString());
+
+      // Check which definition in the unique exact definition set this
+      // definition matches to:
+      for (auto unique_def : unique_defs) {
+        if (ca_map.areExactExprs(rfactor_def, unique_def)) {
+          // Check if we already have an expression that consumes an
+          // equivalent of any of the input rfactor domains. If so and it's
+          // not the already registered transformation, return true
+          for (auto inp : def_inps) {
+            auto inp_disjoint_set =
+                ca_map.disjointSetOf(inp, IdMappingMode::EXACT);
+            // Initialize the use entry for this set (if it doesn't already
+            // exist)
+            if (unique_exact_uses.find(inp_disjoint_set) ==
+                unique_exact_uses.end()) {
+              unique_exact_uses[inp_disjoint_set] = nullptr;
+            }
+
+            if (unique_exact_uses.at(inp_disjoint_set) == nullptr) {
+              // If expression is null pointer register this unique_def
+              unique_exact_uses[inp_disjoint_set] = unique_def;
+            } else if (!ca_map.areExactExprs(
+                           unique_exact_uses[inp_disjoint_set], unique_def)) {
+              // Two transformations that don't match on matching rfactor
+              // domains found, return true.
+              return true;
+            }
+          }
+          // Expression already mapped, stop trying to match expressions
+          break;
+        }
+      }
+    }
+  }
+  // No inconsistent rfactor uses found, we can safely transform this graph.
+  return false;
+}
+
+// Returns if view interferes with how we want to treat the reference, being at
+// least a 2D reduction schedule but maybe a 3D reduction schedule.
+bool reductionInterferingView(
+    Fusion* fusion,
+    const ComputeAtMap& ca_map,
+    TensorView* reduction_reference) {
+  // Make sure the view doesn't interfere with how we'll want to schedule
+  // it. If we might want to do a 3D scheduler make sure views are disjoint
+  // based on what the 3D scheduler's merges would be.
+
+  // Utility to take dimensions out of the vector that we've already
+  // processed or don't want to process.
+  auto remove_dims = [](const std::vector<IterDomain*>& dims,
+                        std::unordered_set<IterDomain*> to_remove) {
+    std::vector<IterDomain*> dims_removed;
+    std::copy_if(
+        dims.begin(),
+        dims.end(),
+        std::back_inserter(dims_removed),
+        [&](IterDomain* id) { return to_remove.find(id) == to_remove.end(); });
+    return dims_removed;
+  };
+
+  std::vector<IterDomain*> dims = reduction_reference->getMaybeRFactorDomain();
+
+  // The disjoint groups we need for this scheduler
+  std::vector<std::vector<IterDomain*>> groups;
+
+  // Do this three times as we could have a 3D scheduler at maximum
+  for (auto dimension : c10::irange(3)) {
+    // Tracker for this group
+    std::vector<IterDomain*> current_dims;
+
+    // Tracker of what we've already processed to remove from dims
+    std::unordered_set<IterDomain*> processed;
+
+    for (auto i : c10::irange(dims.size())) {
+      auto dim_i = dims.size() - i - 1;
+      if (dims[dim_i]->isReduction() != dims[dims.size() - 1]->isReduction()) {
+        if (dimension == 0) {
+          // First dimension must be contiguous merges
+          break;
+        } else {
+          // Other dimensions can be non contiguous merges
+          continue;
+        }
+      }
+      current_dims.push_back(dims[dim_i]);
+      processed.emplace(dims[dim_i]);
+    }
+
+    // Don't add empty group (would happen if it's a 2D scheduler not 3D)
+    if (current_dims.size() > 0) {
+      groups.push_back(current_dims);
+      dims = remove_dims(dims, processed);
     }
   }
 
-  expression_evaluator_ =
-      std::make_unique<ExpressionEvaluator>(complete_fusion_);
-  if (create_expr_evaluator) {
-    initializeExpressionEvaluator(inputs);
+  TORCH_INTERNAL_ASSERT(
+      dims.empty(), "Error processing ", dims, " in registry.cpp.");
+
+  // Make sure groups are disjoint based on view
+
+  auto disjoint_view_sets = scheduler_utils::disjointViewSets(fusion);
+  auto disjoint_set_information = scheduler_utils::getDisjointViewSetsOf(
+      fusion, reduction_reference, disjoint_view_sets);
+
+  // Convert id's in groups to disjoint_set_ids of disjoint_set_information
+  std::vector<std::vector<int>> disjoint_groups;
+
+  for (auto group : groups) {
+    std::vector<int> disjoint_id_sets;
+    for (auto id : group) {
+      auto find_it = std::find(
+          reduction_reference->getMaybeRFactorDomain().begin(),
+          reduction_reference->getMaybeRFactorDomain().end(),
+          id);
+      TORCH_INTERNAL_ASSERT(
+          find_it != reduction_reference->getMaybeRFactorDomain().end(),
+          "Issue with view analysis on reduction like schedule, with reference: ",
+          reduction_reference->toString());
+      auto rfactor_pos = std::distance(
+          reduction_reference->getMaybeRFactorDomain().begin(), find_it);
+      TORCH_INTERNAL_ASSERT(
+          rfactor_pos < disjoint_set_information.disjoint_set_ids.size(),
+          "Error computing disjoint group on the rfactor domain of ",
+          reduction_reference->toString());
+      disjoint_id_sets.push_back(
+          disjoint_set_information.disjoint_set_ids[rfactor_pos]);
+    }
+    disjoint_groups.push_back(disjoint_id_sets);
   }
-  collectIndexModeInfo(inputs);
+
+  // Make sure there's no intersection between the groups, otherwise view
+  // will interfere with the schedule. TODO: Make this better complexity,
+  // since it should be relatively small int vectors of a small total nDims,
+  // not too worried about it now.
+
+  for (auto first_dim_i : c10::irange(disjoint_groups.size())) {
+    for (auto second_dim_i = first_dim_i + 1;
+         second_dim_i < disjoint_groups.size();
+         ++second_dim_i) {
+      auto first_group = disjoint_groups[first_dim_i];
+      auto second_group = disjoint_groups[second_dim_i];
+      for (auto first_disjoint_id : first_group) {
+        for (auto second_disjoint_id : second_group) {
+          if (first_disjoint_id == second_disjoint_id) {
+            return true;
+          }
+        }
+      }
+    }
+  }
+  return false;
+}
+
+} // namespace
+
+void SchedulerRuntimeInfo::initialize(
+    const KernelArgumentHolder& args,
+    bool create_expr_evaluator) {
+  TORCH_INTERNAL_ASSERT(
+      complete_fusion_->inputs().size() == args.size(),
+      "Invalid number of arguments passed in for provided fusion group.");
+
+  for (auto inp_i : c10::irange(args.size())) {
+    auto kernel_arg = args[inp_i];
+    // Note: we are skipping CpuScalar tensor here
+    if (auto tensor_arg_abstract =
+            dynamic_cast<const TensorArgAbstract*>(kernel_arg)) {
+      auto fusion_inp = complete_fusion_->inputs()[inp_i];
+      auto data_ptr = tensor_arg_abstract->getPointer();
+      input_ptrs_[fusion_inp] = (size_t)data_ptr;
+
+      // find and push discontiguous stride
+      auto dtype_size = dataTypeSize(tensor_arg_abstract->getDataType());
+      input_discontig_strides_[fusion_inp] = {};
+      auto dims = tensor_arg_abstract->getRank();
+      auto expected_stride = 1;
+      for (auto dim = dims - 1; dim >= 0; dim--) {
+        auto size = tensor_arg_abstract->getSize(dim);
+        if (size <= 1) {
+          continue;
+        }
+        auto stride = tensor_arg_abstract->getStride(dim);
+        if (stride != expected_stride) {
+          input_discontig_strides_[fusion_inp].push_back(stride * dtype_size);
+          expected_stride = stride;
+        }
+        expected_stride *= size;
+      }
+    }
+  }
+
+  expression_evaluator_ = std::make_unique<ExpressionEvaluator>();
+  if (create_expr_evaluator) {
+    initializeExpressionEvaluator(args);
+  }
+  index_mode_ = args.getIndexMode();
+}
+
+SchedulerRuntimeInfo::SchedulerRuntimeInfo(
+    Fusion* complete_fusion,
+    const KernelArgumentHolder& args,
+    bool create_expr_evaluator)
+    : complete_fusion_(complete_fusion) {
+  initialize(args, create_expr_evaluator);
+}
+
+// TODO: remove this one
+SchedulerRuntimeInfo::SchedulerRuntimeInfo(
+    Fusion* complete_fusion,
+    const at::ArrayRef<at::IValue>& aten_inputs,
+    bool create_expr_evaluator)
+    : complete_fusion_(complete_fusion) {
+  KernelArgumentHolder args =
+      KernelArgumentHolder::createKernelArgumentHolder(aten_inputs);
+  initialize(args, create_expr_evaluator);
 }
 
 // TODO: Output tensors could have an alignment that is not 16 Bytes passed in
@@ -441,11 +768,11 @@ size_t SchedulerRuntimeInfo::ptrOf(TensorView* tv) {
 }
 
 void SchedulerRuntimeInfo::initializeExpressionEvaluator(
-    const at::ArrayRef<IValue>& inputs) {
+    const KernelArgumentHolder& args) {
   // TODO: refactor bindFusionInputs to better support this
   //  use case, i.e. support construct and bind input.
   *expression_evaluator_ =
-      executor_utils::bindFusionInputs(inputs, complete_fusion_);
+      executor_utils::bindFusionInputs(args, complete_fusion_);
 }
 
 size_t SchedulerRuntimeInfo::computeAlignmentSize(size_t ptr_address) {
@@ -467,6 +794,13 @@ size_t SchedulerRuntimeInfo::getAlignmentSize(TensorView* tv) {
   }
 
   auto alignment_size = SchedulerRuntimeInfo::computeAlignmentSize(ptrOf(tv));
+  auto strides_it = input_discontig_strides_.find(tv);
+  if (strides_it != input_discontig_strides_.end()) {
+    for (auto stride : strides_it->second) {
+      alignment_size = std::min(
+          alignment_size, SchedulerRuntimeInfo::computeAlignmentSize(stride));
+    }
+  }
   alignment_map_[tv] = alignment_size;
   return alignment_size;
 }
@@ -551,7 +885,7 @@ size_t SchedulerRuntimeInfo::getMaxVectorizableWidth(TensorView* tv) {
     }
 
     // Still contiguous
-    numel *= dim_size.value();
+    numel *= dim_size->as<int64_t>();
   }
 
   // Assuming intermediate tensors have friendly alignment, and
@@ -651,7 +985,7 @@ size_t SchedulerRuntimeInfo::getInnerDimVectorizableWidth(TensorView* tv) {
   auto maybe_inner_dimension_size =
       expression_evaluator_->evaluate(inner_most_dim->extent());
   TORCH_INTERNAL_ASSERT(maybe_inner_dimension_size.has_value());
-  size_t inner_dimension_size = maybe_inner_dimension_size.value();
+  size_t inner_dimension_size = maybe_inner_dimension_size->as<int64_t>();
 
   while (next_vector_size <= max_vector_size &&
          next_vector_size <= inner_dimension_size &&
@@ -666,54 +1000,6 @@ size_t SchedulerRuntimeInfo::getInnerDimVectorizableWidth(TensorView* tv) {
   return vector_size;
 }
 
-void SchedulerRuntimeInfo::collectIndexModeInfo(
-    const at::ArrayRef<at::IValue>& inputs) {
-  // TODO: Need to check the output sizes as well.
-
-  // Save 1 more bit besides the sign bit to be conservative
-  constexpr int64_t most_positive_int32_index =
-      std::numeric_limits<int>::max() / 2;
-  constexpr int64_t most_negative_int32_index =
-      std::numeric_limits<int>::min() / 2;
-
-  // Start by setting index mode to int32
-  index_mode_ = KernelIndexMode::INT32;
-
-  // Check all runtime inputs, and if any one of
-  //  the input's index exceeds max_int32 will
-  //  fall back to int64 indexing
-  for (auto ivalue_input : inputs) {
-    if (ivalue_input.isTensor()) {
-      auto tensor_input = ivalue_input.toTensor();
-      int64_t tensor_most_positive_index = 0;
-      int64_t tensor_most_negative_index = 0;
-      for (auto dim_i = 0; dim_i < tensor_input.ndimension(); dim_i++) {
-        // Ignore broadcast dimensions
-        if (tensor_input.size(dim_i) > 1) {
-          // accumulate based on the sign of stride
-          if (tensor_input.stride(dim_i) > 0) {
-            // Acuumulate positive stride
-            tensor_most_positive_index +=
-                (tensor_input.size(dim_i) - 1) * tensor_input.stride(dim_i);
-          } else {
-            // Acuumulate negative stride
-            tensor_most_negative_index +=
-                (tensor_input.size(dim_i) - 1) * tensor_input.stride(dim_i);
-          }
-        }
-      }
-
-      // Fall back to int64 if it can be either too positive
-      //  or too negative.
-      if (tensor_most_positive_index > most_positive_int32_index ||
-          tensor_most_negative_index < most_negative_int32_index) {
-        index_mode_ = KernelIndexMode::INT64;
-        return;
-      }
-    }
-  }
-}
-
 bool SchedulerEntry::sameAs(const SchedulerEntry* other) {
   if (heuristc_ != other->heuristc_) {
     return false;
@@ -721,18 +1007,7 @@ bool SchedulerEntry::sameAs(const SchedulerEntry* other) {
   if (index_mode_ != other->index_mode_) {
     return false;
   }
-  // Heuristic equal should imply has_reduction_param_ equal,
-  //  need to double check if it is the case before removing
-  //  the below one.
-  if (has_reduction_param_ != other->has_reduction_param_) {
-    return false;
-  }
-  if (has_reduction_param_) {
-    return rparams_ == other->rparams_;
-  } else {
-    return pparams_ == other->pparams_;
-  }
-  return true;
+  return params_->sameAs(other->params_);
 }
 
 namespace {
@@ -786,8 +1061,7 @@ static bool checkPatternEquivalence(
 // being broadcasted to one size multiple times or different sizes. This is a
 // hard to optimize problem and likely indicates we shouldn't be fusing.
 bool hasNonUniqueBcast(Fusion* fusion) {
-  ConcretizedBroadcastDomains concretize_info;
-  concretize_info.build(fusion);
+  ConcretizedBroadcastDomains concretize_info(fusion);
 
   for (auto tv : ir_utils::allTvs(fusion)) {
     for (auto id : tv->getRootDomain()) {
@@ -828,46 +1102,143 @@ bool hasNonUniqueBcast(Fusion* fusion) {
 //!        This function will be called when compiling a kernel. It should apply
 //!        scheduling to the given fusion
 
+//! NoOp scheduler represents the case where scheduler will
+//!  not do any scheduling operations and forward the un-scheduled
+//!  fusion directly to code generation and kernel compilation.
+//!
+//! Typical use case of this scheduler is to handle edge cases
+//!  such as where all tensors are size-1 or size-0.
+class NoOpScheduler : public SchedulerEntry {
+  //! Provides a dummy heuristic type to ensure
+  //!  unified interface on NoOp scheduler.
+  class NoOpHeuristic : public HeuristicParams {
+   public:
+    size_t hash() const override {
+      return 0;
+    }
+    std::shared_ptr<HeuristicParams> clone() const override {
+      return std::make_shared<NoOpHeuristic>();
+    }
+    bool sameAs(const std::shared_ptr<HeuristicParams>& other) const override {
+      auto other_casted = std::dynamic_pointer_cast<ReductionParams>(other);
+      return other_casted != nullptr;
+    };
+  };
+
+ public:
+  explicit NoOpScheduler(
+      Fusion* fusion,
+      SchedulerRuntimeInfo& runtime_info,
+      HeuristicSummary* data_cache = nullptr)
+      : SchedulerEntry(ScheduleHeuristic::NoOp) {
+    params_ = std::make_shared<NoOpHeuristic>();
+  }
+
+  //! Check if the no-op heuristics apply in given fusion
+  static bool canScheduleCompileTime(Fusion* fusion) {
+    if (fusion->isNoOp()) {
+      return true;
+    }
+    // Check there're no non-trivial reduction ops.
+    for (auto reduction : ir_utils::getReductionOps(fusion)) {
+      for (auto output :
+           ir_utils::filterByType<TensorView>(reduction->outputs())) {
+        auto concrete_dimension =
+            TensorDomain::noReductions(output->getRootDomain());
+        auto all_nonzero = std::none_of(
+            concrete_dimension.begin(),
+            concrete_dimension.end(),
+            [](IterDomain* id) { return id->extent()->isZeroInt(); });
+        if (all_nonzero) {
+          scheduler_debug_utils::canScheduleRejectReason(
+              ScheduleHeuristic::NoOp,
+              "reduction of non-zero elements is not supported");
+          return false;
+        }
+      }
+    }
+
+    // Check that all outputs are either broadcast or ignored reduction.
+    for (auto out_tv : ir_utils::filterByType<TensorView>(fusion->outputs())) {
+      auto concrete_dimension = TensorDomain::noReductions(
+          TensorDomain::noBroadcasts(out_tv->domain()->domain()));
+      if (!concrete_dimension.empty()) {
+        scheduler_debug_utils::canScheduleRejectReason(
+            ScheduleHeuristic::NoOp, "output has a concrete dimension");
+        return false;
+      }
+    }
+
+    // We have verified that all iterdomains on all output tv's are trivial
+    // reductions,
+    //  broadcasts or zero-sized. Therefore accepting this fusion for NoOp
+    //  scheduling.
+    return true;
+  }
+
+  static bool canScheduleRunTime(
+      Fusion* fusion,
+      SchedulerRuntimeInfo& runtime_info,
+      HeuristicSummary* data_cache = nullptr) {
+    // TODO:
+    //  Pipe through dynamic zero checks.
+    return true;
+  }
+
+  void schedule(Fusion* fusion) override {
+    // Schedule is no-op.
+    return;
+  }
+
+ private:
+  void computeHeuristics(
+      Fusion* fusion,
+      SchedulerRuntimeInfo& runtime_info,
+      HeuristicSummary* data_cache = nullptr) {
+    // Heuristics is no-op.
+    return;
+  }
+};
+
 class ReductionScheduler : public SchedulerEntry {
  public:
   explicit ReductionScheduler(
       Fusion* fusion,
       SchedulerRuntimeInfo& runtime_info,
       HeuristicSummary* data_cache = nullptr)
-      : SchedulerEntry(ScheduleHeuristic::Reduction, true) {
+      : SchedulerEntry(ScheduleHeuristic::Reduction) {
     computeHeuristics(fusion, runtime_info, data_cache);
   }
 
   //! Check if the reduction heuristics apply in given fusion
   static bool canScheduleCompileTime(Fusion* fusion) {
-    // Temporarily allow view in reduction scheduler
-    // TODO Add more testing before enabling
-    auto view_tvs = scheduler_utils::getViewTVs(fusion);
-    if (view_tvs.size() > 0) {
-      scheduler_debug_utils::canScheduleRejectReason(
-          ScheduleHeuristic::Reduction, "No support for view op");
-      return false;
-    }
-
-    // Needs at least one non-trivial reduction to consider.
-    if (ir_utils::getReductionOps(fusion, true /* ignore_trivial */).empty()) {
+    // Needs at least one reduction to consider.
+    if (ir_utils::getReductionOps(fusion).empty()) {
       scheduler_debug_utils::canScheduleRejectReason(
           ScheduleHeuristic::Reduction, "No reduction op to schedule");
       return false;
     }
 
-    auto reduction_tvs =
-        scheduler_utils::getReductionTvs(fusion, false /* ignore_trivial */);
+    // Check that inputs of all select ops are fusion inputs
+    for (auto select : ir_utils::getSelectOps(fusion)) {
+      if (!select->input(0)->isFusionInput()) {
+        scheduler_debug_utils::canScheduleRejectReason(
+            ScheduleHeuristic::Reduction,
+            "Inputs of SelectOp must be fusion input.");
+        return false;
+      }
+      if (select->input(0)->uses().size() > 1) {
+        scheduler_debug_utils::canScheduleRejectReason(
+            ScheduleHeuristic::Reduction,
+            "Inputs of SelectOp can only be used by SelectOp");
+        return false;
+      }
+    }
+
+    auto reduction_tvs = scheduler_utils::getReductionTvs(fusion);
 
     if (reduction_tvs.size() == 0) {
       // Use pointwise logic
-      return false;
-    }
-
-    if (findTransposeOps(fusion).size() > 0) {
-      // Use pointwise logic
-      scheduler_debug_utils::canScheduleRejectReason(
-          ScheduleHeuristic::Reduction, "No support for transpose op");
       return false;
     }
 
@@ -878,9 +1249,27 @@ class ReductionScheduler : public SchedulerEntry {
       return false;
     }
 
+    if (ir_utils::getViewOps(fusion).size() > 0) {
+      ComputeAtMap ca_map(fusion);
+      if (requiresForwardViewReplay(fusion, ca_map)) {
+        scheduler_debug_utils::canScheduleRejectReason(
+            ScheduleHeuristic::Reduction,
+            "Fusion requires view being reversible.");
+        return false;
+      }
+
+      // Reduction scheduler simply uses reduction_tvs[0] as the reference, if
+      // that changes, this needs to be changed.
+      if (reductionInterferingView(fusion, ca_map, reduction_tvs[0])) {
+        scheduler_debug_utils::canScheduleRejectReason(
+            ScheduleHeuristic::Reduction,
+            "View may interfere with reduction scheduling.");
+        return false;
+      }
+    }
+
     // Make sure reduction axes are consistent through the fusion
-    auto reduction_ops =
-        ir_utils::getReductionOps(fusion, false /* ignore_trivial */);
+    auto reduction_ops = ir_utils::getReductionOps(fusion);
     if (reduction_ops.size() > 1) {
       // Before examining the reduction axes want to quickly
       //   check the reductions have the same axis width
@@ -964,7 +1353,7 @@ class ReductionScheduler : public SchedulerEntry {
 
   void schedule(Fusion* fusion) override {
     FUSER_PERF_SCOPE("Schedule Single Reduction");
-    scheduleReduction(fusion, rparams());
+    scheduleReduction(fusion, reductionParams());
   }
 
  private:
@@ -972,9 +1361,109 @@ class ReductionScheduler : public SchedulerEntry {
       Fusion* fusion,
       SchedulerRuntimeInfo& runtime_info,
       HeuristicSummary* data_cache = nullptr) {
-    auto param = getReductionHeuristics(fusion, runtime_info, data_cache);
-    TORCH_INTERNAL_ASSERT(param.has_value());
-    rparams() = param.value();
+    params_ = getReductionHeuristics(fusion, runtime_info, data_cache);
+    TORCH_INTERNAL_ASSERT(params_ != nullptr);
+  }
+};
+
+class TransposeScheduler : public SchedulerEntry {
+ public:
+  explicit TransposeScheduler(
+      Fusion* fusion,
+      SchedulerRuntimeInfo& runtime_info,
+      HeuristicSummary* data_cache = nullptr)
+      : SchedulerEntry(ScheduleHeuristic::Transpose) {
+    computeHeuristics(fusion, runtime_info, data_cache);
+  }
+
+  static bool canScheduleCompileTime(Fusion* fusion) {
+    // Temporarily disallow view in transpose scheduler
+    // TODO Add more testing before enabling
+    auto view_tvs = scheduler_utils::getViewTVs(fusion);
+    if (view_tvs.size() > 0) {
+      scheduler_debug_utils::canScheduleRejectReason(
+          ScheduleHeuristic::Transpose, "No support for view op");
+      return false;
+    }
+
+    // Check that inputs of all select ops are fusion inputs
+    for (auto select : ir_utils::getSelectOps(fusion)) {
+      if (!select->input(0)->isFusionInput()) {
+        scheduler_debug_utils::canScheduleRejectReason(
+            ScheduleHeuristic::Transpose,
+            "Inputs of SelectOp must be fusion input.");
+        return false;
+      }
+      if (select->input(0)->uses().size() > 1) {
+        scheduler_debug_utils::canScheduleRejectReason(
+            ScheduleHeuristic::Transpose,
+            "Inputs of SelectOp can only be used by SelectOp");
+        return false;
+      }
+      auto root = TensorDomain::noReductions(
+          select->input(0)->as<TensorView>()->getMaybeRFactorDomain());
+      if (select->getSelectAxis() == root[root.size() - 1]) {
+        scheduler_debug_utils::canScheduleRejectReason(
+            ScheduleHeuristic::Transpose,
+            "SelectOp on inner dim is not supported by transpose scheduler yet."
+            "In transpose scheduler, we want to leave the select dim alone, instead of creating a tile for it.");
+        return false;
+      }
+    }
+
+    if (!hasAtLeastTwoValidGroups(fusion)) {
+      scheduler_debug_utils::canScheduleRejectReason(
+          ScheduleHeuristic::Transpose,
+          "cannot find two mismatching inner most dimensions");
+      return false;
+    }
+
+    auto reduction_ops = ir_utils::getReductionOps(fusion);
+
+    if (!reduction_ops.empty()) {
+      scheduler_debug_utils::canScheduleRejectReason(
+          ScheduleHeuristic::Transpose, "no support for reduction ops");
+      return false;
+    }
+
+    if (hasNonUniqueBcast(fusion)) {
+      scheduler_debug_utils::canScheduleRejectReason(
+          ScheduleHeuristic::Transpose,
+          "Broadcasting dimension might be broadcasting to multiple sizes.");
+      return false;
+    }
+
+    return true;
+  }
+
+  static bool canScheduleRunTime(
+      Fusion* fusion,
+      SchedulerRuntimeInfo& runtime_info,
+      HeuristicSummary* data_cache = nullptr) {
+    FUSER_PERF_SCOPE("TransposeScheduler::canScheduleRunTime");
+
+    auto reason =
+        getTransposeRuntimeRejectReason(fusion, data_cache, runtime_info);
+    if (!reason.empty()) {
+      scheduler_debug_utils::canScheduleRejectReason(
+          ScheduleHeuristic::Transpose, reason);
+      return false;
+    }
+    return true;
+  }
+
+  void schedule(Fusion* fusion) override {
+    FUSER_PERF_SCOPE("Schedule Transpose Fusion");
+    scheduleTranspose(fusion, transposeParams());
+  }
+
+ private:
+  void computeHeuristics(
+      Fusion* fusion,
+      SchedulerRuntimeInfo& runtime_info,
+      HeuristicSummary* data_cache = nullptr) {
+    params_ = getTransposeHeuristics(fusion, runtime_info, data_cache);
+    TORCH_INTERNAL_ASSERT(params_ != nullptr);
   }
 };
 
@@ -984,7 +1473,7 @@ class PointWiseScheduler : public SchedulerEntry {
       Fusion* fusion,
       SchedulerRuntimeInfo& runtime_info,
       HeuristicSummary* data_cache = nullptr)
-      : SchedulerEntry(ScheduleHeuristic::PointWise, false) {
+      : SchedulerEntry(ScheduleHeuristic::PointWise) {
     computeHeuristics(fusion, runtime_info, data_cache);
   }
 
@@ -998,11 +1487,35 @@ class PointWiseScheduler : public SchedulerEntry {
       return false;
     }
 
-    auto reduction_ops =
-        ir_utils::getReductionOps(fusion, true /* ignore_trivial */);
-    auto welford_ops = ir_utils::filterByType<WelfordOp>(reduction_ops);
+    // Check that inputs of all select ops are fusion inputs
+    for (auto select : ir_utils::getSelectOps(fusion)) {
+      if (!select->input(0)->isFusionInput()) {
+        scheduler_debug_utils::canScheduleRejectReason(
+            ScheduleHeuristic::PointWise,
+            "Inputs of SelectOp must be fusion input.");
+        return false;
+      }
+      if (select->input(0)->uses().size() > 1) {
+        scheduler_debug_utils::canScheduleRejectReason(
+            ScheduleHeuristic::PointWise,
+            "Inputs of SelectOp can only be used by SelectOp");
+        return false;
+      }
+    }
 
-    if (!reduction_ops.empty() || !welford_ops.empty()) {
+    if (ir_utils::getViewOps(fusion).size() > 0) {
+      ComputeAtMap ca_map(fusion);
+      if (requiresForwardViewReplay(fusion, ca_map)) {
+        scheduler_debug_utils::canScheduleRejectReason(
+            ScheduleHeuristic::PointWise,
+            "Fusion requires view being reversible.");
+        return false;
+      }
+    }
+
+    auto reduction_ops = ir_utils::getReductionOps(fusion);
+
+    if (!reduction_ops.empty()) {
       scheduler_debug_utils::canScheduleRejectReason(
           ScheduleHeuristic::PointWise, "no support for reduction ops");
       return false;
@@ -1022,21 +1535,32 @@ class PointWiseScheduler : public SchedulerEntry {
       Fusion* fusion,
       SchedulerRuntimeInfo& runtime_info,
       HeuristicSummary* data_cache = nullptr) {
+    auto can_schedule_transpose_entry =
+        HeuristicSummaryEntry<HeuristicCompileTime::CanScheduleTranspose>(
+            data_cache, [fusion]() {
+              return std::make_unique<bool>(
+                  TransposeScheduler::canScheduleCompileTime(fusion));
+            });
+    if (can_schedule_transpose_entry.get()) {
+      auto reason =
+          getTransposeRuntimeRejectReason(fusion, data_cache, runtime_info);
+      return !reason.empty();
+    }
+
     return true;
   }
 
   void schedule(Fusion* fusion) override {
     FUSER_PERF_SCOPE("Schedule PointWise Fusion");
-    schedulePointwise(fusion, pparams());
+    schedulePointwise(fusion, pointwiseParams());
   }
 
   void computeHeuristics(
       Fusion* fusion,
       SchedulerRuntimeInfo& runtime_info,
       HeuristicSummary* data_cache = nullptr) {
-    auto pparam = getPointwiseHeuristics(fusion, runtime_info, data_cache);
-    TORCH_INTERNAL_ASSERT(pparam.has_value());
-    pparams() = pparam.value();
+    params_ = getPointwiseHeuristics(fusion, runtime_info, data_cache);
+    TORCH_INTERNAL_ASSERT(params_ != nullptr);
   }
 };
 
@@ -1046,40 +1570,38 @@ class PersistentKernelScheduler : public SchedulerEntry {
       Fusion* fusion,
       SchedulerRuntimeInfo& runtime_info,
       HeuristicSummary* data_cache = nullptr)
-      : SchedulerEntry(ScheduleHeuristic::Persistent, true) {
+      : SchedulerEntry(ScheduleHeuristic::Persistent) {
     computeHeuristics(fusion, runtime_info, data_cache);
   }
 
   void schedule(Fusion* fusion) override {
     FUSER_PERF_SCOPE("Schedule Persistent Fusion");
-    schedulePersistentKernel(fusion, rparams());
+    schedulePersistentKernel(fusion, reductionParams());
   }
 
   static bool canScheduleCompileTime(Fusion* fusion) {
-    // Needs at least one non-trivial reduction to consider.
-    if (ir_utils::getReductionOps(fusion, true /* ignore_trivial */).empty()) {
+    // Needs at least one reduction to consider.
+    auto reduction_ops = ir_utils::getReductionOps(fusion);
+    if (reduction_ops.empty()) {
       scheduler_debug_utils::canScheduleRejectReason(
           ScheduleHeuristic::Persistent, "needs a reduction op");
       return false;
     }
 
-    auto reduction_ops =
-        ir_utils::getReductionOps(fusion, false /* ignore_trivial */);
-    auto welford_ops = ir_utils::filterByType<WelfordOp>(reduction_ops);
-    // For persistent schedule we want welford translated to average and
-    // standard deviation reductions.
-    if (welford_ops.begin() != welford_ops.end()) {
-      scheduler_debug_utils::canScheduleRejectReason(
-          ScheduleHeuristic::Persistent,
-          "no support for un-translated welford");
-      return false;
-    }
-
-    auto view_tvs = scheduler_utils::getViewTVs(fusion);
-    if (view_tvs.size() > 0) {
-      scheduler_debug_utils::canScheduleRejectReason(
-          ScheduleHeuristic::Persistent, "no support for view");
-      return false;
+    // Check that inputs of all select ops are fusion inputs
+    for (auto select : ir_utils::getSelectOps(fusion)) {
+      if (!select->input(0)->isFusionInput()) {
+        scheduler_debug_utils::canScheduleRejectReason(
+            ScheduleHeuristic::Persistent,
+            "Inputs of SelectOp must be fusion input.");
+        return false;
+      }
+      if (select->input(0)->uses().size() > 1) {
+        scheduler_debug_utils::canScheduleRejectReason(
+            ScheduleHeuristic::Persistent,
+            "Inputs of SelectOp can only be used by SelectOp");
+        return false;
+      }
     }
 
     if (hasNonUniqueBcast(fusion)) {
@@ -1089,8 +1611,7 @@ class PersistentKernelScheduler : public SchedulerEntry {
       return false;
     }
 
-    auto reduction_tvs =
-        scheduler_utils::getReductionTvs(fusion, false /* ignore_trivial */);
+    auto reduction_tvs = scheduler_utils::getReductionTvs(fusion);
 
     if (reduction_tvs.size() == 0) {
       // Use pointwise logic
@@ -1099,11 +1620,23 @@ class PersistentKernelScheduler : public SchedulerEntry {
       return false;
     }
 
-    if (findTransposeOps(fusion).size() > 0) {
-      // Use pointwise logic
-      scheduler_debug_utils::canScheduleRejectReason(
-          ScheduleHeuristic::Persistent, "no support for transpose");
-      return false;
+    if (ir_utils::getViewOps(fusion).size() > 0) {
+      ComputeAtMap ca_map(fusion);
+      if (requiresForwardViewReplay(fusion, ca_map)) {
+        scheduler_debug_utils::canScheduleRejectReason(
+            ScheduleHeuristic::Persistent,
+            "Fusion requires view being reversible.");
+        return false;
+      }
+
+      // Persistent scheduler simply uses reduction_tvs[0] as the reference, if
+      // that changes, this needs to be changed.
+      if (reductionInterferingView(fusion, ca_map, reduction_tvs[0])) {
+        scheduler_debug_utils::canScheduleRejectReason(
+            ScheduleHeuristic::Persistent,
+            "View may interfere with normalization scheduling.");
+        return false;
+      }
     }
 
     // Before examining the reduction axes want to quickly
@@ -1182,8 +1715,7 @@ class PersistentKernelScheduler : public SchedulerEntry {
         HeuristicSummaryEntry<HeuristicCompileTime::ReductionTVs>(
             data_cache, [&fusion]() {
               return std::make_unique<std::vector<TensorView*>>(
-                  scheduler_utils::getReductionTvs(
-                      fusion /*, ignore_trivial = true*/));
+                  scheduler_utils::getReductionTvs(fusion));
             });
 
     auto& reduction_tvs = reduction_tv_entry.get();
@@ -1200,9 +1732,13 @@ class PersistentKernelScheduler : public SchedulerEntry {
     auto persistent_buffer_size_info = scheduler_utils::persistentBufferSize(
         fusion, runtime_info, persistent_buffer_info, data_cache);
 
-    auto persistent_buffer_size = std::min(
-        persistent_buffer_size_info.persistent_buffer_size,
-        persistent_buffer_size_info.projected_persistent_buffer_size);
+    // Note that projected buffer size can be zero
+    auto persistent_buffer_size =
+        persistent_buffer_size_info.projected_persistent_buffer_size == 0
+        ? persistent_buffer_size_info.persistent_buffer_size
+        : std::min(
+              persistent_buffer_size_info.persistent_buffer_size,
+              persistent_buffer_size_info.projected_persistent_buffer_size);
 
     if (persistent_buffer_size > scheduler_utils::register_file_size) {
       scheduler_debug_utils::canScheduleRejectReason(
@@ -1263,16 +1799,17 @@ class PersistentKernelScheduler : public SchedulerEntry {
       Fusion* fusion,
       SchedulerRuntimeInfo& runtime_info,
       HeuristicSummary* data_cache = nullptr) {
-    auto param = getPersistentHeuristics(fusion, runtime_info, data_cache);
-    TORCH_INTERNAL_ASSERT(param.has_value());
-    rparams() = param.value();
+    params_ = getPersistentHeuristics(fusion, runtime_info, data_cache);
+    TORCH_INTERNAL_ASSERT(params_ != nullptr);
   }
 };
 
 // Schedule Table
 const std::vector<ScheduleHeuristic>& all_heuristics() {
   static const std::vector<ScheduleHeuristic> hlist = {
+      ScheduleHeuristic::NoOp,
       ScheduleHeuristic::Reduction,
+      ScheduleHeuristic::Transpose,
       ScheduleHeuristic::PointWise,
       ScheduleHeuristic::Persistent};
   return hlist;
@@ -1293,6 +1830,9 @@ bool checkCanSchedule(
     if (!isConnectedFusionGraph(fusion)) {
       return false;
     }
+    if (IterDomainGraph(fusion, /*allow_self_mapping=*/true).hasSelfMapping()) {
+      return false;
+    }
     if (!SchedulerType::canScheduleCompileTime(fusion)) {
       return false;
     }
@@ -1310,6 +1850,8 @@ bool SchedulerEntry::canSchedule(
     SchedulerRuntimeInfo& runtime_info,
     HeuristicSummary* data_cache) {
   switch (sh) {
+    case ScheduleHeuristic::NoOp:
+      return checkCanSchedule<NoOpScheduler>(fusion, runtime_info, data_cache);
     case ScheduleHeuristic::PointWise:
       return checkCanSchedule<PointWiseScheduler>(
           fusion, runtime_info, data_cache);
@@ -1318,6 +1860,9 @@ bool SchedulerEntry::canSchedule(
           fusion, runtime_info, data_cache);
     case ScheduleHeuristic::Persistent:
       return checkCanSchedule<PersistentKernelScheduler>(
+          fusion, runtime_info, data_cache);
+    case ScheduleHeuristic::Transpose:
+      return checkCanSchedule<TransposeScheduler>(
           fusion, runtime_info, data_cache);
     default:
       TORCH_INTERNAL_ASSERT(false, "unreachable");
@@ -1333,6 +1878,10 @@ std::unique_ptr<SchedulerEntry> SchedulerEntry::makeEntry(
     HeuristicSummary* data_cache) {
   std::unique_ptr<SchedulerEntry> scheduler_entry = nullptr;
   switch (sh) {
+    case ScheduleHeuristic::NoOp:
+      scheduler_entry =
+          std::make_unique<NoOpScheduler>(fusion, runtime_info, data_cache);
+      break;
     case ScheduleHeuristic::PointWise:
       scheduler_entry = std::make_unique<PointWiseScheduler>(
           fusion, runtime_info, data_cache);
@@ -1343,6 +1892,10 @@ std::unique_ptr<SchedulerEntry> SchedulerEntry::makeEntry(
       break;
     case ScheduleHeuristic::Persistent:
       scheduler_entry = std::make_unique<PersistentKernelScheduler>(
+          fusion, runtime_info, data_cache);
+      break;
+    case ScheduleHeuristic::Transpose:
+      scheduler_entry = std::make_unique<TransposeScheduler>(
           fusion, runtime_info, data_cache);
       break;
     default:
@@ -1367,21 +1920,21 @@ c10::optional<ScheduleHeuristic> SchedulerEntry::proposeHeuristics(
 }
 
 size_t SchedulerEntryHash::operator()(const SchedulerEntry& se) const {
-  if (se.hasReductionParam()) {
-    return ReductionParamsHash()(se.reductionParams());
-  } else {
-    return PointwiseParamsHash()(se.pointwiseParams());
-  }
+  return se.params()->hash();
 }
 
 std::string toString(ScheduleHeuristic sh) {
   switch (sh) {
+    case ScheduleHeuristic::NoOp:
+      return "no-op";
     case ScheduleHeuristic::PointWise:
       return "pointwise";
     case ScheduleHeuristic::Reduction:
       return "reduction";
     case ScheduleHeuristic::Persistent:
       return "persistent";
+    case ScheduleHeuristic::Transpose:
+      return "transpose";
     default:
       return "undefined";
   }
@@ -1422,6 +1975,9 @@ HeuristicSummary::HeuristicSummary(
     : heuristic_(heuristic) {
   recording_ = true;
   switch (heuristic) {
+    case ScheduleHeuristic::NoOp:
+      NoOpScheduler::canScheduleRunTime(fusion, runtime_info, this);
+      break;
     case ScheduleHeuristic::PointWise:
       getPointwiseHeuristics(fusion, runtime_info, this);
       PointWiseScheduler::canScheduleRunTime(fusion, runtime_info, this);
@@ -1434,6 +1990,10 @@ HeuristicSummary::HeuristicSummary(
       getPersistentHeuristics(fusion, runtime_info, this);
       PersistentKernelScheduler::canScheduleRunTime(fusion, runtime_info, this);
       break;
+    case ScheduleHeuristic::Transpose:
+      getTransposeHeuristics(fusion, runtime_info, this);
+      TransposeScheduler::canScheduleRunTime(fusion, runtime_info, this);
+      break;
     default:
       TORCH_INTERNAL_ASSERT(false, "unknown heuristic");
   }
@@ -1443,11 +2003,39 @@ HeuristicSummary::HeuristicSummary(
 
 void HeuristicSummary::validate() const {
   switch (heuristic_) {
+    case ScheduleHeuristic::NoOp: {
+      // TODO: need to cache the dynamically zero inputs?
+      break;
+    }
+    case ScheduleHeuristic::Transpose:
     case ScheduleHeuristic::PointWise: {
+      if (heuristic_ == ScheduleHeuristic::PointWise) {
+        TORCH_INTERNAL_ASSERT(entry_type_map_.count(EntryType::DOMAIN_MAP));
+        TORCH_INTERNAL_ASSERT(
+            entry_type_map_.count(EntryType::REFERENCE_TENSORS));
+        TORCH_INTERNAL_ASSERT(
+            entry_type_map_.count(EntryType::VECTORIZABLE_INPUTS_AND_OUTPUTS));
+        TORCH_INTERNAL_ASSERT(
+            entry_type_map_.count(EntryType::BROADCAST_BYTE_MULTIPLES));
+        TORCH_INTERNAL_ASSERT(
+            entry_type_map_.count(EntryType::CAN_SCHEDULE_TRANSPOSE));
+        auto can_schedule_transpose =
+            entry_type_map_.at(EntryType::CAN_SCHEDULE_TRANSPOSE)
+                ->as<CompileTimeInfo<
+                    HeuristicCompileTime::CanScheduleTranspose>>()
+                ->get();
+        if (!*can_schedule_transpose) {
+          break;
+        }
+      }
       TORCH_INTERNAL_ASSERT(
-          entry_type_map_.count(EntryType::VECTORIZABLE_INPUTS_AND_OUTPUTS));
+          entry_type_map_.count(EntryType::TRANSPOSE_DOMAIN_MAP));
+      TORCH_INTERNAL_ASSERT(entry_type_map_.count(
+          EntryType::INPUTS_AND_OUTPUTS_INNER_DIM_GROUPS));
       TORCH_INTERNAL_ASSERT(
-          entry_type_map_.count(EntryType::BROADCAST_BYTE_MULTIPLES));
+          entry_type_map_.count(EntryType::REFERENCE_TENSORS_FOR_GROUPS));
+      TORCH_INTERNAL_ASSERT(
+          entry_type_map_.count(EntryType::INNER_MOST_DIMS_INFO));
       break;
     }
     case ScheduleHeuristic::Reduction: {
@@ -1512,8 +2100,15 @@ HeuristicSummaryEntry<EntryClass>::HeuristicSummaryEntry(
 }
 
 // Template instantiation for pre-defined cache entries
+template class HeuristicSummaryEntry<HeuristicCompileTime::DomainMap>;
+template class HeuristicSummaryEntry<HeuristicCompileTime::TransposeDomainMap>;
+template class HeuristicSummaryEntry<HeuristicCompileTime::ReferenceTensors>;
+template class HeuristicSummaryEntry<
+    HeuristicCompileTime::ReferenceTensorsForGroups>;
 template class HeuristicSummaryEntry<
     HeuristicCompileTime::VectorizableInputsAndOutputs>;
+template class HeuristicSummaryEntry<
+    HeuristicCompileTime::InputsOutputsInnerDimGroups>;
 template class HeuristicSummaryEntry<
     HeuristicCompileTime::UnrollableInputsAndOutputs>;
 template class HeuristicSummaryEntry<HeuristicCompileTime::ReductionTVs>;
@@ -1522,6 +2117,9 @@ template class HeuristicSummaryEntry<
 template class HeuristicSummaryEntry<
     HeuristicCompileTime::ScopePersistentFactorInfo>;
 template class HeuristicSummaryEntry<HeuristicCompileTime::BroadcastMultiples>;
+template class HeuristicSummaryEntry<HeuristicCompileTime::InnerMostDimInfo>;
+template class HeuristicSummaryEntry<
+    HeuristicCompileTime::CanScheduleTranspose>;
 
 } // namespace cuda
 } // namespace fuser

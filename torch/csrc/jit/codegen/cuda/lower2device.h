@@ -16,7 +16,6 @@
 #include <torch/csrc/jit/codegen/cuda/lower_sync_information.h>
 #include <torch/csrc/jit/codegen/cuda/lower_thread_predicate.h>
 #include <torch/csrc/jit/codegen/cuda/lower_trivial_broadcast.h>
-#include <torch/csrc/jit/codegen/cuda/lower_trivial_reductions.h>
 #include <torch/csrc/jit/codegen/cuda/lower_warp_reduce.h>
 #include <torch/csrc/jit/codegen/cuda/non_divisible_split.h>
 #include <torch/csrc/jit/codegen/cuda/parallel_dimension_map.h>
@@ -62,7 +61,8 @@ class TORCH_CUDA_CU_API GpuLower : public NonCopyable {
   //! Query if lowering is in progress
   static bool hasCurrent();
 
-  ConcretizedBroadcastDomains& concretizedBroadcastDomains() {
+  std::shared_ptr<const ConcretizedBroadcastDomains>
+  concretizedBroadcastDomains() {
     return concretized_broadcast_domains_;
   }
 
@@ -76,20 +76,12 @@ class TORCH_CUDA_CU_API GpuLower : public NonCopyable {
     return thread_pred_map_;
   }
 
-  const std::unique_ptr<ComputeAtMap>& caMap() const {
-    return compute_at_map_;
+  std::shared_ptr<const ComputeAtMap> caMap() const {
+    return std::const_pointer_cast<const ComputeAtMap>(compute_at_map_);
   }
 
-  const TrivialReductionInfo& trivialReductionInfo() const {
-    return trivial_reduction_info_;
-  }
-
-  const HaloInfo& haloInfo() const {
-    return halo_info_;
-  }
-
-  HaloInfo& haloInfo() {
-    return halo_info_;
+  std::shared_ptr<const HaloInfo> haloInfo() const {
+    return std::const_pointer_cast<const HaloInfo>(halo_info_);
   }
 
   const ParallelDimensionMap& parallelDimensionMap() const {
@@ -132,6 +124,10 @@ class TORCH_CUDA_CU_API GpuLower : public NonCopyable {
     return non_divisible_split_info_;
   }
 
+  const auto& divisibleSplitSet() const {
+    return divisible_splits_;
+  }
+
   DoubleBufferInfo& doubleBufferInfo() {
     return double_buffer_info_;
   }
@@ -160,7 +156,7 @@ class TORCH_CUDA_CU_API GpuLower : public NonCopyable {
     return fused_reduction_info_;
   }
 
-  const SyncMap& syncMap() const {
+  std::shared_ptr<const SyncMap> syncMap() const {
     return sync_map_;
   }
 
@@ -198,12 +194,12 @@ class TORCH_CUDA_CU_API GpuLower : public NonCopyable {
   // would be safer to wrap all of these in unique pointers and remove the build
   // interface and default constructor. That way they couldn't be accessed
   // without being initialized.
-  ConcretizedBroadcastDomains concretized_broadcast_domains_;
+  std::shared_ptr<const ConcretizedBroadcastDomains>
+      concretized_broadcast_domains_;
   ThreadPredicateMap thread_pred_map_;
   PredicateElimination pred_elimination_;
-  std::unique_ptr<ComputeAtMap> compute_at_map_;
-  TrivialReductionInfo trivial_reduction_info_;
-  HaloInfo halo_info_;
+  std::shared_ptr<ComputeAtMap> compute_at_map_;
+  std::shared_ptr<HaloInfo> halo_info_;
   LocalAllocationInfoMap local_allocation_info_map_;
   WarpPaddedParallelInfo warp_pad_info_;
   ParallelDimensionMap parallel_dimension_map_;
@@ -212,8 +208,9 @@ class TORCH_CUDA_CU_API GpuLower : public NonCopyable {
   DoubleBufferInfo double_buffer_info_;
   CommonIndexMap common_index_map_;
   FusedReductionInfo fused_reduction_info_;
-  SyncMap sync_map_;
+  std::shared_ptr<const SyncMap> sync_map_;
   kir::KernelPerformanceProfile profile_;
+  std::unordered_set<Split*> divisible_splits_;
 
   // Track which tensor views are inputs or outputs of a vectorized operation
   // and their maximum vectorized access size

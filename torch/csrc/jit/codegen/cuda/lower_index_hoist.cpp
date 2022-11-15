@@ -124,13 +124,15 @@ CommonIndexKey::CommonIndexKey(
     if (it != concrete_leaf_ids.end()) {
       // This leaf reference id is used for indexing the consumer id
       used_loops_.push_back(loop);
-      auto index_it =
-          loop_index_map.find(gpu_lower->caMap()->getConcreteMappedID(
-              loop_domains.at(i), IdMappingMode::EXACT));
+      auto loop_concrete_id = gpu_lower->caMap()->getConcreteMappedID(
+          loop_domains.at(i), IdMappingMode::EXACT);
+      auto index_it = loop_index_map.find(loop_concrete_id);
       TORCH_INTERNAL_ASSERT(
           index_it != loop_index_map.end(),
           "Index not found for leaf ID, ",
-          loop_domains.at(i)->toString());
+          loop_domains.at(i)->toString(),
+          ", concrete ID: ",
+          loop_concrete_id->toString());
       loop_index_vals_.push_back(index_it->second);
     }
   }
@@ -359,7 +361,18 @@ class CommonIndexInserter : private kir::ExprMutator {
       return;
     }
 
-    for (const auto& key : innermost_loop_map_it->second) {
+    // Sort the keys so that the hoisted index vals appear in a
+    // deterministic way
+    std::vector<CommonIndexKey> keys = innermost_loop_map_it->second;
+    std::sort(
+        keys.begin(),
+        keys.end(),
+        [](const CommonIndexKey& key1, const CommonIndexKey& key2) {
+          return Statement::lessThan(
+              key1.concreteIndexedId(), key2.concreteIndexedId());
+        });
+
+    for (const auto& key : keys) {
       auto common_index = common_index_map_.commonIndexMap().at(key);
 
       // Insert only when the index is used multiple times and is not

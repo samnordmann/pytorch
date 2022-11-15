@@ -3,15 +3,21 @@
 import sys
 
 import torch
+import torch.nn as nn
 from torch import distributed as dist
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 from torch.testing._internal.common_distributed import skip_if_lt_x_gpu
-from torch.testing._internal.common_fsdp import FSDPTest
+from torch.testing._internal.common_fsdp import (
+    CUDAInitMode,
+    FSDPInitMode,
+    FSDPTest,
+    TransformerWithSharedParams,
+)
 from torch.testing._internal.common_utils import (
-    TEST_WITH_DEV_DBG_ASAN,
     instantiate_parametrized_tests,
     parametrize,
     run_tests,
+    TEST_WITH_DEV_DBG_ASAN,
 )
 
 if not dist.is_available():
@@ -68,12 +74,15 @@ class IgnoredModule(torch.nn.Module):
 
 class ModelWithIgnoredModules(Model):
     """Adds a variable number of :class:`IgnoredModule` to ``self.layer1``."""
+
     def __init__(self, num_ignored: int) -> None:
         assert num_ignored >= 0
         super().__init__()
-        layer1_modules = [torch.nn.Linear(5, 4), torch.nn.Linear(4, 4)] + \
-            [IgnoredModule(4, 4) for _ in range(num_ignored)] + \
-            [torch.nn.Linear(4, 4)]
+        layer1_modules = (
+            [torch.nn.Linear(5, 4), torch.nn.Linear(4, 4)]
+            + [IgnoredModule(4, 4) for _ in range(num_ignored)]
+            + [torch.nn.Linear(4, 4)]
+        )
         self.layer1 = torch.nn.Sequential(*layer1_modules)
 
 
@@ -92,13 +101,25 @@ class TestFSDPIgnoredModules(FSDPTest):
         transformer model with shared parameters."""
         # Initialize an FSDP-wrapped transformer model that has FSDP ignore
         # the `nn.Transformer` module's parameters
-        group = dist.distributed_c10d._get_default_group()
-        wrapped_model = self._get_wrapped_model(
-            group, cuda_first=True, ignore_modules=True,
+        model: nn.Module = TransformerWithSharedParams.init(
+            self.process_group,
+            FSDPInitMode.NO_FSDP,
+            CUDAInitMode.CUDA_BEFORE,
+            deterministic=True,
+        )
+        wrapped_model = FSDP(
+            model,
+            self.process_group,
+            ignored_modules=[model.transformer],
         )
         # Check that the wrapped model's flattened parameter does not include
         # the ignored transformer module's parameters
-        nonwrapped_model = self._get_nonwrapped_model(group)
+        nonwrapped_model: nn.Module = TransformerWithSharedParams.init(
+            self.process_group,
+            FSDPInitMode.NO_FSDP,
+            CUDAInitMode.CUDA_BEFORE,
+            deterministic=True,
+        )
         total_numel = sum(p.numel() for p in nonwrapped_model.parameters())
         ignored_numel = sum(
             p.numel() for p in nonwrapped_model.transformer.parameters()
@@ -125,9 +146,7 @@ class TestFSDPIgnoredModules(FSDPTest):
         # the ignored nested sequential's parameters
         nonwrapped_model = Model()
         total_numel = sum(p.numel() for p in nonwrapped_model.parameters())
-        ignored_numel = sum(
-            p.numel() for p in nonwrapped_model.layer1.parameters()
-        )
+        ignored_numel = sum(p.numel() for p in nonwrapped_model.layer1.parameters())
         nonignored_numel = total_numel - ignored_numel
         with FSDP.summon_full_params(wrapped_model):
             flat_param_numel = wrapped_model.params[0].numel()
@@ -152,13 +171,15 @@ class TestFSDPIgnoredModules(FSDPTest):
             expected_warning=UserWarning,
             expected_regex="Trying to ignore the top-level module passed into "
             "the FSDP constructor itself will result in all parameters being "
-            "ignored and is not supported",
+            "ignored",
         ):
             FSDP(model, ignored_modules=[model])
 
     @skip_if_lt_x_gpu(2)
     @parametrize("pass_ignored_modules_to_root", [False, True])
-    def test_diff_ignored_modules_across_ranks(self, pass_ignored_modules_to_root: bool):
+    def test_diff_ignored_modules_across_ranks(
+        self, pass_ignored_modules_to_root: bool
+    ):
         """
         Tests ignoring different modules across ranks.
 
@@ -178,9 +199,11 @@ class TestFSDPIgnoredModules(FSDPTest):
         ]
         model.layer1 = FSDP(model.layer1, ignored_modules=layer1_ignored_modules)
         model.layer3 = FSDP(model.layer3)
-        model_ignored_modules = [
-            m for m in model.modules() if isinstance(m, IgnoredModule)
-        ] if pass_ignored_modules_to_root else []
+        model_ignored_modules = (
+            [m for m in model.modules() if isinstance(m, IgnoredModule)]
+            if pass_ignored_modules_to_root
+            else []
+        )
         wrapped_model = FSDP(model, ignored_modules=model_ignored_modules)
         optim = torch.optim.Adam(wrapped_model.parameters(), lr=1e-3)
         self._train_model(wrapped_model, optim, 3)

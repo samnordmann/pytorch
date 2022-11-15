@@ -1,13 +1,13 @@
 #include <torch/csrc/jit/codegen/cuda/lower2device.h>
 
 #include <ATen/cuda/CUDAContext.h>
-#include <torch/csrc/jit/codegen/cuda/expr_evaluator.h>
 #include <torch/csrc/jit/codegen/cuda/fusion.h>
 #include <torch/csrc/jit/codegen/cuda/instrumentation.h>
 #include <torch/csrc/jit/codegen/cuda/ir_iostream.h>
 #include <torch/csrc/jit/codegen/cuda/ir_utils.h>
 #include <torch/csrc/jit/codegen/cuda/lower_alias_memory.h>
 #include <torch/csrc/jit/codegen/cuda/lower_allocation.h>
+#include <torch/csrc/jit/codegen/cuda/lower_divisible_split.h>
 #include <torch/csrc/jit/codegen/cuda/lower_double_buffer.h>
 #include <torch/csrc/jit/codegen/cuda/lower_expr_sort.h>
 #include <torch/csrc/jit/codegen/cuda/lower_fusion_simplifier.h>
@@ -20,7 +20,6 @@
 #include <torch/csrc/jit/codegen/cuda/lower_predicate.h>
 #include <torch/csrc/jit/codegen/cuda/lower_replace_size.h>
 #include <torch/csrc/jit/codegen/cuda/lower_shift.h>
-#include <torch/csrc/jit/codegen/cuda/lower_trivial_reductions.h>
 #include <torch/csrc/jit/codegen/cuda/lower_unroll.h>
 #include <torch/csrc/jit/codegen/cuda/lower_utils.h>
 #include <torch/csrc/jit/codegen/cuda/lower_validation.h>
@@ -135,7 +134,6 @@ class KIRCleaner : public OptOutDispatch {
 } // namespace
 
 void GpuLower::collectPaddedParallelDims() {
-  ExpressionEvaluator ee(fusion_);
   bool can_be_single_warp = true;
 
   auto warp_size = at::cuda::warp_size();
@@ -165,12 +163,12 @@ void GpuLower::collectPaddedParallelDims() {
       // Check all possible bindings of TIDx to see
       //  if TIDx will eventually be bound to a single warp.
       if (id->getParallelType() == ParallelType::TIDx) {
-        auto eval_dim = ee.evaluate(id->extent());
         auto size_after_padding = id->getMaybeSizeAfterPadding();
         bool padding_to_single_warp = size_after_padding.has_value() &&
             size_after_padding.value() == warp_size;
 
-        if ((!eval_dim.has_value() || eval_dim.value() > warp_size) &&
+        if (id->extent()->isConstInt() &&
+            id->extent()->evaluateInt() > warp_size &&
             !padding_to_single_warp) {
           // If we see any other TIDx binding that's larger than
           //  a warp or unknown, we shouldn't lower warp reduce
@@ -179,11 +177,22 @@ void GpuLower::collectPaddedParallelDims() {
           warp_pad_info_.is_tidx_single_warp = false;
         } else if (can_be_single_warp) {
           if (padding_to_single_warp ||
-              (eval_dim.has_value() && eval_dim.value() == warp_size)) {
+              (id->extent()->isConstInt() &&
+               id->extent()->evaluateInt() == warp_size)) {
             warp_pad_info_.is_tidx_single_warp = true;
           }
         }
       }
+    }
+  }
+}
+
+void assignRNGOffset(Fusion* fusion) {
+  int counter = 0;
+  for (auto expr : fusion->exprs()) {
+    if (expr->isA<RNGOp>()) {
+      auto rop = expr->as<RNGOp>();
+      rop->setRNGOffset(counter++);
     }
   }
 }
@@ -213,6 +222,7 @@ void GpuLower::lower(Fusion* fusion, DataType index_type) {
       tv->resolveIndexDtype();
     }
   }
+  assignRNGOffset(fusion_);
 
   FusionGuard fg(fusion_);
   // prepare for lowering
@@ -225,19 +235,11 @@ void GpuLower::lower(Fusion* fusion, DataType index_type) {
   // Replaces integers that are tensor sizes by named scalars as "T0.size[0]"
   replaceSymbolicSizes(fusion_);
 
-  // Traverse through reductions and termine if any iteration domains are
-  // trivial reductions. Add these iteration domains to trivial_reduction_info_
-  // which simply holds a map of which axes are trivial and which are not.
-  trivial_reduction_info_.build(fusion_);
-  // Replaces trivial reduction expressions (all id's being reduced are trivial)
-  // with set unary op
-  trivialReductionReplacement(fusion_, trivial_reduction_info_);
-
   // Build what's refered to as the compute at map. This map contains the
   // mappings of all iteration domains across the fusion. There are three types
   // of mappings Permissive, Exact, and Loop, see compute_at_map.h/cpp for more
   // information.
-  compute_at_map_ = std::make_unique<ComputeAtMap>(fusion_);
+  compute_at_map_ = std::make_shared<ComputeAtMap>(fusion_);
 
   if (isDebugDumpEnabled(DebugDumpOption::ComputeAtMap)) {
     std::cout << compute_at_map_->toString() << std::endl;
@@ -245,8 +247,12 @@ void GpuLower::lower(Fusion* fusion, DataType index_type) {
 
   compute_at_map_->validateAndPropagatePType();
 
+  // Uses compute_at_map, find all splits that are enforced to be divisible
+  divisible_splits_ = getAllDivisibleSplits(fusion_, compute_at_map_.get());
+
   // Used in parallel dimension map
-  concretized_broadcast_domains_.build(fusion_);
+  concretized_broadcast_domains_ =
+      std::make_shared<const ConcretizedBroadcastDomains>(fusion_);
 
   parallelDimensionMap().build(fusion_);
   if (isDebugDumpEnabled(DebugDumpOption::ParallelDimensions)) {
@@ -256,6 +262,9 @@ void GpuLower::lower(Fusion* fusion, DataType index_type) {
 
   // Validate mma data format and compatibility if any on the fusion.
   validateMma(fusion_);
+
+  // Validate swizzle usage on the fusion schedule.
+  validateSwizzle(fusion_);
 
   // Compute thread predicates. Depends on parallel_dimension_map_
   thread_pred_map_.build(fusion_);
@@ -267,7 +276,7 @@ void GpuLower::lower(Fusion* fusion, DataType index_type) {
 
   // Scan the whole fusion and build mappings about halo extensions of
   // all IterDomains
-  haloInfo().build(fusion_);
+  halo_info_ = std::make_shared<HaloInfo>(fusion_, compute_at_map_);
 
   // Want to run this after parallel map and halo info map are
   // created. vectorized_accesses_ and vectorized_set_info_ are filled.
@@ -283,7 +292,10 @@ void GpuLower::lower(Fusion* fusion, DataType index_type) {
 
   // Depends on thread_pred_map_, validates parallelization collects which
   // tensor views need WAR or RAW syncs
-  sync_map_.build(fusion_);
+  sync_map_ = std::make_shared<const SyncMap>(fusion_);
+  if (isDebugDumpEnabled(DebugDumpOption::SyncMap)) {
+    std::cout << sync_map_->toString() << std::endl;
+  }
 
   partialSplitMap().build(fusion_);
 
@@ -309,7 +321,7 @@ void GpuLower::lower(Fusion* fusion, DataType index_type) {
   // corresponding loop
   const auto exprs_lowered = LoopNestGenerator::loweredExprs(exprs_sorted);
 
-  // Replace trivial reductions, Transpose, Shift, Gather, and View ops with
+  // Replace squeezes, Transpose, Shift, Gather, and View ops with
   // unary ops since they're not separately processed in lowering.
   const auto exprs_unary_replaced = unarySetOpInserter(exprs_lowered);
 
@@ -384,6 +396,16 @@ bool GpuLower::hasCurrent() {
 
 void GpuLower::propagateExprInfo(const Expr* old_expr, const Expr* new_expr) {
   pred_elimination_.propagateRemovalInfo(old_expr, new_expr);
+  if (old_expr->isA<kir::Allocate>()) {
+    auto alloc_info_it =
+        localAllocationInfoMap().find(old_expr->as<kir::Allocate>());
+    if (alloc_info_it != localAllocationInfoMap().end()) {
+      auto alloc_info =
+          std::make_unique<LocalAllocationInfo>(*(alloc_info_it->second));
+      localAllocationInfoMap().emplace(
+          new_expr->as<kir::Allocate>(), std::move(alloc_info));
+    }
+  }
 }
 
 } // namespace cuda

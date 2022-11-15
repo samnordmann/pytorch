@@ -1,6 +1,6 @@
 #pragma once
 
-#include <torch/csrc/jit/codegen/cuda/inline_propagator.h>
+#include <torch/csrc/jit/codegen/cuda/inlining.h>
 #include <torch/csrc/jit/codegen/cuda/root_domain_map.h>
 #include <torch/csrc/jit/codegen/cuda/transform_replay.h>
 
@@ -27,15 +27,7 @@ struct ComputeAt {
   static void runAt(
       TensorView* producer,
       TensorView* consumer,
-      unsigned int consumer_position,
-      ComputeAtMode mode = ComputeAtMode::Standard);
-
-  // Runs the compute with pass making consumer look like producer, computing
-  // producer relative to consumer
-  static void runWith(
-      TensorView* producer,
-      TensorView* consumer,
-      unsigned int producer_position,
+      int64_t consumer_position,
       ComputeAtMode mode = ComputeAtMode::Standard);
 };
 

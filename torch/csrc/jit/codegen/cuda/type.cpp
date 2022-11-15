@@ -1,5 +1,7 @@
 #include <torch/csrc/jit/codegen/cuda/type.h>
 
+#include <ATen/cuda/CUDAContext.h>
+
 #include <stdexcept>
 #include <unordered_map>
 
@@ -160,6 +162,17 @@ DataType getTypeFromComplexType(DataType dtype) {
   }
 }
 
+bool isSupportedTypeByDevice(DataType dtype) {
+  auto prop = at::cuda::getCurrentDeviceProperties();
+  auto major_ver = prop->major;
+  switch (dtype) {
+    case DataType::BFloat16:
+      return major_ver >= 8;
+    default:
+      return true;
+  }
+}
+
 bool isIntegerOp(const BinaryOpType bopt) {
   return bopt >= BinaryOpType::Mod && bopt <= BinaryOpType::Rshift;
 }
@@ -288,20 +301,34 @@ static const char* predicate_type2string(PredicateType t) {
 
 static const char* expr_type2string(ExprType t) {
   switch (t) {
+    case ExprType::FullOp:
+      return "FullOp";
+    case ExprType::ARangeOp:
+      return "ARangeOp";
+    case ExprType::EyeOp:
+      return "EyeOp";
     case ExprType::UnaryOp:
       return "UnaryOp";
     case ExprType::BinaryOp:
       return "BinaryOp";
     case ExprType::TernaryOp:
       return "TernaryOp";
+    case ExprType::SelectOp:
+      return "SelectOp";
+    case ExprType::RNGOp:
+      return "RNGOp";
     case ExprType::ReductionOp:
       return "ReductionOp";
     case ExprType::GroupedReductionOp:
       return "GroupedReductionOp";
     case ExprType::BroadcastOp:
       return "BroadcastOp";
+    case ExprType::SqueezeOp:
+      return "SqueezeOp";
     case ExprType::WelfordOp:
       return "WelfordOp";
+    case ExprType::GroupedWelfordOp:
+      return "GroupedWelfordOp";
     case ExprType::LoadStoreOp:
       return "LoadStoreOp";
     case ExprType::MmaOp:
@@ -330,6 +357,8 @@ static const char* expr_type2string(ExprType t) {
       return "GridSync";
     case ExprType::CpAsyncWait:
       return "CpAsyncWait";
+    case ExprType::CpAsyncCommit:
+      return "CpAsyncCommit";
     case ExprType::InitMagicZero:
       return "InitMagicZero";
     case ExprType::UpdateMagicZero:
@@ -346,6 +375,14 @@ static const char* expr_type2string(ExprType t) {
       return "GridBroadcast";
     case ExprType::GridWelford:
       return "GridWelford";
+    case ExprType::GroupedGridWelford:
+      return "GroupedGridWelford";
+    case ExprType::Swizzle2D:
+      return "Swizzle2D";
+    case ExprType::Swizzle2DInt:
+      return "Swizzle2DInt";
+    case ExprType::PairSelect:
+      return "PairSelect";
     default:
       TORCH_INTERNAL_ASSERT(false, "No string found for expr type.");
   }
@@ -370,10 +407,15 @@ bool needFloatSuffix(UnaryOpType t) {
     case UnaryOpType::IsNegInf:
     case UnaryOpType::IsPosInf:
     case UnaryOpType::IsReal:
+    case UnaryOpType::Print:
       return false;
     default:
       return true;
   }
+}
+
+bool needFloatSuffix(RNGOpType t) {
+  return true;
 }
 
 static const char* unary_op_type2string(UnaryOpType t) {
@@ -382,8 +424,12 @@ static const char* unary_op_type2string(UnaryOpType t) {
       return "abs";
     case UnaryOpType::Acos:
       return "acos";
+    case UnaryOpType::Acosh:
+      return "acosh";
     case UnaryOpType::Asin:
       return "asin";
+    case UnaryOpType::Asinh:
+      return "asinh";
     case UnaryOpType::Atan:
       return "atan";
     case UnaryOpType::Atanh:
@@ -398,12 +444,18 @@ static const char* unary_op_type2string(UnaryOpType t) {
       return "cosh";
     case UnaryOpType::Exp:
       return "exp";
+    case UnaryOpType::Exp2:
+      return "exp2";
     case UnaryOpType::Expm1:
       return "expm1";
     case UnaryOpType::Erf:
       return "erf";
     case UnaryOpType::Erfc:
       return "erfc";
+    case UnaryOpType::Erfinv:
+      return "erfinv";
+    case UnaryOpType::Erfcinv:
+      return "erfcinv";
     case UnaryOpType::Floor:
       return "floor";
     case UnaryOpType::Frac:
@@ -426,8 +478,8 @@ static const char* unary_op_type2string(UnaryOpType t) {
       return "neg";
     case UnaryOpType::Not:
       return "not";
-    case UnaryOpType::RandLike:
-      return "randLike";
+    case UnaryOpType::Print:
+      return "print";
     case UnaryOpType::Reciprocal:
       return "reciprocal";
     case UnaryOpType::Relu:
@@ -464,6 +516,10 @@ static const char* unary_op_type2string(UnaryOpType t) {
       return "isposinf";
     case UnaryOpType::IsReal:
       return "isreal";
+    case UnaryOpType::Real:
+      return "std::real";
+    case UnaryOpType::Imag:
+      return "std::imag";
     default:
       TORCH_INTERNAL_ASSERT(false, "No string found for unary op type.");
   }
@@ -538,6 +594,10 @@ static const char* binary_op_type2string(BinaryOpType t) {
     // Logical Ops
     case BinaryOpType::And:
       return "and";
+    case BinaryOpType::Or:
+      return "or";
+    case BinaryOpType::Xor:
+      return "xor";
     case BinaryOpType::Eq:
       return "equal";
     case BinaryOpType::GE:
@@ -625,6 +685,18 @@ static const char* binary_op_type_inline_op2string(BinaryOpType t) {
   return nullptr;
 }
 
+static const char* rng_op_type_inline_op2string(RNGOpType t) {
+  switch (t) {
+    case RNGOpType::Uniform:
+      return "rng_uniform";
+    case RNGOpType::UniformRange:
+      return "rng_uniform_range";
+    default:
+      break;
+  }
+  return nullptr;
+}
+
 std::string stringifyBooleanOp(const BinaryOpType bopt) {
   switch (bopt) {
     case BinaryOpType::And:
@@ -650,6 +722,17 @@ static const char* ternary_op_type2string(TernaryOpType t) {
       return "where";
     default:
       TORCH_INTERNAL_ASSERT(false, "Unexpected TernaryOpType");
+  }
+}
+
+static const char* rng_op_type2string(RNGOpType t) {
+  switch (t) {
+    case RNGOpType::Uniform:
+      return "rng_uniform";
+    case RNGOpType::UniformRange:
+      return "rng_uniform_range";
+    default:
+      TORCH_INTERNAL_ASSERT(false, "Unexpected RNGOpType");
   }
 }
 
@@ -686,6 +769,28 @@ static const char* parallel_type2string(ParallelType t) {
   }
 }
 
+std::unordered_set<ParallelType> allParallelTypesExcept(
+    const std::unordered_set<ParallelType>& except) {
+  std::unordered_set<ParallelType> result = {
+      ParallelType::BIDz,
+      ParallelType::BIDy,
+      ParallelType::BIDx,
+      ParallelType::TIDz,
+      ParallelType::TIDy,
+      ParallelType::TIDx,
+      ParallelType::Vectorize,
+      ParallelType::MisalignedVectorize,
+      ParallelType::Unroll,
+      ParallelType::Unswitch,
+      ParallelType::Mma,
+      ParallelType::Group,
+      ParallelType::Serial};
+  for (auto t : except) {
+    result.erase(t);
+  }
+  return result;
+}
+
 static const char* memory_type2string(MemoryType t) {
   switch (t) {
     case MemoryType::Local:
@@ -701,10 +806,12 @@ static const char* memory_type2string(MemoryType t) {
 
 static const char* id_map_mode_type2string(IdMappingMode t) {
   switch (t) {
-    case IdMappingMode::PERMISSIVE:
-      return "permissive";
     case IdMappingMode::EXACT:
       return "exact";
+    case IdMappingMode::ALMOSTEXACT:
+      return "almost_exact";
+    case IdMappingMode::PERMISSIVE:
+      return "permissive";
     case IdMappingMode::LOOP:
       return "loop";
     default:
@@ -841,18 +948,69 @@ static const char* supported_casts2string(
     case supported_switch_pair(DataType::Bool, DataType::ComplexFloat):
     case supported_switch_pair(DataType::ComplexDouble, DataType::ComplexFloat):
       return "(std::complex<float>)";
+
     case supported_switch_pair(DataType::Float, DataType::Half):
       return "__float2half";
     case supported_switch_pair(DataType::Double, DataType::Half):
       return "__double2half";
-    case supported_switch_pair(DataType::Float, DataType::BFloat16):
-      return "__float2bfloat";
+    case supported_switch_pair(DataType::Int32, DataType::Half):
+      return "__int322half";
+    case supported_switch_pair(DataType::Int, DataType::Half):
+      return "__int2half";
+    case supported_switch_pair(DataType::Bool, DataType::Half):
+      return "__bool2half";
+    case supported_switch_pair(DataType::ComplexFloat, DataType::Half):
+    case supported_switch_pair(DataType::ComplexDouble, DataType::Half):
+      return "__real_then_2half";
+
     case supported_switch_pair(DataType::Half, DataType::Float):
       return "__half2float";
     case supported_switch_pair(DataType::Half, DataType::Double):
       return "__half2double";
+    case supported_switch_pair(DataType::Half, DataType::Int32):
+      return "__half2int32";
+    case supported_switch_pair(DataType::Half, DataType::Int):
+      return "__half2int";
+    case supported_switch_pair(DataType::Half, DataType::Bool):
+      return "__half2bool";
+    case supported_switch_pair(DataType::Half, DataType::ComplexFloat):
+      return "(std::complex<float>)__half2float";
+    case supported_switch_pair(DataType::Half, DataType::ComplexDouble):
+      return "(std::complex<double>)__half2double";
+
+    case supported_switch_pair(DataType::Float, DataType::BFloat16):
+      return "__float2bfloat";
+    case supported_switch_pair(DataType::Double, DataType::BFloat16):
+      return "__double2bfloat";
+    case supported_switch_pair(DataType::Half, DataType::BFloat16):
+      return "__half2bfloat";
+    case supported_switch_pair(DataType::Int32, DataType::BFloat16):
+      return "__int322bfloat";
+    case supported_switch_pair(DataType::Int, DataType::BFloat16):
+      return "__int2bfloat";
+    case supported_switch_pair(DataType::Bool, DataType::BFloat16):
+      return "__bool2bfloat";
+    case supported_switch_pair(DataType::ComplexFloat, DataType::BFloat16):
+    case supported_switch_pair(DataType::ComplexDouble, DataType::BFloat16):
+      return "__real_then_2bfloat";
+
     case supported_switch_pair(DataType::BFloat16, DataType::Float):
       return "__bfloat2float";
+    case supported_switch_pair(DataType::BFloat16, DataType::Double):
+      return "__bfloat2double";
+    case supported_switch_pair(DataType::BFloat16, DataType::Half):
+      return "__bfloat2half";
+    case supported_switch_pair(DataType::BFloat16, DataType::Int32):
+      return "__bfloat2int32";
+    case supported_switch_pair(DataType::BFloat16, DataType::Int):
+      return "__bfloat2int";
+    case supported_switch_pair(DataType::BFloat16, DataType::Bool):
+      return "__bfloat2bool";
+    case supported_switch_pair(DataType::BFloat16, DataType::ComplexFloat):
+      return "(std::complex<float>)__bfloat2float";
+    case supported_switch_pair(DataType::BFloat16, DataType::ComplexDouble):
+      return "(std::complex<double>)__bfloat2double";
+
     default:
       return nullptr;
   }
@@ -943,6 +1101,10 @@ std::ostream& operator<<(std::ostream& out, const TernaryOpType totype) {
   return out << ternary_op_type2string(totype);
 }
 
+std::ostream& operator<<(std::ostream& out, const RNGOpType rngtype) {
+  return out << rng_op_type2string(rngtype);
+}
+
 std::ostream& operator<<(std::ostream& out, const ParallelType ptype) {
   return out << stringifyThread(ptype);
 }
@@ -967,6 +1129,55 @@ TORCH_CUDA_CU_API std::ostream& operator<<(
   return out << iter_type2string(bt);
 }
 
+TORCH_CUDA_CU_API std::ostream& operator<<(
+    std::ostream& os,
+    const Swizzle2DType& swizzle) {
+  switch (swizzle) {
+    case Swizzle2DType::NoSwizzle:
+      os << "NoSwizzle";
+      break;
+    case Swizzle2DType::ZShape:
+      os << "ZShape";
+      break;
+    case Swizzle2DType::Transpose:
+      os << "Transpose";
+      break;
+    case Swizzle2DType::XOR:
+      os << "Xor";
+      break;
+    case Swizzle2DType::CyclicShift:
+      os << "CyclicShift";
+      break;
+    case Swizzle2DType::Scatter:
+      os << "Scatter";
+      break;
+    default:
+      TORCH_INTERNAL_ASSERT(false, "undefined 2D swizzle");
+      break;
+  }
+  return os;
+}
+
+TORCH_CUDA_CU_API std::ostream& operator<<(
+    std::ostream& os,
+    const SwizzleMode& swizzle) {
+  switch (swizzle) {
+    case SwizzleMode::NoSwizzle:
+      os << "NoSwizzle";
+      break;
+    case SwizzleMode::Loop:
+      os << "Loop";
+      break;
+    case SwizzleMode::Data:
+      os << "Data";
+      break;
+    default:
+      TORCH_INTERNAL_ASSERT(false, "undefined 2D swizzle");
+      break;
+  }
+  return os;
+}
+
 TORCH_CUDA_CU_API c10::optional<std::string> inline_op_str(
     const UnaryOpType uotype) {
   const char* str = unary_op_type_inline_op2string(uotype);
@@ -976,6 +1187,12 @@ TORCH_CUDA_CU_API c10::optional<std::string> inline_op_str(
 
 c10::optional<std::string> inline_op_str(const BinaryOpType botype) {
   const char* str = binary_op_type_inline_op2string(botype);
+  return str != nullptr ? c10::optional<std::string>(std::string(str))
+                        : c10::nullopt;
+}
+
+c10::optional<std::string> inline_op_str(const RNGOpType rngtype) {
+  const char* str = rng_op_type_inline_op2string(rngtype);
   return str != nullptr ? c10::optional<std::string>(std::string(str))
                         : c10::nullopt;
 }

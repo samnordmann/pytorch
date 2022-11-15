@@ -1,4 +1,3 @@
-#include <torch/csrc/jit/codegen/cuda/expr_evaluator.h>
 #include <torch/csrc/jit/codegen/cuda/ir_iostream.h>
 #include <torch/csrc/jit/codegen/cuda/ir_utils.h>
 #include <torch/csrc/jit/codegen/cuda/lower2device.h>
@@ -23,7 +22,7 @@ void NonDivisibleSplitInfo::build(Fusion* fusion) {
         tv->domain()->domain().begin(), tv->domain()->domain().end());
     current_tv_ = tv;
     clearReachability();
-    traverseFrom(fusion, domain_vals);
+    traverseTo(fusion, domain_vals);
     current_tv_ = nullptr;
   }
 
@@ -53,7 +52,16 @@ void NonDivisibleSplitInfo::handle(Split* split) {
         splits_to_validate_.insert(split);
       } else {
         // Not proven to be a divisible split
-        splits_to_predicate_[current_tv_].push_back(split);
+        auto gpu_lower = GpuLower::current();
+        TORCH_INTERNAL_ASSERT(gpu_lower != nullptr);
+
+        // If we know this split must be divisible, it's either validated as
+        // above, exact matches to a case matching the above, or exact matches
+        // to a transformation from view which must be divisible.
+        if (gpu_lower->divisibleSplitSet().find(split) ==
+            gpu_lower->divisibleSplitSet().end()) {
+          splits_to_predicate_[current_tv_].push_back(split);
+        }
       }
 
       is_protected = true;
@@ -90,9 +98,15 @@ void NonDivisibleSplitInfo::propagateReachability(
 }
 
 Val* NonDivisibleSplitInfo::getMaybeNonDivisibleExtent(Split* split) const {
-  ExpressionEvaluator ee(split->fusion());
-  auto in_extent = ee.evaluate(split->in()->extent());
-  auto factor = ee.evaluate(split->factor());
+  c10::optional<int64_t> in_extent;
+  if (split->in()->extent()->isConstInt()) {
+    in_extent = split->in()->extent()->evaluateInt();
+  }
+
+  c10::optional<int64_t> factor;
+  if (split->factor()->isConstInt()) {
+    factor = split->factor()->evaluateInt();
+  }
 
   if (in_extent.has_value() && factor.has_value() &&
       in_extent.value() % factor.value() == 0) {

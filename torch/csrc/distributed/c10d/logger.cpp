@@ -1,12 +1,14 @@
 #include <c10/util/StringUtil.h>
-#include <c10d/Utils.hpp>
-#include <c10d/debug.h>
-#include <c10d/logger.hpp>
 #include <fmt/format.h>
+#include <torch/csrc/distributed/c10d/Utils.hpp>
+#include <torch/csrc/distributed/c10d/debug.h>
+#include <torch/csrc/distributed/c10d/logger.hpp>
 #include <string>
 
+#include <c10/util/CallOnce.h>
+
 #ifdef USE_C10D_GLOO
-#include <c10d/ProcessGroupGloo.hpp>
+#include <torch/csrc/distributed/c10d/ProcessGroupGloo.hpp>
 #endif
 
 namespace c10d {
@@ -52,10 +54,10 @@ Logger::Logger(std::shared_ptr<c10d::Reducer> reducer) {
   ddp_logging_data_ = std::make_unique<at::DDPLoggingData>();
 }
 
-std::once_flag log_graph_static_flag;
+c10::once_flag log_graph_static_flag;
 
 void Logger::log_if_graph_static(bool is_static) {
-  std::call_once(log_graph_static_flag, [this, is_static]() {
+  c10::call_once(log_graph_static_flag, [this, is_static]() {
     ddp_logging_data_->ints_map["can_set_static_graph"] = is_static;
     // It is useful to report the iteration that training finished at.
     ddp_logging_data_->ints_map["iteration"] = reducer_->num_iterations_;

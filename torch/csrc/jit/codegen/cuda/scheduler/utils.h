@@ -1,7 +1,10 @@
 #pragma once
 
+#include <torch/csrc/jit/codegen/cuda/compute_at_map.h>
+#include <torch/csrc/jit/codegen/cuda/disjoint_set.h>
 #include <torch/csrc/jit/codegen/cuda/fusion.h>
 #include <torch/csrc/jit/codegen/cuda/ir_all_nodes.h>
+#include <torch/csrc/jit/codegen/cuda/maxinfo_propagator.h>
 #include <torch/csrc/jit/codegen/cuda/scheduler/reduction_heuristic.h>
 
 namespace torch {
@@ -10,7 +13,7 @@ namespace fuser {
 namespace cuda {
 
 class SchedulerRuntimeInfo;
-class ExpressionEvaluator;
+class HeuristicSummary;
 
 namespace scheduler_utils {
 
@@ -37,31 +40,77 @@ constexpr int64_t lastPow2(int64_t n) {
   return std::max((int64_t)1, n - (n >> 1));
 }
 
-// Merge all reduction to the right side and returns total number of
-// reduction axes. Don't merge is typically used for trivial reductions.
-size_t mergeReduction(
+// Div x by y, but min at 1
+inline int64_t safeDiv(const int64_t x, const int64_t y) {
+  return std::max(x / y, (int64_t)1);
+}
+
+// Split the given dimensions in `to_split`. Also update the dimensions in
+// `to_update` to the positions in the splitted tensor. Splitting one dimension
+// multiple times is supported, and if this is the case, then the order of
+// `to_split` matters. All given dimensions are numbers before any split.
+TORCH_CUDA_CU_API void splitDims(
     TensorView* tv,
-    const std::unordered_set<IterDomain*>& dont_merge = {});
+    std::vector<std::pair<size_t, size_t>> to_split, // (dim, size)
+    std::vector<size_t>& to_update);
+
+TORCH_CUDA_CU_API inline void splitDims(
+    TensorView* tv,
+    std::vector<std::pair<size_t, size_t>> to_split) { // (dim, size)
+  std::vector<size_t> unused;
+  splitDims(tv, std::move(to_split), unused);
+}
+
+// Merge all the given dimensions in `to_merge` into a single dimension. Also
+// update the dimensions in `to_update` to the positions in the merged tensor.
+// Returns the merged dimension. All given dimensions are numbers before any
+// merge.
+TORCH_CUDA_CU_API c10::optional<size_t> mergeDims(
+    TensorView* tv,
+    std::vector<size_t> to_merge,
+    std::vector<size_t>& to_update);
+
+TORCH_CUDA_CU_API inline c10::optional<size_t> mergeDims(
+    TensorView* tv,
+    std::vector<size_t> to_merge) {
+  std::vector<size_t> unused;
+  return mergeDims(tv, std::move(to_merge), unused);
+}
+
+// Merge all reduction to the right side and returns total number of
+// reduction axes.
+size_t mergeReduction(TensorView* tv);
 
 // merge all non-reduction axes to the left side and returns total number of
-// iteration axes. Don't merge is typically used for trivial reductions.
-size_t mergeNonReduction(
-    TensorView* tv,
-    const std::unordered_set<IterDomain*>& dont_merge = {});
+// iteration axes.
+size_t mergeNonReduction(TensorView* tv);
 
+// Propagate the parallelization from the selected dimensions of the reference
+// tensor to their corresponding dimensions in all selected tensors in the DAG.
+// Position `pos` means selecting all the dimensions [0, 1, ..., pos - 1]. pos =
+// -1 means selecting all dimensions. `selected_tvs` are selected tensors in the
+// DAG. Empty `selected_tvs` means selecting all tensors in the fusion of
+// `reference_tv`. `selected_parallel_types` are the selected parallel types.
+// Empty `selected_parallel_types` means selecting all parallel types.
 TORCH_CUDA_CU_API void parallelizeAllLike(
     TensorView* reference_tv,
-    const std::vector<TensorView*>& all_tvs);
+    int64_t pos = -1,
+    std::vector<TensorView*> selected_tvs = {},
+    const std::unordered_set<ParallelType>& selected_parallel_types = {},
+    bool propagate_padding = true);
 
-TORCH_CUDA_CU_API void computeAtInputs(
-    TensorView* consumer,
-    int pos,
-    ComputeAtMode mode = ComputeAtMode::Standard);
-
-TORCH_CUDA_CU_API void computeWithOutputs(
-    TensorView* producer,
-    int pos,
-    ComputeAtMode mode = ComputeAtMode::Standard);
+TORCH_CUDA_CU_API inline void parallelizeAllLike(
+    TensorView* reference_tv,
+    std::vector<TensorView*> selected_tvs,
+    const std::unordered_set<ParallelType>& selected_parallel_types = {},
+    bool propagate_padding = true) {
+  parallelizeAllLike(
+      reference_tv,
+      -1,
+      std::move(selected_tvs),
+      selected_parallel_types,
+      propagate_padding);
+}
 
 struct PersistentBufferInfo {
   std::vector<TensorView*> persistent_buffers;
@@ -125,15 +174,6 @@ TvProperties getProperties(
     SchedulerRuntimeInfo& runtime_info,
     TensorView* tv);
 
-// Will call computeAt once on each producer, with the first consumer found that
-// is a consumer of the individual producer
-void computeAtBetween(
-    const std::vector<TensorView*>& producers,
-    const std::vector<TensorView*>& consumers,
-    int pos,
-    ComputeAtMode mode,
-    std::unordered_set<IterDomain*> mapped_to_trivial_reduction = {});
-
 // Struct to store persistent buffer sizes. also holds the persistent buffer
 // size of the buffers are projected to the inputs.
 struct PersistentBufferSizeReturn {
@@ -151,14 +191,9 @@ TORCH_CUDA_CU_API PersistentBufferSizeReturn persistentBufferSize(
     PersistentBufferInfo& persistent_buffers,
     HeuristicSummary* data_cache = nullptr);
 
-// Returns a set of all iteration domains (in roots of tensors) that map to a
-// trivial reduction
-std::unordered_set<IterDomain*> getTrivialReductionMap(Fusion* fusion);
-
 // Merges tensor view to the form:
-// [IterationDomain, ReductionDomain, TrivialReductionDim0,
-// TrivialReductionDim1, ...] Returns if <iteration dimensions, reduction
-// dimensions>
+// [IterationDomain, ReductionDomain] Returns if <iteration dimensions,
+// reduction dimensions>
 std::pair<bool, bool> canonicalDimReduction(
     Fusion* fusion,
     TensorView* tv,
@@ -166,10 +201,7 @@ std::pair<bool, bool> canonicalDimReduction(
 
 // Return a list of tensor views that are outputs of reduction operations. If
 // multiple outputs of an expression are found, only include one in the list
-// (WelfordOp)
-TORCH_CUDA_CU_API std::vector<TensorView*> getReductionTvs(
-    Fusion* fusion,
-    bool ignore_trivial = true);
+TORCH_CUDA_CU_API std::vector<TensorView*> getReductionTvs(Fusion* fusion);
 
 // Returns a list of TensorViews that are the consumer tv for a view operation.
 std::vector<TensorView*> getViewTVs(Fusion* fusion);
@@ -179,13 +211,14 @@ void clearMemorySpace(Fusion* fusion);
 
 // Returns cached after tensors of the fusion inputs if unrolled. Otherwise
 // return empty vector.
-std::vector<TensorView*> cacheInputs(Fusion* fusion, bool unroll);
+TORCH_CUDA_CU_API std::vector<TensorView*> cacheInputs(
+    Fusion* fusion,
+    bool unroll);
 
 // Returns the pairs of <cache of each fusion output, corresponding output> for
 // all outputs.
-std::vector<std::pair<TensorView*, TensorView*>> cacheAndForkOutputs(
-    Fusion* fusion,
-    bool unroll);
+TORCH_CUDA_CU_API std::vector<std::pair<TensorView*, TensorView*>>
+cacheAndForkOutputs(Fusion* fusion, bool unroll);
 
 // Ignores broadcast and reduction, returns iter domain in root domain that's
 // "inner most". If this is an rfactored reduction domain, actually check the
@@ -198,34 +231,32 @@ std::vector<std::pair<TensorView*, TensorView*>> cacheAndForkOutputs(
 // domain.
 IterDomain* innerMostRootDim(TensorView* tv);
 
-// Uses a lot of logic from TransformPropagator in the implementation
-class FindAllMappedDims {
- private:
-  FindAllMappedDims(
-      TensorView* from,
-      IterDomain* starting_id,
-      bool vectorize_pass);
-
- private:
-  std::unordered_map<TensorView*, IterDomain*> mapped_ids;
-  TensorView* starting_tv = nullptr;
-  IterDomain* starting_id = nullptr;
+// Looks through fusion and finds all dims that match to the one provided in
+// the tensorview provided. Iter domain must be a root domain. If inner_only,
+// will only map dimensions if they're the inner most position. This is
+// important when projecting a dimension between an rfactor position and its
+// root position when mapping from consumer to producer. If inner_only=true,
+// takes the rfactor/root dimensions that maps, projects it to the root/rfactor
+// domain, but only following the inner most pass when encounting split/merge.
+// When propagating backward, for split it will only propagate backwards if the
+// mapped dimension is the inner portion of the split. For merge, inner_only
+// doesn't make a dimension and will propagate through the inner portion of the
+// merge. When propagating forward, the logic is symmetric with the backward
+// case.
+class FindAllMappedDims : public MaxInfoSpanningTree::Propagator {
+  std::unordered_map<TensorView*, IterDomain*> mapped_root_ids_;
+  std::unordered_map<TensorView*, IterDomain*> mapped_rfactor_ids_;
+  TensorView* starting_tv_ = nullptr;
+  IterDomain* starting_id_ = nullptr;
+  bool inner_only_;
 
  public:
-  // Looks through fusion and finds all dims that match to the one provided in
-  // the tensorview provided. Iter domain must be a root domain. If vectorize
-  // pass, will only map dimensions if they're the inner most position. This is
-  // important when projecting a dimension from an rfactor position to its root
-  // position when mapping from consumer to producer. If vectorize_pass=true,
-  // takes the rfactor dimensions that maps, projects it to the root domain, but
-  // only following the inner most pass when encounting split/merge. For split
-  // it will only propagate backwards if the mapped dimension is the inner
-  // portion of the split. For merge, vectorize_pass doesn't make a dimension
-  // and will propagate through the inner portion of the merge.
-  static std::unordered_set<IterDomain*> from(
-      TensorView* tv,
-      IterDomain* id,
-      bool vectorize_pass);
+  FindAllMappedDims(TensorView* from, IterDomain* starting_id, bool inner_only);
+  virtual void setUp() override;
+  virtual void propagateC2P(TensorView* from, TensorView* to) override;
+  virtual void propagateP2C(TensorView* from, TensorView* to) override;
+  virtual void propagateSibling(TensorView* from, TensorView* to) override;
+  std::unordered_set<IterDomain*> get() const;
 };
 
 // Checks if tensor view has an iteration domain in vector dims in its inner
@@ -238,11 +269,49 @@ bool hasInnerDim(
 
 // Returns all inputs and outputs that share the inner most dimension of the
 // provided reference. If reference is an input it ignores reduction axes, will
-// ignore all broadcast axes. If can_vectorize, will check contiguity for
-// vectorization, otherwise it just checks it has that inner dim.
+// ignore all broadcast axes. If inner_only, will require inner->inner mapping
+// in view, otherwise, it allows all inner->any mapping. If vectorize_pass, will
+// check contiguity for vectorization, otherwise it just checks it has that
+// inner dim.
 std::vector<TensorView*> getInputsOutputsWithInnerDim(
     TensorView* reference_tv,
+    bool inner_only,
     bool vectorize_pass);
+
+// Holder return struct for the below function.
+struct DisjointViewSetInfo {
+  // const* to the disjoint set in disjoint_view_set passed in to
+  // getDisjointViewSetsOf each iterdomain in the rfactor of ref is mapped to.
+  //
+  // WARNING: these pointers are relative to the disjoint_view_set reference
+  // passed into getDisjointViewSetsOf it's the user's responsibility to
+  // maintain the lifetime of that reference to match this vector.
+  std::vector<const VectorOfUniqueEntries<IterDomain*>*> disjoint_sets_of_ref;
+
+  // Unique ID associated to the disjoint view group the rfactor id belongs to
+  // in disjoint_sets_of_ref. It's straight forward to map from
+  // disjoint_sets_of_ref to the vector, but not the other way around.
+  std::vector<int> disjoint_set_ids;
+
+  // TensorView reference the above vectors are relative to.
+  TensorView* ref;
+};
+
+// Returns disjoint view sets mapped onto the given reference. Returns a pair
+// of vectors of size rfactorDomain of reference. Vector of
+// VectorOfUniqueEntries returns a const* to the disjoint set in
+// disjoint_view_set the iterdomain is mapped to. Integer vector represents
+// which disjoint view group the rfactor id belongs to. It's straight forward
+// to map from the former to the latter, but not the latter to former.
+//
+// Since we return a const* to entries in disjoint_view_set, it must be passed
+// in as a reference. Algorithm is N^2 based on number of dims in reference,
+// but generating the disjoint view set is likely the limiter on perf of this
+// function.
+DisjointViewSetInfo getDisjointViewSetsOf(
+    Fusion* fusion,
+    TensorView* of,
+    DisjointSets<IterDomain*>& disjoint_view_set);
 
 // Structure to hold byte multiples for break points. I.e. if we have the
 // tensors:
@@ -258,24 +327,26 @@ struct BroadcastMultiple {
   int64_t lhs_multiple = 0;
 };
 
-// Returns a vector of counts, size = reference_tv->getRootDomain().size(), each
-// entry [i] is the number of inputs/outputs that have a non-broadcast dimension
-// mapped to the corresponding dimension in reference_tv. Count includes
-// reference_tv if reference_tv is an input or output. Count is multiplied by
-// data type size.
-std::vector<BroadcastMultiple> getBroadcastMultiples(
-    TensorView* reference_tv,
-    DataType index_type);
+struct BroadcastMultipleInformation {
+  std::vector<int> view_disjoint_set_ids;
+  std::vector<BroadcastMultiple> broadcast_multiples;
+};
 
-//! Collect maximum vectorization word size of a tensor whose
-//! innermost domain is leaf_merged_domain. Contig merging is taken
-//! into account to expand vectorization if possible.
-size_t collectMaxVectorizeSizeWithContigMerge(
-    TensorView* tv,
-    IterDomain* leaf_merged_domain,
-    size_t max_word_size_in_byte,
-    ExpressionEvaluator& expression_evaluator,
-    DataType index_type);
+// Returns a vector of size reference_tv->getMaybeRFactorDomain().size() which
+// is a view disjoint set id of each of those iter domains. If entries share the
+// same value, they undergo view transformations in the fusion together.
+// Broadcast multiples are also of size
+// reference_tv->getMaybeRFactorDomain().size(), each entry [i] is the number of
+// inputs/outputs that have a non-broadcast dimension mapped to the
+// corresponding dimension in reference_tv. Broadcast multiples includes
+// reference_tv if reference_tv is an input or output. Broadcast multiples is
+// multiplied by data type size. In the case of view operations the broadcast
+// multiple is the full multiple size if any domain in the group maps to a
+// non-broadcast dimension in the given input/output. Otherwise if all
+// dimensions are broadcast that input/output will not contribute to the
+// multiple.
+TORCH_CUDA_CU_API BroadcastMultipleInformation
+getBroadcastMultiples(TensorView* reference_tv, DataType index_type);
 
 namespace matmul_utils {
 //! Utilities in this namespace facilitates scheduling matmul kernels with
@@ -289,10 +360,12 @@ namespace matmul_utils {
 TORCH_CUDA_CU_API void scheduleContiguousVectorLoad(
     TensorView* tv,
     MatMulTileOptions tile,
-    int vector_word);
+    int vector_word,
+    bool vectorize = true);
 
 //! Schedule utility for mma output in matmul main loop:
 //!  Realize the hierarchical tiling based on the given tiling options.
+//! TODO: rewrite this one with makeTile
 TORCH_CUDA_CU_API void scheduleWarpTileWithReduction(
     TensorView* tv,
     MatMulTileOptions tile);
@@ -300,11 +373,181 @@ TORCH_CUDA_CU_API void scheduleWarpTileWithReduction(
 //! Schedule utility for mma output in matmul main loop:
 //!  Realize the hierarchical tiling based on the given tiling options
 //! on consumers of mma ops in epilog.
+//! TODO: remove this one eventually.
 TORCH_CUDA_CU_API void scheduleWarpTileWithNoReduction(
     TensorView* tv,
     MatMulTileOptions tile);
 
+//! Lower level primitive spliting inner iterdomains into tiles:
+//! Eg.
+//!  A[B,I0,I1,I2] -> makeTile({1,2,3})
+//! Gives A[B, I0o, I1o, I2o, I0i(1), I1i(2), I2i(3)]
+TORCH_CUDA_CU_API void makeTile(TensorView* tv, std::vector<int> tile_sizes);
+
+//! Order the inner tile dimensions as the original order in
+//!  root domain. Also putting broadcast domains on the left.
+//! Eg. A[I0o,I1o,B2o,I0i,I1i,B2i] (root domain: I1,B,I0)
+//! -> A[I0o, I1o, B2o, B2i, I1i, I0i]
+//! This is used to facilitate data layout swizzling and
+//!  defining vectorized loads.
+TORCH_CUDA_CU_API void orderTiledConcreteIdAsRoot(TensorView* tv);
+
+//! Orders the root id ordering of the given tv as
+//! [Batch, Previous Reduction, M, N, K]
+//!  for easier processing of later scheduling steps.
+//!
+//! This matching works on root domain only, and
+//!  will throw if the tv has a leaf iterdomain that is
+//!  not a root id.
+TORCH_CUDA_CU_API void canonicalizeMmaTvOrdering(TensorView* tv);
+
 } // namespace matmul_utils
+
+//! Propagate current transformations on from_tv up to the given
+//!  position, to all tensorviews on the owning fusion that has
+//!  a connection with `from_tv` on the fusion graph.
+TORCH_CUDA_CU_API void transformPropagateToAllFrom(
+    TensorView* from_tv,
+    int pos);
+
+//! A type of custom transform propagator that propagates iterdomain
+//!  transforms from a source tv to all tvs that are selected
+//!  using a "direction" and a "boundary".
+//!
+//! The propagation model always assumes a `from_tv`, a `direction` and a
+//! `boundary`.
+//!
+//! This propagator will only transform producers and consumers
+//! of `from_tv`, and all propagation modes **require** a boundary to be
+//! specified to signify where the propagation should stop.
+//!
+//! There are currently three modes of propagation: forward, backward and
+//! both-way, see comment on the interface functions for details.
+struct TORCH_CUDA_CU_API BoundedDirectionalTransformPropagator {
+  //! Custom option container for configuring
+  //!  the transform propagation actions.
+  //! All option values default to false unless
+  //!  the corresponding setter is called.
+  struct Options {
+    //! If true, the transform propagator will
+    //!   also propagate parallel types from
+    //!   `from_tv` to all selected tvs.
+    bool propagate_parallel_type = false;
+
+    //! If true, the specified boundary tvs
+    //!  will also be replayed as `from_tv`.
+    //!  If false, they will not be affected
+    //!  by the propagation pass.
+    bool transform_boundary = false;
+
+    //! Sets the position boundary in parallel
+    //!  type propagation, see comment on
+    //!  scheduler_utils::parallelizeAllLike.
+    //! Only used if propagate_parallel_type==true.
+    int parallel_propagation_pos = -1;
+
+    //! Setter for enabling parallel type
+    //!  propagation. see comment on the variable.
+    //!
+    //! \param up_to_pos, sets the parallel type
+    //!  propagation boundary. see comment on
+    //!  scheduler_utils::parallelizeAllLike.
+    Options propagateParallelType(int up_to_pos = -1) {
+      propagate_parallel_type = true;
+      parallel_propagation_pos = up_to_pos;
+      return *this;
+    }
+
+    //! Setter for enabling propagation to
+    //!  boundary tvs. see comment on the variable
+    Options propagateToBoundary() {
+      transform_boundary = true;
+      return *this;
+    }
+  };
+
+  //! Replay transforms from tensorview `from`
+  //!  to the tensorviews that are consumers
+  //!  of boundary tensorviews in `to` and producers of `from`.
+  static void backward(
+      TensorView* from,
+      int pos,
+      std::vector<TensorView*> to,
+      c10::optional<Options> options = c10::nullopt);
+
+  //! Replay transforms from tensorview `from`
+  //! to the tensorviews that are producers
+  //!  of boundary tensorviews in `to` and consumers of `from`.
+  static void forward(
+      TensorView* from,
+      int pos,
+      std::vector<TensorView*> to,
+      c10::optional<Options> options = c10::nullopt);
+
+  //! Replay transforms from tensorview `from`
+  //!  to all the tensorviews that are consumers
+  //!  of tensorviews in `backward_to` and producers
+  //!  of tensorviews in `forward_to` while being
+  //!  either a producer or a consumer of tensorview `from`.
+  static void bothWays(
+      TensorView* from,
+      int pos,
+      std::vector<TensorView*> backward_to,
+      std::vector<TensorView*> forward_to,
+      c10::optional<Options> options = c10::nullopt);
+
+ private:
+  //! Utility function:
+  //!  Will realize the transform propagation to the
+  //! tensorview's in `included_tvs`.
+  //!  Assumes that all tvs in included_tvs are either
+  //! a producer or a consumer of from_tv.
+  static void propagate(
+      TensorView* from_tv,
+      int pos,
+      std::unordered_set<TensorView*> included_tvs,
+      Options options);
+};
+
+// Schedulers typically start by merging some axes together then splitting,
+// and propagating those transformations through the dag. What we want to
+// understand is if these merges can be supported through view operations.
+// For example it could be problematic to support a reduction fusion:
+//
+// tv0[2, 3, 4]
+// tv1 = sum(tv0, {1, 2})
+// tv2 = view(tv0, {6, 4})
+//
+// Since the first step of the reduction scheduler would be tv1->merge(1, 2).
+// If we tried to propagate this transformation through the view it would make
+// the view invalid. If we tried to propagate the view through the reduction,
+// it would attempt to merge a reduction and non-reduction dimension. So for
+// these types of fusions we would like to understand that the view considers
+// axis 1 and 2 of tv1 as "non-separable" axes.
+//
+// If IterDomains are disjoint in the returned set, then they are considered
+// "separable".
+// Warning: This pass generates the IdGraphs, not intended for use at runtime.
+TORCH_CUDA_CU_API DisjointSets<IterDomain*> disjointViewSets(Fusion* fusion);
+
+// Makes sure that there are no group id's left of pos that match right of pos.
+// e.g.
+// [1, 0, 0] pos 2 would return false
+// [1, 0, 0] pos 1 would return true
+TORCH_CUDA_CU_API bool breakIsDisjoint(std::vector<int> group_ids, int pos);
+
+// Generates an old to new map to reorder tv's domain as the rfactor order.
+// Priority is given to inner most dimensions for example:
+// rfactor [i0, i1, i2]
+// domain [i0*i2, i1]
+// will produce the map {{0, 1}, {1, 0}}
+// This is somewhat similar to orderTiledConcreteIdAsRoot
+TORCH_CUDA_CU_API std::unordered_map<int, int> domainReorderAsRfactorMap(
+    TensorView* tv);
+
+// Assumes view's are consistent as detected by
+// registery.cpp::requiresForwardViewReplay returning false
+void propagateViewTransforms(Fusion* fusion, const ComputeAtMap& ca_map);
 
 } // namespace scheduler_utils
 } // namespace cuda

@@ -56,9 +56,9 @@ namespace jit {
 
 namespace {
 
-bool allArgsAreTensors(Node* node) {
+bool allArgsAreTensors(const Node* node) {
   const auto& inputs = node->inputs();
-  return std::all_of(inputs.begin(), inputs.end(), [](Value* value) {
+  return std::all_of(inputs.begin(), inputs.end(), [](const Value* value) {
     return value->type()->kind() == TypeKind::TensorType;
   });
 }
@@ -69,7 +69,7 @@ bool allArgsAreTensors(Node* node) {
 // These are rarely-used ops. Disallowing them typically eliminates
 // corner cases in graph optimizations, allowing for more aggressive
 // optimizations and better performance.
-bool isUnsupportedOp(Node* node) {
+bool isUnsupportedOp(const Node* node) {
   auto kind = node->kind();
   if (kind != aten::__is__ && kind != aten::__isnot__) {
     return false;
@@ -87,12 +87,21 @@ bool isUnsupportedOp(Node* node) {
   return allArgsAreTensors(node);
 }
 
-// graph must be frozen or canEnableStaticRuntime would return false
-// if there's any prim::CallMethod op left in the graph
-bool canEnableStaticRuntime(const std::shared_ptr<torch::jit::Graph>& graph) {
-  // check for sub-blocks
+namespace {
+
+bool canEnableStaticRuntimeImpl(const Block* block) {
+  if (block == nullptr) {
+    return false;
+  }
+
   bool can_support = true;
-  for (auto* node : graph->block()->nodes()) {
+  for (auto* node : block->nodes()) {
+    for (auto* subblock : node->blocks()) {
+      // The ordering prevents && from short circuiting, which we want -
+      // it's useful to see *all* the unsupported ops.
+      can_support = canEnableStaticRuntimeImpl(subblock) && can_support;
+    }
+
     const auto kind = node->kind();
     if (kind == prim::Constant) {
       continue;
@@ -107,14 +116,16 @@ bool canEnableStaticRuntime(const std::shared_ptr<torch::jit::Graph>& graph) {
   return can_support;
 }
 
+} // namespace
+
+// Graph must be frozen. canEnableStaticRuntime will return false
+// if there's any prim::CallMethod ops left in the graph.
+bool canEnableStaticRuntime(const std::shared_ptr<torch::jit::Graph>& graph) {
+  return canEnableStaticRuntimeImpl(graph->block());
+}
+
 namespace {
 
-// CustomClass extending torch::CustomClassHolder can be typecasted
-// to IValue StaticRuntimeMetadata is created so that we can attach
-// SR metadata to IR's prim::fork nodes. These CustomClass needs to be
-// registered first in order to be used as IValue.below is an
-// UNUSED VARIABLE but NEEDED to invoke the class_ constructor necessary
-// for class registration.
 auto sr_metadata_registerer = torch::class_<StaticRuntimeMetadata>(
     "StaticRuntime",
     "StaticRuntimeMetadata");
@@ -167,6 +178,10 @@ void OptimizeGraph(
         graph,
         fromQualString("fb::sigrid_transforms_torch_bind"),
         fromQualString("fb::variadic_sigrid_transforms_torch_bind"));
+    UseVariadicOp(
+        graph,
+        fromQualString("torcharrow::inference_wrapper_run_flat"),
+        fromQualString("torcharrow::variadic_inference_wrapper_run_flat"));
     // These fused ops only have out variants - we can't do the fusion when
     // out variants are disabled.
     FuseSignLog1P(graph);
@@ -183,6 +198,7 @@ void OptimizeGraph(
     }
     FuseListUnpack(graph);
     RemoveUnnecessaryOutputs(graph);
+    PrepackWeights(graph);
 #endif
   }
 
@@ -194,6 +210,7 @@ void OptimizeGraph(
       graph, /* custom_ops */ {fromQualString("fb::scale_gradient")});
   AddIfThenElseOp(graph);
   UseSplitAndSqueeze(graph);
+  UseInPlaceGetRealInputsFromOptionalInputsV2(graph);
   GRAPH_DUMP("Final graph after optimizations: ", graph);
 }
 
@@ -842,6 +859,7 @@ BlockRunner::BlockRunner(
     const StaticModule& sm,
     IValue* values,
     Block* block,
+    torch::jit::TaskLauncher* launcher,
     bool is_root_block)
     : static_module_(sm),
       block_info_(static_module_.block_info(block)),
@@ -864,19 +882,22 @@ BlockRunner::BlockRunner(
 
   for (auto& pnode : nodes_) {
     auto* node = pnode.node();
+
+    // attach the async taskLauncher to processedNodes
+    pnode.set_metadata(launcher);
     auto blocks = node->blocks();
     const auto num_blocks = blocks.size();
     if (num_blocks == 0) {
       continue;
     }
     DCHECK(node->kind() == prim::If || node->kind() == prim::Loop);
-    auto block_runners = std::make_unique<std::vector<BlockRunner>>();
-    block_runners->reserve(num_blocks);
+    std::vector<BlockRunner> block_runners;
+    block_runners.reserve(num_blocks);
 
     for (auto* b : blocks) {
-      block_runners->emplace_back(sm, values_, b);
+      block_runners.emplace_back(sm, values_, b, launcher);
     }
-    pnode.set_block_runners(std::move(block_runners));
+    pnode.set_metadata(std::move(block_runners));
   }
 }
 
@@ -1244,6 +1265,52 @@ c10::IValue BlockRunner::run_impl_record_functions(
   return run_impl(std::forward<IValueList>(args), kwargs);
 }
 
+template <typename IValueList>
+c10::intrusive_ptr<c10::ivalue::Future> BlockRunner::run_impl_async(
+    IValueList&& args,
+    const KeywordArgs& kwargs) {
+  // run the graph inline in the caller thread. Async ops will be
+  // executed on taskLauncher attached to the metadata of ProcessedNodes
+  c10::IValue output = run_impl(args, kwargs);
+
+  // If the output is of type future, return it
+  if (output.isFuture()) {
+    return output.toFuture();
+  }
+
+  // wrap the output into future, mark completed and return it
+  TypePtr return_type;
+  if (block_info_.num_outputs() > 1) {
+    return_type = TupleType::create(
+        fmap(outputs(), [](const IValue* v) { return v->type(); }));
+  } else {
+    return_type = outputs().at(0)->type();
+  }
+  c10::intrusive_ptr<Future> future = c10::make_intrusive<Future>(return_type);
+  future->markCompleted(output);
+  return future;
+}
+
+template <typename IValueList>
+c10::intrusive_ptr<c10::ivalue::Future> BlockRunner::
+    run_impl_record_functions_async(
+        IValueList&& args,
+        const KeywordArgs& kwargs) {
+  auto step_callbacks =
+      at::getStepCallbacksUnlessEmpty(at::RecordScope::STATIC_RUNTIME_MODEL);
+  if (C10_UNLIKELY(step_callbacks.has_value())) {
+    at::RecordFunction guard(std::move(*step_callbacks));
+    TORCH_INTERNAL_ASSERT_DEBUG_ONLY(guard.isActive());
+    guard.needsInputs()
+        ? guard.before(
+              "forward", c10::ArrayRef<const IValue>(args.data(), args.size()))
+        : guard.before("forward");
+
+    return run_impl_async(std::forward<IValueList>(args), kwargs);
+  }
+  return run_impl_async(std::forward<IValueList>(args), kwargs);
+}
+
 c10::IValue BlockRunner::operator()(
     const std::vector<c10::IValue>& args,
     const KeywordArgs& kwargs) {
@@ -1261,6 +1328,26 @@ c10::IValue BlockRunner::operator()(
   return run_impl(std::move(args), kwargs);
 #else
   return run_impl_record_functions(std::move(args), kwargs);
+#endif
+}
+
+c10::intrusive_ptr<c10::ivalue::Future> BlockRunner::runAsync(
+    const std::vector<c10::IValue>& args,
+    const KeywordArgs& kwargs) {
+#ifdef PYTORCH_DISABLE_NET_PROFILING
+  return run_impl_async(args, kwargs);
+#else
+  return run_impl_record_functions_async(args, kwargs);
+#endif
+}
+
+c10::intrusive_ptr<c10::ivalue::Future> BlockRunner::runAsync(
+    std::vector<c10::IValue>&& args,
+    const KeywordArgs& kwargs) {
+#ifdef PYTORCH_DISABLE_NET_PROFILING
+  return run_impl_async(std::move(args), kwargs);
+#else
+  return run_impl_record_functions_async(std::move(args), kwargs);
 #endif
 }
 
@@ -1720,10 +1807,10 @@ bool BlockRunner::check_for_memory_leak(
         }
       }
     }
-
-    auto* block_runners = pnode.block_runners();
-    if (recurse_on_sub_blocks && block_runners) {
-      for (auto& block_runner : *block_runners) {
+    auto* metadata = pnode.metadata();
+    if (recurse_on_sub_blocks && metadata) {
+      auto& block_runners = metadata->block_runners();
+      for (auto& block_runner : block_runners) {
         block_runner.check_for_memory_leak(
             output_returned, recurse_on_sub_blocks);
       }
@@ -1849,7 +1936,7 @@ ProcessedFunction::ProcessedFunction(
         stack.emplace_back(static_cast<int>(size));
       }
       node_op(stack);
-      DCHECK_EQ(stack.size(), pnode->num_outputs());
+      TORCH_DCHECK_EQ(stack.size(), pnode->num_outputs());
       for (const auto i : c10::irange(pnode->num_outputs())) {
         pnode->Output(i) = std::move(stack[i]);
       }
@@ -1975,7 +2062,7 @@ bool ProcessedNode::verify_inputs_dont_overlap_outputs(bool force_check) const {
   bool skip_check = !schema ||
       ((schema->is_mutable() || !fn_->checkMemoryOverlap()) &&
        num_outputs() == 1);
-  if (!force_check && skip_check) {
+  if (!schema || (!force_check && skip_check)) {
     if (!schema) {
       VLOG(2) << "Detected that op schema is null";
       return true;
@@ -2053,9 +2140,14 @@ void ProcessedNode::verify_and_correct_memory_overlap() {
 StaticRuntime::StaticRuntime(const StaticModule& sm)
     : values_(sm.value_buffer_size()) {
   std::copy(sm.constants().begin(), sm.constants().end(), values_.data());
+  // default task launcher set to inter-op thread pool
+  async_task_launcher_ = at::launch;
   block_ = std::make_unique<BlockRunner>(
-      sm, values_.data(), sm.root_block(), /*is_root_block*/ true);
-  ;
+      sm,
+      values_.data(),
+      sm.root_block(),
+      &async_task_launcher_,
+      true /*is_root_block*/);
 }
 
 c10::IValue StaticRuntime::operator()(
@@ -2068,6 +2160,22 @@ c10::IValue StaticRuntime::operator()(
     std::vector<c10::IValue>&& args,
     const KeywordArgs& kwargs) {
   return (*block_)(std::move(args), kwargs);
+}
+
+c10::intrusive_ptr<c10::ivalue::Future> StaticRuntime::runAsync(
+    const std::vector<c10::IValue>& args,
+    const KeywordArgs& kwargs,
+    torch::jit::TaskLauncher taskLauncher) {
+  async_task_launcher_ = std::move(taskLauncher);
+  return block_->runAsync(args, kwargs);
+}
+
+c10::intrusive_ptr<c10::ivalue::Future> StaticRuntime::runAsync(
+    std::vector<c10::IValue>&& args,
+    const KeywordArgs& kwargs,
+    torch::jit::TaskLauncher taskLauncher) {
+  async_task_launcher_ = std::move(taskLauncher);
+  return block_->runAsync(std::move(args), kwargs);
 }
 
 bool StaticRuntime::check_for_memory_leak(bool output_returned) {

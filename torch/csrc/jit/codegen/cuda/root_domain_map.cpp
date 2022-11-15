@@ -84,6 +84,16 @@ std::unordered_map<IterDomain*, IterDomain*> PairwiseRootDomainMap::map(
     broadcast_flags = bop->getBroadcastDimFlags();
   }
 
+  std::vector<bool> squeeze_flags;
+  if (SqueezeOp* sop = dynamic_cast<SqueezeOp*>(consumer_tv_->definition())) {
+    squeeze_flags = sop->getSqueezeDimFlags();
+  }
+
+  IterDomain* selected_id = nullptr;
+  if (SelectOp* sop = dynamic_cast<SelectOp*>(consumer_tv_->definition())) {
+    selected_id = sop->getSelectAxis();
+  }
+
   std::unordered_map<IterDomain*, IterDomain*> dom_map;
   const auto producer_root =
       TensorDomain::noReductions(producer->getMaybeRFactorDomain());
@@ -93,11 +103,26 @@ std::unordered_map<IterDomain*, IterDomain*> PairwiseRootDomainMap::map(
     IterDomain* producer_id = producer_root[itp];
     IterDomain* consumer_id = consumer_root[itc];
 
+    // When the producer ID is the dim of a SelectOp, there is no
+    // mapping for it.
+    if (producer_id == selected_id) {
+      itp++;
+      continue;
+    }
+
     // When the consumer ID is a new broadcast domain, there is no
     // mapping for it.
     if (!broadcast_flags.empty() && broadcast_flags.at(itc)) {
       TORCH_INTERNAL_ASSERT(consumer_id->isBroadcast());
       itc++;
+      continue;
+    }
+
+    // When the producer ID is a removed broadcast domain, there is no
+    // mapping for it.
+    if (!squeeze_flags.empty() && squeeze_flags.at(itp)) {
+      TORCH_INTERNAL_ASSERT(producer_id->isBroadcast());
+      itp++;
       continue;
     }
 
@@ -141,21 +166,21 @@ std::unordered_map<IterDomain*, IterDomain*> PairwiseRootDomainMap::
 
   const auto& new2old = top->new2old();
   for (const auto i : c10::irange(consumer_root.size())) {
-    IterDomain* map_key_id = producer_root[new2old[i]];
-    IterDomain* map_value_id = consumer_root[i];
+    IterDomain* producer_id = producer_root[new2old[i]];
+    IterDomain* consumer_id = consumer_root[i];
 
     // In exact mapping, do not map broadcast domains with
     // non-broadcast domains
-    if (is_exact_ && map_key_id->isBroadcast() != map_value_id->isBroadcast()) {
+    if (is_exact_ && producer_id->isBroadcast() != consumer_id->isBroadcast()) {
       continue;
     }
 
     if (!producer_to_consumer) {
-      std::swap(map_key_id, map_value_id);
+      std::swap(producer_id, consumer_id);
     }
 
-    if (root_dims_to_map.find(map_key_id) != root_dims_to_map.end()) {
-      dom_map.insert(std::make_pair(map_key_id, map_value_id));
+    if (root_dims_to_map.find(producer_id) != root_dims_to_map.end()) {
+      dom_map.insert(std::make_pair(producer_id, consumer_id));
     }
   }
   return dom_map;
@@ -186,27 +211,39 @@ auto ensureMapping(
   return it;
 }
 
+TensorView* lookUpTv(const TensorDomain* td) {
+  Fusion* fusion = FusionGuard::getCurFusion();
+  for (auto tv : ir_utils::filterByType<TensorView>(fusion->vals())) {
+    if (tv->domain() == td) {
+      return tv;
+    }
+  }
+  return nullptr;
+}
+
 } // namespace
 
 std::string DomainKey::toString() const {
   std::stringstream ss;
-  ss << "{";
-  if (td()) {
-    ss << td() << " (root: " << td()->getRootDomain()
-       << ", maybe rfactor: " << td()->getMaybeRFactorDomain() << ")";
-  } else {
-    ss << "null";
-  }
-  ss << ", ";
   if (id()) {
     ss << id();
   } else {
     ss << "null";
   }
   if (concreteId()) {
-    ss << " (" << concreteId() << ")";
+    ss << " (concrete: " << concreteId() << ")";
   }
-  ss << "}";
+  ss << " in ";
+  if (td()) {
+    auto tv = lookUpTv(td());
+    TORCH_INTERNAL_ASSERT(tv != nullptr, "No TV found for ", td()->toString());
+    ss << "T" << tv->name() << "[ " << td()->getRootDomain() << " ]";
+    if (td()->hasRFactor()) {
+      ss << " (Rfactor: [ " << td()->getMaybeRFactorDomain() << " ])";
+    }
+  } else {
+    ss << "null";
+  }
   return ss.str();
 }
 
@@ -222,12 +259,12 @@ class FindInputDomains : BackwardVisitor {
  private:
   FindInputDomains(TensorView* tv, const IterDomain* id)
       : BackwardVisitor(false), tv_(tv) {
-    input_keys.insert(DomainKey(tv_->domain(), id));
+    input_keys_.insert(DomainKey(tv_->domain(), id));
   }
 
   DomainKeySet find() {
-    traverseFrom(tv_->fusion(), {tv_});
-    return input_keys;
+    traverseTo(tv_->fusion(), {tv_});
+    return input_keys_;
   }
 
   void handle(Expr* expr) override {
@@ -249,7 +286,7 @@ class FindInputDomains : BackwardVisitor {
                    .mapConsumerToProducer(out_tv->domain(), in_tv->domain());
     for (auto root_dom : out_tv->getRootDomain()) {
       DomainKey out_key({out_tv->domain(), root_dom});
-      if (input_keys.find(out_key) == input_keys.end()) {
+      if (input_keys_.find(out_key) == input_keys_.end()) {
         continue;
       }
       auto input_id_it = c2p.find(root_dom);
@@ -257,13 +294,13 @@ class FindInputDomains : BackwardVisitor {
         continue;
       }
       DomainKey input_key(in_tv->domain(), input_id_it->second);
-      input_keys.insert(input_key);
+      input_keys_.insert(input_key);
     }
   }
 
  private:
   TensorView* tv_ = nullptr;
-  DomainKeySet input_keys;
+  DomainKeySet input_keys_;
 
  public:
   static DomainKeySet find(TensorView* tv, const IterDomain* id) {
@@ -285,6 +322,10 @@ void UnmappableReductionDomains::handleReductionOutput(TensorView* out_tv) {
   auto use_chains = DependencyCheck::getAllUseChains(out_tv);
   for (const auto& chain : use_chains) {
     for (const auto& tv : ir_utils::filterByType<TensorView>(chain)) {
+      // Do not include the tensor itself in its consumers
+      if (tv == out_tv) {
+        continue;
+      }
       const auto& root_domain = tv->getRootDomain();
       for (const auto& id : root_domain) {
         DomainKey consumer_key(tv->domain(), id);
@@ -327,30 +368,41 @@ void UnmappableReductionDomains::handle(WelfordOp* op) {
 }
 
 bool UnmappableReductionDomains::isReductionOutputMapped(
-    const std::vector<DomainKey>& consumer_domains,
+    const DomainKeySet& consumer_domains,
     const ComputeAtRootDomainMap& root_map) const {
+  // Check each reduction domain if any of the consumer domains
+  // conflicts with it
   for (const auto& kv : reduction_domains_) {
     const DomainKey& reduction_domain = kv.first;
+    // Domains that must not be mapped with the reduction domain
     const DomainKeySet& incompatible_domains = kv.second;
-    DomainKey consumer_domain_with_reduction;
-    bool reduction_found = false;
+    // Input domains to the reduction domain
     const auto& input_keys = reduction_domain_inputs_.at(reduction_domain);
-    for (const DomainKey& consumer_domain : consumer_domains) {
-      for (const auto& input_key : input_keys) {
-        if (input_key == consumer_domain) {
-          consumer_domain_with_reduction = consumer_domain;
-          reduction_found = true;
-          break;
-        }
-      }
-    }
-    if (!reduction_found) {
+    // Check if any of the consumer domains is an input to the
+    // reduction
+    auto it = std::find_if(
+        consumer_domains.begin(),
+        consumer_domains.end(),
+        [&](const auto& consumer_domain) {
+          return std::find(
+                     input_keys.begin(), input_keys.end(), consumer_domain) !=
+              input_keys.end();
+        });
+    // None of the consumer domains is used for the reduction
+    // domain. They should be safe with respect to this reduction
+    // domain
+    if (it == consumer_domains.end()) {
       continue;
     }
-    // Make sure no incompatible domains will be merged with the reduction
-    // domain.
+
+    // A consumer domain that is an input to the reduction domain
+    const DomainKey& input_to_reduction = *it;
+
+    // Check if mapping input_to_reduction with the other domains in
+    // consumer_domains. If there's a domain that is a consumer of the
+    // reduction, they must not be mapped together
     for (const auto& consumer_domain : consumer_domains) {
-      if (consumer_domain == consumer_domain_with_reduction) {
+      if (consumer_domain == input_to_reduction) {
         continue;
       }
       if (std::any_of(
@@ -370,11 +422,33 @@ bool UnmappableReductionDomains::isReductionOutputMapped(
   return false;
 }
 
+std::string UnmappableReductionDomains::toString() const {
+  std::stringstream ss;
+  ss << "Reduction-to-consumer map\n";
+  for (const auto& kv : reduction_domains_) {
+    ss << "\tReduction: " << kv.first.toString() << "\n";
+    for (const auto& mapped_val : kv.second) {
+      ss << "\t\tConsumer domain: " << mapped_val.toString() << "\n";
+    }
+  }
+
+  ss << "Reduction-to-producer map\n";
+  for (const auto& kv : reduction_domain_inputs_) {
+    ss << "\tReduction: " << kv.first.toString() << "\n";
+    for (const auto& mapped_val : kv.second) {
+      ss << "\t\tProducer domain: " << mapped_val.toString() << "\n";
+    }
+  }
+
+  return ss.str();
+}
+
 void ComputeAtRootDomainMap::build(bool map_through_reduction) {
   // Make sure we start from scratch. Throw away previous results.
   eq_set_.clear();
   bcast_map_.clear();
   new_broadcast_domains_.clear();
+  removed_broadcast_domains_.clear();
   ComputeAtRootDomainMapBuilder builder(*this, map_through_reduction);
 }
 
@@ -417,13 +491,9 @@ bool ComputeAtRootDomainMap::canMap(
       const bool mappable = canMap(key_a, key_b);
       mappable_pair_found = mappable_pair_found || mappable;
       // If both concrete IDs are not broadcast, they must be
-      // mappable. Also, if either of the concrete IDs is a reduction,
-      // that means a trivial reduction (i.e., broadcast immediately
-      // followed by reduction), which does not prevent any mapping.
+      // mappable.
       if (!key_a.concreteId()->isBroadcast() &&
-          !key_b.concreteId()->isBroadcast() &&
-          !key_a.concreteId()->isReduction() &&
-          !key_b.concreteId()->isReduction() && !mappable) {
+          !key_b.concreteId()->isBroadcast() && !mappable) {
         return false;
       }
     }
@@ -464,12 +534,7 @@ bool ComputeAtRootDomainMap::canMap(
     const bool mappable = canMap(key_a, key_b);
     mappable_pair_found = mappable_pair_found || mappable;
     // If both concrete IDs are not broadcast, they must be mappable.
-    // However, if key_b's concrete ID is a reduction, the concrete ID
-    // is a result of a trivial reduction, so it should not prevent
-    // any other mapping. Similarly, if key_a is a reduction, it just
-    // needs to find any concrete ID of key_b that can be mapped.
-    if (!key_a_bcast && !key_b.concreteId()->isBroadcast() &&
-        !key_b.concreteId()->isReduction() && !key_a_reduction && !mappable) {
+    if (!key_a_bcast && !key_b.concreteId()->isBroadcast() && !mappable) {
       return false;
     }
   }
@@ -513,6 +578,15 @@ void ComputeAtRootDomainMap::setAlias(
     }
   }
   new_broadcast_domains_ = tmp_new_broadcast_domains;
+
+  auto tmp_removed_broadcast_domains = removed_broadcast_domains_;
+  for (const auto& key : removed_broadcast_domains_) {
+    if (key.td() == td) {
+      DomainKey alias_key(td_alias, key.id());
+      tmp_removed_broadcast_domains.insert(alias_key);
+    }
+  }
+  removed_broadcast_domains_ = tmp_removed_broadcast_domains;
 }
 
 std::vector<DomainKey> ComputeAtRootDomainMap::getConcretizedKeys(
@@ -585,14 +659,18 @@ std::unordered_map<IterDomain*, IterDomain*> ComputeAtRootDomainMap::map(
     }
     // Matching ID not found. It's an error unless the following three cases:
     // 1. from_id is a new broadcast of a consumer domain; or
-    // 2. from_id is a window axis of a consumer domain; or
-    // 3. from_id is a ViewAsScalar domain
+    // 2. from_id is a removed broadcast of a producer domain; or
+    // 3. from_id is a window axis of a consumer domain; or
+    // 4. from_id is a ViewAsScalar domain
     // Note that reduction domains are removed from the producer root domain.
-    if (!producer_to_consumer &&
-        (new_broadcast_domains_.find(DomainKey(from_td, from_id)) !=
-             new_broadcast_domains_.end() ||
-         from_id->getIterType() == IterType::VectorComponent ||
-         (window_axes_.count(from_id) > 0))) {
+    if ((!producer_to_consumer &&
+         (new_broadcast_domains_.find(DomainKey(from_td, from_id)) !=
+              new_broadcast_domains_.end() ||
+          from_id->getIterType() == IterType::VectorComponent ||
+          (window_axes_.count(from_id) > 0))) ||
+        (producer_to_consumer &&
+         removed_broadcast_domains_.find(DomainKey(from_td, from_id)) !=
+             removed_broadcast_domains_.end())) {
       continue;
     }
     TORCH_INTERNAL_ASSERT(
@@ -649,7 +727,7 @@ ComputeAtRootDomainMapBuilder::ComputeAtRootDomainMapBuilder(
       map_through_reduction_(map_through_reduction) {
   Fusion* fusion = FusionGuard::getCurFusion();
   TORCH_INTERNAL_ASSERT(fusion != nullptr);
-  traverseFrom(fusion, fusion->outputs(), false);
+  traverseTo(fusion, fusion->outputs(), false);
   if (!pending_map_.empty()) {
     std::stringstream ss;
     ss << "pending map:\n";
@@ -678,16 +756,19 @@ void ComputeAtRootDomainMapBuilder::initializeBcastMap(
     return;
   }
 
-  // This initialization should be only used for: 1) fusion output
-  // tensors, 2) outputs of multi-consumer expressions that are not
-  // fusion outputs, and 3) view outputs as broadcasts can be merged
-  // with non-broadcast domains, resulting in non-broadcast rfactor
-  // domains.
+  // This initialization should be only used for: 1) fusion output tensors, 2)
+  // outputs of multi-consumer expressions that are not fusion outputs, 3) view
+  // outputs as broadcasts can be merged with non-broadcast domains, resulting
+  // in non-broadcast rfactor domains, and 4) squeeze inputs as broadcasts can
+  // be removed by squeeze.
   TORCH_INTERNAL_ASSERT(
-      tv->isFusionOutput() || tv->definition()->outputs().size() > 1 ||
+      tv->isFusionOutput() || ir_utils::isSqueezeInput(tv) ||
+          tv->definition()->outputs().size() > 1 ||
           tv->isDefinitionType(ExprType::ViewOp),
-      "Invalid tensor to initialize bcast map: t",
-      tv->name());
+      "Invalid tensor to initialize bcast map t",
+      tv->name(),
+      " in tensor ",
+      tv->toString());
   root_map_.bcast_map_.insert({key, {id}});
 }
 
@@ -712,7 +793,7 @@ void ComputeAtRootDomainMapBuilder::setInvalid(
 }
 
 bool ComputeAtRootDomainMapBuilder::isInvalid(
-    const std::vector<DomainKey>& domains) const {
+    const DomainKeySet& domains) const {
   // First, collect all invalid mappings for each of the keys in domains
   DomainKeyMap<DomainKeySet> invalid_key_map;
   for (const auto& key : domains) {
@@ -729,8 +810,9 @@ bool ComputeAtRootDomainMapBuilder::isInvalid(
 
   // Next, check if any pair is invalid to map.
   const auto num_keys = domains.size();
+  const std::vector<DomainKey> domains_vec({domains.begin(), domains.end()});
   for (const auto i : c10::irange(num_keys)) {
-    const auto& key_i = domains[i];
+    const auto& key_i = domains_vec[i];
     // If no invalid keys found for key_i, it can be skipped.
     const auto invalid_key_map_it = invalid_key_map.find(key_i);
     if (invalid_key_map_it == invalid_key_map.end()) {
@@ -743,7 +825,7 @@ bool ComputeAtRootDomainMapBuilder::isInvalid(
     // If any other key in domains is identified mappable with any of
     // the keys in this set, the mapping with key_i is invalid.
     for (const auto j : c10::irange(i + 1, num_keys)) {
-      const auto& key_j = domains[j];
+      const auto& key_j = domains_vec[j];
       if (std::any_of(
               invalid_keys_for_i.begin(),
               invalid_keys_for_i.end(),
@@ -786,10 +868,6 @@ void ComputeAtRootDomainMapBuilder::setMaybeMapped(
       addToPendingList(producer_bcast_key, consumer_bcast_key);
     }
   } else {
-    TORCH_INTERNAL_ASSERT(
-        !consumer_id->isBroadcast(),
-        "No concrete domain found for a broadcast domain: ",
-        consumer_key.toString());
     auto producer_concrete_key = producer_key;
     if (producer_id->isBroadcast()) {
       const auto concrete_id = consumer_id;
@@ -818,6 +896,7 @@ void ComputeAtRootDomainMapBuilder::mapPointwiseOrReductionOp(Expr* e) {
 
   // Broadcast is handled separately, so e should never be BroadcastOp.
   TORCH_INTERNAL_ASSERT(e->getExprType() != ExprType::BroadcastOp);
+  TORCH_INTERNAL_ASSERT(e->getExprType() != ExprType::SqueezeOp);
 
   TORCH_INTERNAL_ASSERT(e->outputs().size() >= 1);
   const TensorView* out_tv = e->output(0)->as<TensorView>();
@@ -825,7 +904,7 @@ void ComputeAtRootDomainMapBuilder::mapPointwiseOrReductionOp(Expr* e) {
   const auto& out_root = out_td->getRootDomain();
 
   // Record equalities from output to all the inputs
-  // ignores un-concretizable broadcasts
+  // ignores non-concretizable broadcasts
   for (auto* in_tv : ir_utils::filterByType<TensorView>(e->inputs())) {
     const TensorDomain* in_td = in_tv->domain();
     std::vector<IterDomain*> in_root =
@@ -841,15 +920,16 @@ void ComputeAtRootDomainMapBuilder::mapPointwiseOrReductionOp(Expr* e) {
     for (const auto it : c10::irange(in_root.size())) {
       if (e->outputs().size() > 1) {
         TORCH_INTERNAL_ASSERT(
-            e->isA<WelfordOp>() || e->isA<GroupedReductionOp>(),
-            "Multi-output mapping assumes WelforddOp or GroupedReductionOp but, ",
+            e->isA<WelfordOp>() || e->isA<GroupedReductionOp>() ||
+                e->isA<GroupedWelfordOp>(),
+            "Unknown multi-output Expr type ",
             e->getExprType().value(),
             " is found");
-        for (auto o : e->outputs()) {
-          auto o_tv = o->as<TensorView>();
-          auto o_td = o_tv->domain();
-          auto o_root = o_td->getRootDomain();
-          setMaybeMapped(in_td, in_root[it], o_td, o_root[it]);
+        for (auto out : e->outputs()) {
+          auto out_tv = out->as<TensorView>();
+          auto out_td = out_tv->domain();
+          auto out_root = out_td->getRootDomain();
+          setMaybeMapped(in_td, in_root[it], out_td, out_root[it]);
         }
       } else {
         setMaybeMapped(in_td, in_root[it], out_td, out_root[it]);
@@ -903,6 +983,54 @@ void ComputeAtRootDomainMapBuilder::handle(BroadcastOp* op) {
         " of ",
         out_td);
     root_map_.new_broadcast_domains_.insert(DomainKey(out_td, *out_it));
+  }
+}
+
+void ComputeAtRootDomainMapBuilder::handle(SqueezeOp* op) {
+  const TensorDomain* in_td = op->in()->as<TensorView>()->domain();
+  const TensorDomain* out_td = op->out()->as<TensorView>()->domain();
+  const auto in_root =
+      TensorDomain::noReductions(in_td->getMaybeRFactorDomain());
+  const auto& out_root = out_td->getRootDomain();
+  const auto& squeeze_dim_flags = op->getSqueezeDimFlags();
+  TORCH_INTERNAL_ASSERT(
+      in_root.size() == squeeze_dim_flags.size(),
+      "dim flags: ",
+      squeeze_dim_flags,
+      ", in root: ",
+      in_root);
+  auto in_it = in_root.begin();
+  auto out_it = out_root.begin();
+  while (in_it != in_root.end() && out_it != out_root.end()) {
+    if (squeeze_dim_flags.at(std::distance(in_root.begin(), in_it))) {
+      // new broadcast dim. No matching dimension in the input
+      // tensor.
+      root_map_.removed_broadcast_domains_.insert(DomainKey(in_td, *in_it));
+      ++in_it;
+      continue;
+    }
+    setMaybeMapped(in_td, *in_it, out_td, *out_it);
+    ++in_it;
+    ++out_it;
+  }
+  // At this point, the output domain should have been scanned
+  // entirely.
+  TORCH_INTERNAL_ASSERT(
+      out_it == out_root.end(),
+      "Unmatched domain detected: ",
+      *out_it,
+      " of ",
+      out_td);
+  // On the other hand, the input may still have some domains left,
+  // and they must be removed broadcast domains.
+  for (; in_it != in_root.end(); ++in_it) {
+    TORCH_INTERNAL_ASSERT(
+        squeeze_dim_flags.at(std::distance(in_root.begin(), in_it)),
+        "Unmatched domain detected: ",
+        *in_it,
+        " of ",
+        in_td);
+    root_map_.removed_broadcast_domains_.insert(DomainKey(in_td, *in_it));
   }
 }
 
@@ -1005,6 +1133,10 @@ void ComputeAtRootDomainMapBuilder::mapAllPendingMappings(
   }
 }
 
+void ComputeAtRootDomainMapBuilder::handle(RNGOp* rop) {
+  handle(rop->output(0)->as<TensorView>());
+}
+
 void ComputeAtRootDomainMapBuilder::handle(TensorView* tv) {
   const TensorDomain* td = tv->domain();
   const auto rfactor = TensorDomain::noReductions(td->getMaybeRFactorDomain());
@@ -1015,7 +1147,7 @@ void ComputeAtRootDomainMapBuilder::handle(TensorView* tv) {
     mapAllPendingMappings(td, id);
   }
 
-  // When tv has a rfactor domain, propagate the domain mappings from
+  // When tv has an rfactor domain, propagate the domain mappings from
   // each of the rfactor axes to the dependent root axes.
   if (td->hasViewLikeRFactor()) {
     std::unordered_set<Val*> root_set(
@@ -1048,60 +1180,19 @@ void ComputeAtRootDomainMapBuilder::handle(TensorView* tv) {
 }
 
 // Checks whether all consumers of a producer can be joined without
-// introducing unsupported mappings. Specifically, if a domain of a
-// consumer has a mapped iteration domain in another consumer that
-// does not correspond to the same producer iteration domain, mapping
-// the consumer domains would result in the producer iteration domain
-// mapped to two different consumer iteration domains, requiring
-// recomputations.
-bool ComputeAtRootDomainMapBuilder::hasMatchingDomains(
-    const std::vector<DomainKey>& unique_domains) {
-  for (const auto& key : unique_domains) {
-    for (const auto& other_key : unique_domains) {
-      if (key == other_key) {
-        continue;
-      }
-      const auto& other_root = other_key.td()->getRootDomain();
-      if (std::any_of(
-              other_root.begin(), other_root.end(), [&](const IterDomain* id) {
-                return root_map_.canMap(key, other_key.td(), id);
-              })) {
-        return true;
-      }
-    }
-  }
-  return false;
-}
-
-// Checks whether all consumers of a producer can be joined without
 // introducing unsupported mappings, i.e., requiring recomputations.
 bool ComputeAtRootDomainMapBuilder::safeToMap(const DomainKeySet& domains) {
   if (domains.size() <= 1) {
     return true;
   }
-  // Filter out equivalent domains
-  std::vector<DomainKey> unique_domains;
-  for (const auto& domain : domains) {
-    if (std::none_of(
-            unique_domains.begin(),
-            unique_domains.end(),
-            [&](const auto& unique_dom) {
-              return root_map_.canMap(domain, unique_dom);
-            })) {
-      unique_domains.push_back(domain);
-    }
-  }
-  if (hasMatchingDomains(unique_domains)) {
-    return false;
-  }
+
   // Can't map if reduction output domains would be mapped
-  if (incompatible_domains_.isReductionOutputMapped(
-          unique_domains, root_map_) &&
+  if (incompatible_domains_.isReductionOutputMapped(domains, root_map_) &&
       !map_through_reduction_) {
     return false;
   }
   // Make sure mapping these domains won't cause any invalid mapping
-  if (isInvalid(unique_domains)) {
+  if (isInvalid(domains)) {
     return false;
   }
   return true;
@@ -1114,7 +1205,7 @@ class ExactRootDomainMapBuilder : private IterVisitor {
       Fusion* fusion,
       DisjointSets<const IterDomain*>& eq_sets)
       : eq_sets_(eq_sets) {
-    traverseFrom(fusion, fusion->outputs());
+    traverseTo(fusion, fusion->outputs());
   }
 
  private:
@@ -1147,6 +1238,15 @@ ExactRootDomainMap::ExactRootDomainMap(Fusion* fusion) {
 bool ExactRootDomainMap::areMapped(
     const IterDomain* id_a,
     const IterDomain* id_b) const {
+  // With expand going into a view operation there can be an instance where an
+  // iteration root domain in the consumer resolves the broadcast from the
+  // producer, then immediately rfactors it. In this case the consumer root is
+  // not mapped exactly to any other domain, so it might no have an entry in
+  // eq_sets_. eq_sets_.strictAreMapped would throw in this case so just return
+  // false if a mapping doesn't exist.
+  if (!eq_sets_.mappingExists(id_a) || !eq_sets_.mappingExists(id_b)) {
+    return false;
+  }
   return eq_sets_.strictAreMapped(id_a, id_b);
 }
 

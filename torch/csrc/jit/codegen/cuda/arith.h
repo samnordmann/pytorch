@@ -86,8 +86,19 @@ TORCH_CUDA_CU_API TensorView* binaryOp(
     const TypePromotionConfig& config);
 
 // Perform a reduction operation on v1, initial value for reduction is init,
-// reduces across axes, and reduction operation defined by BinaryOp.
+// reduces across axes, and reduction operation defined by BinaryOp. Reduction
+// of size-1 dimension is automatically converted to squeeze.
 TORCH_CUDA_CU_API TensorView* reductionOp(
+    BinaryOpType reduction_op_type,
+    const std::vector<int>& axes,
+    Val* init,
+    TensorView* v1,
+    bool keep_dim = false,
+    DataType dtype = DataType::Null);
+
+// Just create a ReductionOp, don't try to simplify it. Don't convert size-1
+// reduction into squeeze and don't convert size-0 reduction into full.
+TORCH_CUDA_CU_API TensorView* reductionOpRaw(
     BinaryOpType reduction_op_type,
     const std::vector<int>& axes,
     Val* init,
@@ -107,8 +118,6 @@ class TORCH_CUDA_CU_API WelfordResult {
       TensorView* in_avg,
       TensorView* in_var_sum,
       TensorView* in_n);
-
-  WelfordResult rFactor(const std::vector<int>& axes);
 };
 
 //! Welford operator on specified axes. This is currently the only scan op with
@@ -123,6 +132,69 @@ TORCH_CUDA_CU_API WelfordResult Welford(
     // import IrBuilder just for this one interface.
     Int* init_N = nullptr);
 
+//! Create a raw WelfordOp. Don't convert size-1 or size-0 reduction into
+//! squeeze/full.
+TORCH_CUDA_CU_API WelfordResult WelfordRaw(
+    TensorView* tv,
+    const std::vector<int>& axes,
+    TensorView* init_avg = nullptr,
+    TensorView* init_var = nullptr,
+    // Initializes to 0 in function definition, doing this so we don't have to
+    // import IrBuilder just for this one interface.
+    Int* init_N = nullptr);
+
+TORCH_CUDA_CU_API TensorView* select(TensorView* tv, int dim, Int* index);
+
+// RNG OPERATIONS
+TORCH_CUDA_CU_API TensorView* rand(
+    const std::vector<Val*>& shape,
+    DataType dtype);
+TORCH_CUDA_CU_API Val* rand_like(Val*);
+TORCH_CUDA_CU_API TensorView* rand_like(TensorView*);
+
+TORCH_CUDA_CU_API TensorView* uniform(
+    const std::vector<Val*>& shape,
+    Val* low,
+    Val* high,
+    DataType dtype);
+
+// TENSOR FACTORIES
+TORCH_CUDA_CU_API TensorView* full(
+    const std::vector<Val*>& shape,
+    Val* fill_value,
+    DataType dtype);
+TORCH_CUDA_CU_API TensorView* full_like(
+    TensorView* tv,
+    Val* fill_value,
+    DataType dtype);
+TORCH_CUDA_CU_API TensorView* full_like(TensorView* tv, Val* fill_value);
+TORCH_CUDA_CU_API Val* full_like(Val* tv, Val* fill_value);
+TORCH_CUDA_CU_API TensorView* zeros(
+    const std::vector<Val*>& shape,
+    DataType dtype);
+TORCH_CUDA_CU_API TensorView* zeros_like(TensorView*);
+TORCH_CUDA_CU_API Val* zeros_like(Val*);
+TORCH_CUDA_CU_API TensorView* ones(
+    const std::vector<Val*>& shape,
+    DataType dtype);
+TORCH_CUDA_CU_API TensorView* ones_like(TensorView*);
+TORCH_CUDA_CU_API Val* ones_like(Val*);
+//! WARNING: giving invalid combinations of the start, end and step
+//! arguments can result in undefined behavior. Specifically, the
+//! signs of `end - start` and step must be the same.
+TORCH_CUDA_CU_API TensorView* arange(Val* end, DataType dtype = DataType::Int);
+TORCH_CUDA_CU_API TensorView* arange(
+    Val* start,
+    Val* end,
+    DataType dtype = DataType::Int);
+TORCH_CUDA_CU_API TensorView* arange(
+    Val* start,
+    Val* end,
+    Val* step,
+    DataType dtype = DataType::Int);
+TORCH_CUDA_CU_API TensorView* eye(Val* size, DataType dtype);
+TORCH_CUDA_CU_API TensorView* eye(Val* rows, Val* cols, DataType dtype);
+
 // UNARY OPERATIONS
 // abs
 TORCH_CUDA_CU_API Val* abs(Val*);
@@ -130,9 +202,15 @@ TORCH_CUDA_CU_API TensorView* abs(TensorView*);
 // acos
 TORCH_CUDA_CU_API Val* acos(Val*);
 TORCH_CUDA_CU_API TensorView* acos(TensorView*);
+// acosh
+TORCH_CUDA_CU_API Val* acosh(Val*);
+TORCH_CUDA_CU_API TensorView* acosh(TensorView*);
 // asin
 TORCH_CUDA_CU_API Val* asin(Val*);
 TORCH_CUDA_CU_API TensorView* asin(TensorView*);
+// asinh
+TORCH_CUDA_CU_API Val* asinh(Val*);
+TORCH_CUDA_CU_API TensorView* asinh(TensorView*);
 // atan
 TORCH_CUDA_CU_API Val* atan(Val*);
 TORCH_CUDA_CU_API TensorView* atan(TensorView*);
@@ -151,6 +229,9 @@ TORCH_CUDA_CU_API TensorView* cosh(TensorView*);
 // exp
 TORCH_CUDA_CU_API Val* exp(Val*);
 TORCH_CUDA_CU_API TensorView* exp(TensorView*);
+// exp2
+TORCH_CUDA_CU_API Val* exp2(Val*);
+TORCH_CUDA_CU_API TensorView* exp2(TensorView*);
 // expm1
 TORCH_CUDA_CU_API Val* expm1(Val*);
 TORCH_CUDA_CU_API TensorView* expm1(TensorView*);
@@ -160,6 +241,12 @@ TORCH_CUDA_CU_API TensorView* erf(TensorView*);
 // erfc
 TORCH_CUDA_CU_API Val* erfc(Val*);
 TORCH_CUDA_CU_API TensorView* erfc(TensorView*);
+// erfinv
+TORCH_CUDA_CU_API Val* erfinv(Val*);
+TORCH_CUDA_CU_API TensorView* erfinv(TensorView*);
+// erfcinv
+TORCH_CUDA_CU_API Val* erfcinv(Val*);
+TORCH_CUDA_CU_API TensorView* erfcinv(TensorView*);
 // floor
 TORCH_CUDA_CU_API Val* floor(Val*);
 TORCH_CUDA_CU_API TensorView* floor(TensorView*);
@@ -187,9 +274,9 @@ TORCH_CUDA_CU_API TensorView* log2(TensorView*);
 // neg
 TORCH_CUDA_CU_API Val* neg(Val*);
 TORCH_CUDA_CU_API TensorView* neg(TensorView*);
-// randlike
-TORCH_CUDA_CU_API Val* randlike(Val*);
-TORCH_CUDA_CU_API TensorView* randlike(TensorView*);
+// real
+TORCH_CUDA_CU_API Val* real(Val*);
+TORCH_CUDA_CU_API TensorView* real(TensorView*);
 // reciprocal
 TORCH_CUDA_CU_API Val* reciprocal(Val*);
 TORCH_CUDA_CU_API TensorView* reciprocal(TensorView*);
@@ -229,6 +316,9 @@ TORCH_CUDA_CU_API TensorView* trunc(TensorView*);
 // bitwise_not
 TORCH_CUDA_CU_API Val* bitwise_not(Val*);
 TORCH_CUDA_CU_API TensorView* bitwise_not(TensorView*);
+// imag
+TORCH_CUDA_CU_API Val* imag(Val*);
+TORCH_CUDA_CU_API TensorView* imag(TensorView*);
 // isfinite
 TORCH_CUDA_CU_API Val* isfinite(Val*);
 TORCH_CUDA_CU_API TensorView* isfinite(TensorView*);
@@ -247,6 +337,9 @@ TORCH_CUDA_CU_API TensorView* isposinf(TensorView*);
 // isreal
 TORCH_CUDA_CU_API Val* isreal(Val*);
 TORCH_CUDA_CU_API TensorView* isreal(TensorView*);
+// print
+TORCH_CUDA_CU_API Val* print(Val*);
+TORCH_CUDA_CU_API TensorView* print(TensorView*);
 
 // Broadcasts inp based on bool vector. Size of broadcast bool vector should be
 // the number of dims desired in the broadcasted tensor. This vector should be
@@ -284,11 +377,18 @@ TORCH_CUDA_CU_API Val* atan2(Val* v1, Val* v2);
 TORCH_CUDA_CU_API TensorView* atan2(TensorView* v1, Val* v2);
 TORCH_CUDA_CU_API TensorView* atan2(Val* v1, TensorView* v2);
 TORCH_CUDA_CU_API TensorView* atan2(TensorView* v1, TensorView* v2);
-// div
+// div: promote to float for integer division, has the same semantics as the
+// python's operator /
 TORCH_CUDA_CU_API Val* div(Val* v1, Val* v2);
 TORCH_CUDA_CU_API TensorView* div(TensorView* v1, Val* v2);
 TORCH_CUDA_CU_API TensorView* div(Val* v1, TensorView* v2);
 TORCH_CUDA_CU_API TensorView* div(TensorView* v1, TensorView* v2);
+// cpp_div: similar to div, but don't promote to float, this has the same
+// semantics as the C++'s operator /
+TORCH_CUDA_CU_API Val* cpp_div(Val* v1, Val* v2);
+TORCH_CUDA_CU_API TensorView* cpp_div(TensorView* v1, Val* v2);
+TORCH_CUDA_CU_API TensorView* cpp_div(Val* v1, TensorView* v2);
+TORCH_CUDA_CU_API TensorView* cpp_div(TensorView* v1, TensorView* v2);
 // fmod
 TORCH_CUDA_CU_API Val* fmod(Val* v1, Val* v2);
 TORCH_CUDA_CU_API TensorView* fmod(TensorView* v1, Val* v2);
@@ -397,12 +497,14 @@ TORCH_CUDA_CU_API TensorView* sum(
 TORCH_CUDA_CU_API TensorView* max(
     TensorView* v1,
     const std::vector<int>& reduction_axes,
-    bool keep_dim = false);
+    bool keep_dim = false,
+    DataType dtype = DataType::Null);
 
 TORCH_CUDA_CU_API TensorView* min(
     TensorView* v1,
     const std::vector<int>& reduction_axes,
-    bool keep_dim = false);
+    bool keep_dim = false,
+    DataType dtype = DataType::Null);
 
 // COMPOUND OPERATIONS
 // add_alpha

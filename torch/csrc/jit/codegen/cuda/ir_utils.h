@@ -106,6 +106,10 @@ class FilteredView {
     return begin() == end();
   }
 
+  std::vector<value_type> vector() const {
+    return std::vector<value_type>(begin(), end());
+  }
+
  private:
   const InputIt input_it_;
   const InputIt last_;
@@ -155,6 +159,18 @@ std::vector<int> normalizeOld2New(
 // Warning: Creates new Expr connecting substitue.
 // Reference is found through direct pointer comparison.
 Expr* replaceValInExpr(Expr* expr, Val* reference, Val* substitute);
+
+//! Replace Vals in an index Val as specified by replacement_map while
+//! cloning the given index Val. The index val is assumed to represent
+//! a tensor index consisting of Ints  and arithmetic expressions.
+//!
+//! This is similar to replaceValInExpr but is different as Vals are
+//! cloned such that no other exprs using the same leaf Vals are not
+//! modified. TODO: Consider cleaning up the multiple replacement
+//! routines.
+Val* replaceValInIndexVal(
+    Val* index,
+    const std::unordered_map<Val*, Val*>& replacement_map);
 
 // Makes rfactor generic with reduction ops and Welford
 TORCH_CUDA_CU_API TensorView* rfactorHelper(
@@ -282,17 +298,34 @@ TORCH_CUDA_CU_API std::vector<TensorView*> outputTvsOf(
 // returns all tensor views in fusion that are used between outputs and inputs.
 TORCH_CUDA_CU_API std::vector<TensorView*> allTvs(Fusion* fusion);
 
-TORCH_CUDA_CU_API std::vector<Expr*> getReductionOps(
+// returns all tensor views in fusion that are used between outputs and inputs
+// except the specified set.
+TORCH_CUDA_CU_API std::vector<TensorView*> allTvsExcept(
     Fusion* fusion,
-    bool ignore_trivial = true);
+    const std::unordered_set<TensorView*>& except);
+
+TORCH_CUDA_CU_API std::vector<Expr*> getReductionOps(Fusion* fusion);
+
+TORCH_CUDA_CU_API std::vector<SelectOp*> getSelectOps(Fusion* fusion);
 
 // Returns the initialization value of tv or nullptr if not initialized.
 TORCH_CUDA_CU_API Val* getReductionInitValOf(TensorView* tv);
 
+// Returns if Expr is a reduction op
+TORCH_CUDA_CU_API bool isReductionOp(const Expr*);
+
+// Returns if Expr is a reduction op with TensorView or TensorIndex
+TORCH_CUDA_CU_API bool isReductionTvOp(const Expr*);
+
+// Returns all non-trivial view operations. We shouldn't have trivial view
+// operations but this function is to simply make sure if we ever do we don't
+// pull them in.
+TORCH_CUDA_CU_API std::vector<ViewOp*> getViewOps(Fusion*);
+
 template <typename T>
 std::string toString(const T& nodes) {
   std::stringstream ss;
-  for (Statement* stmt : nodes) {
+  for (const Statement* stmt : nodes) {
     if (ss.tellp() != 0) {
       ss << ", ";
     }
@@ -300,6 +333,19 @@ std::string toString(const T& nodes) {
   }
   return ss.str();
 }
+
+// Test if the given tensor is an input of squeeze op
+TORCH_CUDA_CU_API bool isSqueezeInput(const TensorView* tv);
+
+// Test if the given ID in the given tensor is squeezed
+TORCH_CUDA_CU_API bool isSqueezedID(const TensorView* tv, const IterDomain* id);
+
+// Get all IDs of a tensor. Returned values are topologicaly ordered, and
+// unique.
+TORCH_CUDA_CU_API std::vector<IterDomain*> allIDsOf(const TensorView* tv);
+
+// Check if the given tv is an input of SelectOp
+TORCH_CUDA_CU_API bool isSelectInput(TensorView* tv);
 
 } // namespace ir_utils
 } // namespace cuda

@@ -23,7 +23,8 @@ namespace cuda {
 //! domains are marked as concretized.
 class TORCH_CUDA_CU_API ConcretizedBroadcastDomains : private IterVisitor {
  public:
-  void build(Fusion* fusion);
+  ConcretizedBroadcastDomains() = delete;
+  ConcretizedBroadcastDomains(Fusion* fusion);
 
   //! Is a domain concretized?
   bool isConcretized(IterDomain* id) const;
@@ -33,6 +34,9 @@ class TORCH_CUDA_CU_API ConcretizedBroadcastDomains : private IterVisitor {
 
   //! Is a domain concretized to multiple concrete domains?
   bool maybeNonUniquelyConcretized(IterDomain* id) const;
+
+  //! Return all domains id is concretized to, if concretized
+  std::unordered_set<IterDomain*> allConcretizedDomains(IterDomain* id) const;
 
  private:
   using IterVisitor::handle;

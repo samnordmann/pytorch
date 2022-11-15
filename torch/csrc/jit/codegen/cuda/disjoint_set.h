@@ -96,6 +96,47 @@ class VectorOfUniqueEntries {
     return set_.find(entry) != set_.end();
   }
 
+  // Erase given entry from the containers if
+  //  there is a match.
+  void erase(T entry) {
+    vector_.erase(
+        std::remove_if(
+            vector_.begin(),
+            vector_.end(),
+            [entry](T val) { return val == entry; }),
+        vector_.end());
+
+    set_.erase(entry);
+  }
+
+  // Insert elements at the end of the container.
+  template <typename InputIt>
+  void insert(InputIt begin, InputIt end) {
+    for (auto it = begin; it != end; it++) {
+      pushBack(*it);
+    }
+  }
+
+  // Returns iterator pointing to the beginning of vector container
+  typename std::vector<T>::const_iterator begin() const {
+    return vector().begin();
+  }
+
+  // Returns iterator pointing to the end of vector container
+  typename std::vector<T>::const_iterator end() const {
+    return vector().end();
+  }
+
+  // Returns iterator pointing to the beginning of vector container
+  typename std::vector<T>::iterator begin() {
+    return vector_.begin();
+  }
+
+  // Returns iterator pointing to the end of vector container
+  typename std::vector<T>::iterator end() {
+    return vector_.end();
+  }
+
   std::string toString() {
     std::stringstream ss;
     ss << "{ ";
@@ -124,6 +165,20 @@ template <typename T, typename Hash = std::hash<T>>
 class DisjointSets {
  public:
   DisjointSets() = default;
+
+  DisjointSets(const DisjointSets<T, Hash>& other);
+
+  DisjointSets(DisjointSets<T, Hash>&& other) = default;
+
+  DisjointSets<T, Hash>& operator=(const DisjointSets<T, Hash>& other);
+
+  DisjointSets<T, Hash>& operator=(DisjointSets<T, Hash>&& other) = default;
+
+  friend void swap(DisjointSets<T, Hash>& sets1, DisjointSets<T, Hash>& sets2) {
+    using std::swap;
+    swap(sets1.disjoint_sets_, sets2.disjoint_sets_);
+    swap(sets1.disjoint_set_maps_, sets2.disjoint_set_maps_);
+  }
 
   // Warning: returned values should never be modified. This accessor isn't
   // strictly safe as VectorOfUniqueEntries is not returned as a const.
@@ -154,6 +209,10 @@ class DisjointSets {
   //
   // TODO: Return iterator
   void initializeSet(T entry) {
+    if (disjoint_set_maps_.find(entry) != disjoint_set_maps_.end()) {
+      return;
+    }
+
     disjoint_sets_.push_back(
         std::make_shared<VectorOfUniqueEntries<T, Hash>>());
     disjoint_sets_.back()->pushBack(entry);
@@ -257,17 +316,14 @@ class DisjointSets {
   std::string toString() const {
     std::stringstream ss;
     ss << "disjoint sets{\n";
+    const std::string sep("  ");
     for (auto s_ptr : disjoint_sets_) {
       auto& set = *s_ptr;
-      ss << "  { ";
+      ss << sep << "{\n";
       for (auto entry : set.vector()) {
-        ss << abstractToString(entry);
-        // DomainKey defines == but not !=
-        if (!(entry == set.back())) {
-          ss << "; ";
-        }
+        ss << sep << sep << abstractToString(entry) << "\n";
       }
-      ss << " }\n";
+      ss << sep << "}\n";
     }
     ss << "}";
     return ss.str();
@@ -281,6 +337,42 @@ class DisjointSets {
   // Keep a list of disjoint_sets that's deterministic to iterate over
   std::vector<std::shared_ptr<VectorOfUniqueEntries<T, Hash>>> disjoint_sets_;
 };
+
+template <typename T, typename Hash>
+DisjointSets<T, Hash>::DisjointSets(const DisjointSets<T, Hash>& other) {
+  std::unordered_map<std::shared_ptr<VectorOfUniqueEntries<T, Hash>>, int>
+      ptr_map;
+
+  // Deep copy the vector of the disjoint sets, keeping the same
+  // ordering of the sets.
+  for (const auto other_set : other.disjoint_sets_) {
+    auto new_set = std::make_shared<VectorOfUniqueEntries<T, Hash>>(*other_set);
+    int new_set_index = disjoint_sets_.size();
+    disjoint_sets_.emplace_back(new_set);
+    TORCH_INTERNAL_ASSERT(
+        ptr_map.emplace(other_set, new_set_index).second,
+        "Duplicated set found: ",
+        other_set->toString());
+  }
+
+  // Copy the mappings using the new sets
+  for (const auto kv : other.disjoint_set_maps_) {
+    const auto key = kv.first;
+    const auto new_set_index = ptr_map.at(kv.second);
+    disjoint_set_maps_.emplace(key, disjoint_sets_.at(new_set_index));
+  }
+}
+
+template <typename T, typename Hash>
+DisjointSets<T, Hash>& DisjointSets<T, Hash>::operator=(
+    const DisjointSets<T, Hash>& other) {
+  disjoint_set_maps_.clear();
+  disjoint_sets_.clear();
+
+  DisjointSets<T, Hash> copy(other);
+  swap(*this, copy);
+  return *this;
+}
 
 } // namespace cuda
 } // namespace fuser
