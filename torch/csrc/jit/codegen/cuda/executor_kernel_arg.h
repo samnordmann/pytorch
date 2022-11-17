@@ -287,6 +287,10 @@ class TORCH_CUDA_CU_API KernelArgumentHolder {
     return index_mode_;
   }
 
+  void setIndexMode(KernelIndexMode index_mode) {
+    index_mode_ = index_mode;
+  }
+
   explicit KernelArgumentHolder(KernelIndexMode index_mode)
       : index_mode_(index_mode) {}
 
