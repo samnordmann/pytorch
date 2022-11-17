@@ -238,39 +238,12 @@ std::unique_ptr<Fusion> MultiDeviceRuntime::getFusionCopyFromGroup(
 }
 
 namespace {
-
-// Check device of TensorType in all inputs ensure all tensors are on cuda
-// devices.
-// return common device index (or -1 if device differs).
-// TODO:
-//  Copy pasted from kernel_cache.cpp, need to unify eventually.
-int getCommonDeviceCUDA(const at::ArrayRef<IValue>& inputs) {
-  int index = -1;
-  for (const auto& input : inputs) {
-    if (!input.isTensor()) {
-      continue;
-    }
-    const auto& device = input.toTensor().device();
-    // skip cpu scalar tensor as they'll be promoted to scalar later
-    if (device.is_cpu() && is_cpu_scalar(input.toTensor())) {
-      continue;
-    }
-    TORCH_CHECK(device.is_cuda(), "nvfuser only supports cuda device");
-    auto cur_index = device.index();
-    if (index != -1 && index != cur_index) {
-      return -1;
-    }
-    index = (int)cur_index; // NOLINT
-  }
-  return index;
-}
-
 // Update launch parameters if scheduler needs to set the launch params.
 void updateLaunchParamsFromScheduler(
     SchedulerEntry* scheduler,
     LaunchParams& lparams) {
   // Set launch parameters form scheduler.
-  if (scheduler->hasReductionParam()) {
+  if (scheduler->params()->isA<ReductionParams>()) {
     lparams = scheduler->reductionParams().lparams;
   } else {
     lparams = scheduler->pointwiseParams().lparams;
@@ -345,20 +318,18 @@ MultiDeviceRuntime::CompiledKernelPtr MultiDeviceRuntime::compileGroup(
   CompileOptions options;
   options.device = c10::Device(DeviceType::CUDA, device_index);
 
+  auto args = KernelArgumentHolder::createKernelArgumentHolder(group_inputs);
   // Set parameters inferred by auto scheduler.
   if (maybe_scheduler_entry.has_value()) {
     auto scheduler_entry = maybe_scheduler_entry.value();
-
-    // Set index mode from scheduler.
-    options.index_mode = scheduler_entry->indexMode();
-
+    args.setIndexMode(scheduler_entry->indexMode());
     // Set launch parameters with auto scheduler.
     updateLaunchParamsFromScheduler(scheduler_entry, launch_params);
   }
 
+  args.setDeviceIndex(device_index);
   // Lower the fusion and compile the generated kernel.
-  executor_ptr->compileFusion(
-      fusion_from_group.get(), group_inputs, launch_params, options);
+  executor_ptr->compileFusion(fusion_from_group.get(), args, launch_params);
 
   return executor_ptr;
 }
