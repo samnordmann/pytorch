@@ -431,6 +431,87 @@ TEST_F(NVFuserTest, FusionMultiGPU) {
 
 }
 
+TEST_F(NVFuserTest, FusionMultiGPU_Reduce) {
+  MultiGroupFusionBuilder fusion_builder;
+  int grank, gsize;
+
+  if (parse_env(grank, gsize)) {
+    GTEST_SKIP() << "distributed config is not provided";
+  }
+
+  c10d::TCPStoreOptions store_opts;
+  store_opts.isServer = (grank == 0) ? true : false;
+  auto store = c10::make_intrusive<c10d::TCPStore>("localhost", store_opts);
+
+  c10d::ProcessGroupBuilder pgBuilder;
+  auto pg = pgBuilder.getProcessGroup("nccl", store, grank, gsize);
+
+  FusionGuard fg(fusion_builder.completeFusion());
+
+  TensorView* tva = makeContigTensor(2);
+  TensorView* tvb = makeContigTensor(2);
+
+  fusion_builder.addFusionInput(tva);
+  fusion_builder.addFusionInput(tvb);
+
+  fusion_builder.newGroup(true, 0, at::Device("cuda:0"));
+  TensorView* tva1 = sum(tva, {0});
+  fusion_builder.addGroupOutput(tva1);
+
+  fusion_builder.newGroup(true, 1, at::Device("cuda:1"));
+  TensorView* tvb1 = sum(tvb, {0});
+  fusion_builder.addGroupOutput(tvb1);
+
+  fusion_builder.newGroup(true, 2, at::Device("cuda:2"));
+  TensorView* tv2 = add(tva1, tvb1);
+  fusion_builder.addFusionOutput(tv2);
+
+// create runtime
+  MultiDeviceRuntime runtime(fusion_builder.build(), pg, grank);
+
+  if (grank == 0) {
+    runtime.multiGroupFusion()->print();
+  }
+
+
+
+  // Create at input tensors.
+    TensorOptions  options;
+    if (grank == 0){
+        options = at::TensorOptions().dtype(at::kFloat).device(at::Device("cuda:0"));
+    } else if (grank == 1) {
+        options = at::TensorOptions().dtype(at::kFloat).device(at::Device("cuda:1"));
+    } else if (grank == 2) {
+        options = at::TensorOptions().dtype(at::kFloat).device(at::Device("cuda:2"));
+    }
+    at::Tensor input_tva = at::randn({8, 8}, options);
+    at::Tensor input_tvb = at::randn({8, 8}, options);
+
+// run
+    auto cg_outputs = runtime.runWithInput({input_tva, input_tvb});// Run the multiple kernels created.
+
+// print results
+  if (grank == 0){
+    std::vector<at::Tensor> sent_tva = {input_tva};
+    pg->send(sent_tva, 2, 0);
+  } else if (grank == 1){
+    std::vector<at::Tensor> sent_tvb = {input_tvb};
+    pg->send(sent_tvb, 2, 0);
+  } else if (grank == 2){
+    std::vector<at::Tensor> received_tva = {input_tva};
+    std::vector<at::Tensor> received_tvb = {input_tvb};
+    auto work0 = pg->recv(received_tva, 0, 0);
+    auto work1 = pg->recv(received_tvb, 1, 0);
+    while (!work0->isCompleted() || !work1->isCompleted());
+    auto ref = input_tva.sum({0}) + input_tvb.sum({0});
+    std::cout << "Expected output:\n" << ref << std::endl;
+    std::cout << "Obtained output:\n" << cg_outputs << std::endl;
+  }
+
+
+  pg->barrier();
+}
+
 #undef NVFUSER_TEST_CUDA_ARCH_GUARD
 
 } // namespace jit

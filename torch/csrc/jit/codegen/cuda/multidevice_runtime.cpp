@@ -33,7 +33,7 @@ void MultiGroupFusionBuilder::newGroup(
   new_group_record.process_rank = process_rank;
   new_group_record.device = device;
 
-  // Copy currently avaialbe tenors in the context
+  // Copy currently availabe tensors in the context
   //  into the group's context. This includes all
   //  global inputs and all other groups' outputs
   //  defined so far.
@@ -44,13 +44,16 @@ void MultiGroupFusionBuilder::newGroup(
 
   // Save the newly created group record.
   group_creation_records_.push_back(new_group_record);
+
+  //Set the newly created group as the current group
+  setCurrentGroup(&group_creation_records_.back());
 }
 
 void MultiGroupFusionBuilder::newStmt(IrBuilderPasskey, Statement* stmt) {
   // Only analyze expressions for now
   if (auto expr = dynamic_cast<Expr*>(stmt)) {
     // Get the current group.
-    auto& current_group = currentGroup();
+    auto& current_group = getCurrentGroup();
 
     for (auto input_tv : ir_utils::filterByType<TensorView>(expr->inputs())) {
       // Check that all inputs required by this new expression
@@ -88,7 +91,7 @@ void MultiGroupFusionBuilder::newStmt(IrBuilderPasskey, Statement* stmt) {
 }
 
 void MultiGroupFusionBuilder::addGroupOutput(TensorView* tv) {
-  auto& group = currentGroup();
+  auto& group = getCurrentGroup();
 
   // Check that the given tensor is defined internally
   //  within the group's context.
@@ -104,7 +107,7 @@ void MultiGroupFusionBuilder::addGroupOutput(TensorView* tv) {
 }
 
 void MultiGroupFusionBuilder::addFusionOutput(TensorView* tv) {
-  auto& group = currentGroup();
+  auto& group = getCurrentGroup();
 
   TORCH_INTERNAL_ASSERT(
       group.internal_tensors.has(tv),
@@ -371,38 +374,39 @@ void MultiDeviceRuntime::runKernel(
   //  run this group.
   bool always_run = group_rank == -1 || process_rank_ == -1;
   bool running_kernel = always_run || group_rank == process_rank_;
-
   // ========================================================================
   //  Section for receiving data from other rank:
   auto input_n = group_input.size();
   TORCH_INTERNAL_ASSERT(group->input_vals.size() == input_n);
 
-  for (auto input_idx : c10::irange(input_n)) {
-    auto input_source_rank_it =
-        context_source_rank_.find(group->input_vals.at(input_idx));
-    if (input_source_rank_it == context_source_rank_.end()) {
-      std::unordered_set<Val*> global_inputs(
-          multi_group_fusion_->completeFusion()->inputs().begin(),
-          multi_group_fusion_->completeFusion()->inputs().end());
+  if (running_kernel) {
+    for (auto input_idx : c10::irange(input_n)) {
+      auto input_source_rank_it =
+          context_source_rank_.find(group->input_vals.at(input_idx));
+      if (input_source_rank_it == context_source_rank_.end()) {
+        std::unordered_set<Val*> global_inputs(
+            multi_group_fusion_->completeFusion()->inputs().begin(),
+            multi_group_fusion_->completeFusion()->inputs().end());
 
-      // Check that if there's no source rank definition then this
-      //  value is a global input.
-      // TODO:
-      // At the very beginning of this run the global inputs could be
-      //  on any device so there'd need to be an initial processing
-      //  to make sure all the running groups have them available.
-      TORCH_INTERNAL_ASSERT(
-          global_inputs.count(group->input_vals.at(input_idx)));
-      continue;
-    }
+        // Check that if there's no source rank definition then this
+        //  value is a global input.
+        // TODO:
+        // At the very beginning of this run the global inputs could be
+        //  on any device so there'd need to be an initial processing
+        //  to make sure all the running groups have them available.
+        TORCH_INTERNAL_ASSERT(
+            global_inputs.count(group->input_vals.at(input_idx)));
+        continue;
+      }
 
-    auto input_source_rank = input_source_rank_it->second;
-    if (input_source_rank != -1 && input_source_rank != process_rank_) {
-      // Receive this value here
-      std::vector<at::Tensor> tensor_to_receive = {group_input.at(input_idx).toTensor()}; // holder for the received tensor
-      auto work = process_group_->recv(tensor_to_receive, input_source_rank, 0); // receive the tensor
-      while (!work->isCompleted()); // wait for completion
-      group_input.at(input_idx) = (IValue)(tensor_to_receive[0]); // store the received tensor
+      auto input_source_rank = input_source_rank_it->second;
+      if (input_source_rank != -1 && input_source_rank != process_rank_) {
+        // Receive this value here
+        std::vector<at::Tensor> tensor_to_receive = {group_input.at(input_idx).toTensor()}; // holder for the received tensor
+        auto work = process_group_->recv(tensor_to_receive, input_source_rank, 0); // receive the tensor
+        while (!work->isCompleted()); // wait for completion
+        group_input.at(input_idx) = (IValue)(tensor_to_receive[0]); // store the received tensor
+      }
     }
   }
   // ========================================================================
