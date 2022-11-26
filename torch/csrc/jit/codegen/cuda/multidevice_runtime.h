@@ -167,15 +167,11 @@ class TORCH_CUDA_CU_API MultiGroupFusionBuilder : NonCopyable {
     TORCH_INTERNAL_ASSERT(
         !group_creation_records_.empty(), "call newGroup first.");
     return *current_group_;
-    // return group_creation_records_.back();
   }
 
   void setCurrentGroup(GroupRecord* group) {
     current_group_ = group;
   }
-  //! Keep track of the current group, which either has been manually set
-  //! through setCurrentGroup method or is the latest group created
-  GroupRecord* current_group_;
 
  private:
   std::unique_ptr<SegmentedGroup> buildGroup(const GroupRecord& group_record);
@@ -200,6 +196,9 @@ class TORCH_CUDA_CU_API MultiGroupFusionBuilder : NonCopyable {
   //!  each builder can only produce multi-group fusion once.
   bool valid_ = true;
 
+  //! Keep track of the current group, which either has been manually set
+  //! through setCurrentGroup method or is the latest group created
+  GroupRecord* current_group_;
 };
 
 //! Runtime to support running multi-group fusion on

@@ -435,6 +435,7 @@ TEST_F(NVFuserTest, FusionMultiGPU_Reduce) {
   MultiGroupFusionBuilder fusion_builder;
   int grank, gsize;
 
+// Processgroup setup
   if (parse_env(grank, gsize)) {
     GTEST_SKIP() << "distributed config is not provided";
   }
@@ -446,6 +447,7 @@ TEST_F(NVFuserTest, FusionMultiGPU_Reduce) {
   c10d::ProcessGroupBuilder pgBuilder;
   auto pg = pgBuilder.getProcessGroup("nccl", store, grank, gsize);
 
+// Fusion definition
   FusionGuard fg(fusion_builder.completeFusion());
 
   TensorView* tva = makeContigTensor(2);
@@ -466,14 +468,13 @@ TEST_F(NVFuserTest, FusionMultiGPU_Reduce) {
   TensorView* tv2 = add(tva1, tvb1);
   fusion_builder.addFusionOutput(tv2);
 
-// create runtime
-  MultiDeviceRuntime runtime(fusion_builder.build(), pg, grank);
-
+  // print the fusion
   if (grank == 0) {
     runtime.multiGroupFusion()->print();
   }
 
-
+  // create runtime
+  MultiDeviceRuntime runtime(fusion_builder.build(), pg, grank);
 
   // Create at input tensors.
     TensorOptions  options;
@@ -506,7 +507,9 @@ TEST_F(NVFuserTest, FusionMultiGPU_Reduce) {
     auto ref = input_tva.sum({0}) + input_tvb.sum({0});
     std::cout << "Expected output:\n" << ref << std::endl;
     std::cout << "Obtained output:\n" << cg_outputs << std::endl;
-  }
+  //   TORCH_INTERNAL_ASSERT(
+  //       ref.equal(cg_outputs[0]), "Obtained output is not the one expected");
+  // }
 
 
   pg->barrier();
