@@ -431,11 +431,52 @@ TEST_F(NVFuserTest, FusionMultiGPU) {
 
 }
 
+
 TEST_F(NVFuserTest, FusionMultiGPU_Reduce) {
-  MultiGroupFusionBuilder fusion_builder;
-  int grank, gsize;
+
+/*
+Test to be run on 4 ranks, each rank will be associated with a unique device and a unique group.
+
+Input: tensor tv of shape (2,8,8), initialized randomly on rank 0.
+
+=========
+
+rank 0:
+  input: tv
+  outputs: tv0 = tv + tv
+    This operation is just to make the kernel non trivial
+
+=========
+
+rank 0 sends tva = tv0[0,:] to rank 1
+rank 0 sends tvb = tv0[1,:] to rank 2
+
+=========
+
+rank 1:
+  input: tva
+  output: tva1 = tva.sum(0)
+
+rank 2:
+  input: tvb
+  output: tvb1 = tvb.sum(0)
+
+=========
+
+rank 3 receives tva1 from rank 1
+rank 3 receives tvb1 from rank 2
+
+=========
+
+rank 3:
+  input: tva1 and tvb1
+  output: tv2 = tva1 + tvb1
+    this output should match 2 * tv.sum({0,1})
+*/
+
 
 // Processgroup setup
+  int grank, gsize;
   if (parse_env(grank, gsize)) {
     GTEST_SKIP() << "distributed config is not provided";
   }
@@ -447,24 +488,35 @@ TEST_F(NVFuserTest, FusionMultiGPU_Reduce) {
   c10d::ProcessGroupBuilder pgBuilder;
   auto pg = pgBuilder.getProcessGroup("nccl", store, grank, gsize);
 
-// Fusion definition
+
+  if (gsize != 4){
+    GTEST_SKIP() << "this test must be run with 4 ranks but gsize=" << gsize;
+  }
+
+  MultiGroupFusionBuilder fusion_builder;
   FusionGuard fg(fusion_builder.completeFusion());
 
-  TensorView* tva = makeContigTensor(2);
-  TensorView* tvb = makeContigTensor(2);
+  TensorView* tv = makeContigTensor(3);
+  auto index_a = IrBuilder::create<Int>(0);
+  auto index_b = IrBuilder::create<Int>(1);
+  fusion_builder.addFusionInput(tv);
 
-  fusion_builder.addFusionInput(tva);
-  fusion_builder.addFusionInput(tvb);
-
+//TODO: automate the device management. Bind device to rank and not to group..?
   fusion_builder.newGroup(true, 0, at::Device("cuda:0"));
+  auto tv0 = add(tv, tv);
+  fusion_builder.addGroupOutput(tv0);
+
+  fusion_builder.newGroup(true, 1, at::Device("cuda:1"));
+  auto tva = select(tv0, 0, index_a);
   TensorView* tva1 = sum(tva, {0});
   fusion_builder.addGroupOutput(tva1);
 
-  fusion_builder.newGroup(true, 1, at::Device("cuda:1"));
+  fusion_builder.newGroup(true, 2, at::Device("cuda:2"));
+  auto tvb = select(tv0, 0, index_b);
   TensorView* tvb1 = sum(tvb, {0});
   fusion_builder.addGroupOutput(tvb1);
 
-  fusion_builder.newGroup(true, 2, at::Device("cuda:2"));
+  fusion_builder.newGroup(true, 3, at::Device("cuda:3"));
   TensorView* tv2 = add(tva1, tvb1);
   fusion_builder.addFusionOutput(tv2);
 
@@ -476,8 +528,7 @@ TEST_F(NVFuserTest, FusionMultiGPU_Reduce) {
     runtime.multiGroupFusion()->print();
   }
 
-
-  // Create at input tensors.
+  // Create input tensors.
     TensorOptions  options;
     if (grank == 0){
         options = at::TensorOptions().dtype(at::kFloat).device(at::Device("cuda:0"));
@@ -485,30 +536,28 @@ TEST_F(NVFuserTest, FusionMultiGPU_Reduce) {
         options = at::TensorOptions().dtype(at::kFloat).device(at::Device("cuda:1"));
     } else if (grank == 2) {
         options = at::TensorOptions().dtype(at::kFloat).device(at::Device("cuda:2"));
+    } else if (grank == 3) {
+        options = at::TensorOptions().dtype(at::kFloat).device(at::Device("cuda:3"));
     }
-    at::Tensor input_tva = at::randn({8, 8}, options);
-    at::Tensor input_tvb = at::randn({8, 8}, options);
+    at::Tensor input_tv = at::randn({2, 8, 8}, options);
 
 // run
-    auto cg_outputs = runtime.runWithInput({input_tva, input_tvb});// Run the multiple kernels created.
+    auto cg_outputs = runtime.runWithInput({input_tv});// Run the multiple kernels created.
 
 // print results
   if (grank == 0){
-    std::vector<at::Tensor> sent_tva = {input_tva};
-    pg->send(sent_tva, 2, 0);
-  } else if (grank == 1){
-    std::vector<at::Tensor> sent_tvb = {input_tvb};
-    pg->send(sent_tvb, 2, 0);
-  } else if (grank == 2){
-    std::vector<at::Tensor> received_tva = {input_tva};
-    std::vector<at::Tensor> received_tvb = {input_tvb};
-    auto work0 = pg->recv(received_tva, 0, 0);
-    auto work1 = pg->recv(received_tvb, 1, 0);
-    while (!work0->isCompleted() || !work1->isCompleted());
-    auto ref = input_tva.sum({0}) + input_tvb.sum({0});
+    std::vector<at::Tensor> sent_tv = {input_tv};
+    pg->send(sent_tv, 3, 0);
+  } else if (grank == 3){
+    std::vector<at::Tensor> received_tv = {input_tv};
+    auto work = pg->recv(received_tv, 0, 0);
+    while (!work->isCompleted());
+    auto ref = input_tv;
+    ref = ref + ref;
+    ref = ref.sum({0});
+    ref = ref.sum({0});
     TORCH_INTERNAL_ASSERT(allclose(ref, cg_outputs[0]), "Obtained output is not the one expected");
   }
-
 
   pg->barrier();
 }
