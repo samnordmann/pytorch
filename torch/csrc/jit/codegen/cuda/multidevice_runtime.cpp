@@ -15,10 +15,12 @@ namespace cuda {
 MultiGroupFusionBuilder::MultiGroupFusionBuilder() {
   // Create a new instance of fusion graph to hold
   //  the flattened fusion.
-  original_fusion_ = std::make_unique<Fusion>();
+  // original_fusion_ = std::make_unique<Fusion>();
+  // original_fusion_ = this;
 
   // Register owning builder to this fusion.
-  original_fusion_->setActiveMultiGroupFusionBuilder(this);
+  setActiveMultiGroupFusionBuilder(this);
+  // original_fusion_->setActiveMultiGroupFusionBuilder(this);
 }
 
 // TODO: almost a good time to have a "group parameters" struct.
@@ -114,7 +116,8 @@ void MultiGroupFusionBuilder::addFusionOutput(TensorView* tv) {
       "can only add tensors from current group to fusion output.");
 
   // Register tv as a global ouputput.
-  original_fusion_->addOutput(tv);
+  // original_fusion_->addOutput(tv);
+  addOutput(tv);
 
   // Register tv as a group output.
   group.group_outputs.pushBack(tv);
@@ -122,7 +125,8 @@ void MultiGroupFusionBuilder::addFusionOutput(TensorView* tv) {
 
 void MultiGroupFusionBuilder::addFusionInput(TensorView* tv) {
   // Register tv as a global input.
-  original_fusion_->addInput(tv);
+  addInput(tv);
+  // original_fusion_->addInput(tv);
 
   // Add this tv to the global context.
   context_tensor_map_[tv] = nullptr;
@@ -132,7 +136,7 @@ void MultiGroupFusionBuilder::addFusionInput(TensorView* tv) {
 std::unique_ptr<SegmentedGroup> MultiGroupFusionBuilder::buildGroup(
     const GroupRecord& group_record) {
   // Create a new instance of segmented group.
-  auto new_group = std::make_unique<SegmentedGroup>(original_fusion_.get());
+  auto new_group = std::make_unique<SegmentedGroup>(this);
 
   // Copy exprs into segmented group
   new_group->exprs_ = group_record.exprs;
@@ -179,10 +183,11 @@ std::unique_ptr<MultiGroupFusion> MultiGroupFusionBuilder::build() {
   }
 
   // Invalidate this builder within original_fusion_
-  original_fusion_->invalidateMultiGroupFusionBuilder();
+  invalidateMultiGroupFusionBuilder();
+  // original_fusion_->invalidateMultiGroupFusionBuilder();
 
   // Transfer ownership of original fusion.
-  multigroup_fusion.original_fusion_ = std::move(original_fusion_);
+  multigroup_fusion.original_fusion_ = this;
 
   return multigroup_fusion_ptr;
 }
@@ -423,17 +428,18 @@ void MultiDeviceRuntime::runKernel(
     // For simplicity, just allocate space for all the potential
     //  kernel outputs. Optimization possible but quite open ended
     //  for now.
+    // TODO only allocate if we are gonna indeed use this Ivalue in a future kernel
     outputs = executor->allocOutputSpace(group_input);
   }
 
-  // Run the kernels and pull the output
-
+  // Store the outputs or place holders in the context
   // Bind context tensors to the actual kernel outputs:
   int number_of_outputs = group->output_vals.size();
 
   TORCH_INTERNAL_ASSERT(outputs.size() == number_of_outputs);
 
   for (auto output_idx : c10::irange(number_of_outputs)) {
+  //retrieves the Val that corresponds to this output IValue
     auto output_val = group->output_vals.at(output_idx);
 
     // Fill tensor data or placeholder to context.
@@ -498,6 +504,7 @@ std::vector<at::Tensor> MultiDeviceRuntime::runWithInput(
   // Collect global outputs from context
   std::vector<at::Tensor> outputs;
 
+//TODO: could be written in an auxiliary function as in getGroupIValueInputs
   std::transform(
       globalOutputs().begin(),
       globalOutputs().end(),

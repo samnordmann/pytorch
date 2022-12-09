@@ -19,8 +19,9 @@ namespace cuda {
 
 //! Similar to segmented fusion but simplified to be
 //!  purely manually controlled.
-class TORCH_CUDA_CU_API MultiGroupFusion : NonCopyable {
- public:
+class TORCH_CUDA_CU_API MultiGroupFusion final : public Fusion {
+
+   public:
   using ProcessRankType = int;
 
   // Print out the fusion in std::cout
@@ -34,7 +35,7 @@ class TORCH_CUDA_CU_API MultiGroupFusion : NonCopyable {
   // Returns a fusion graph that contains all the expressions
   //  from all the groups, flattened on the same graph.
   Fusion* completeFusion() {
-    return original_fusion_.get();
+    return original_fusion_;
   }
 
   // Returns true if the given group is specified by user
@@ -67,7 +68,8 @@ class TORCH_CUDA_CU_API MultiGroupFusion : NonCopyable {
 
   // The complete fusion having all the expressions on
   //  the same graph.
-  std::unique_ptr<Fusion> original_fusion_ = nullptr;
+  Fusion* original_fusion_ = nullptr;
+  // std::unique_ptr<Fusion> original_fusion_ = nullptr;
 
   // Keeps track of which group to auto schedule
   std::unordered_set<SegmentedGroup*> auto_scheduled_groups_;
@@ -128,7 +130,7 @@ struct GroupRecord {
 
 //! User interface for building multi-group fusion in
 //!  scheduling time.
-class TORCH_CUDA_CU_API MultiGroupFusionBuilder : NonCopyable {
+class TORCH_CUDA_CU_API MultiGroupFusionBuilder : public Fusion {
  public:
   MultiGroupFusionBuilder();
 
@@ -137,9 +139,9 @@ class TORCH_CUDA_CU_API MultiGroupFusionBuilder : NonCopyable {
 
   // Query function for the fusion containing all
   //  the expressions.
-  auto completeFusion() const {
-    return original_fusion_.get();
-  }
+  // auto completeFusion() {
+  //   return this;
+  // }
 
   // Mark starting point of a new group, i.e kernel
   void newGroup(
@@ -187,7 +189,7 @@ class TORCH_CUDA_CU_API MultiGroupFusionBuilder : NonCopyable {
   //! Original fusion this builder will be
   //!  spliting. Using an owning pointer to
   //!  avoid redundant copying.
-  std::unique_ptr<Fusion> original_fusion_ = nullptr;
+  // Fusion* original_fusion_ = nullptr;
 
   //! Running counter to generate unique group id.
   int running_group_counter_ = 0;

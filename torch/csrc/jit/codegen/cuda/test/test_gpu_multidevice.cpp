@@ -356,7 +356,7 @@ TEST_F(NVFuserTest, FusionMultiGPU) {
   // process group defined
 
   // Fusion guard is on the fusion managed within builder.
-  FusionGuard fg(fusion_builder.completeFusion());
+  FusionGuard fg(&fusion_builder);
 
   TensorView* tv0 = makeContigTensor(3);
 
@@ -448,8 +448,8 @@ rank 0:
 
 =========
 
-rank 0 sends tva = tv0[0,:] to rank 1
-rank 0 sends tvb = tv0[1,:] to rank 2
+rank 0 sends tva = tv0[0,:] of shape (8,8) to rank 1
+rank 0 sends tvb = tv0[1,:] of shape (8,8) to rank 2
 
 =========
 
@@ -494,35 +494,43 @@ rank 3:
   }
 
   MultiGroupFusionBuilder fusion_builder;
-  FusionGuard fg(fusion_builder.completeFusion());
+  FusionGuard fg(&fusion_builder);
+ std::cout << "Start Fusion on rank " << grank << std::endl;
 
   TensorView* tv = makeContigTensor(3);
   auto index_a = IrBuilder::create<Int>(0);
   auto index_b = IrBuilder::create<Int>(1);
   fusion_builder.addFusionInput(tv);
 
+ std::cout << "Start 1st group on rank " << grank << std::endl;
 //TODO: automate the device management. Bind device to rank and not to group..?
   fusion_builder.newGroup(true, 0, at::Device("cuda:0"));
+ std::cout << "1st group created on rank " << grank << std::endl;
   auto tv0 = add(tv, tv);
   fusion_builder.addGroupOutput(tv0);
 
+ std::cout << "Start 2nd group on rank " << grank << std::endl;
   fusion_builder.newGroup(true, 1, at::Device("cuda:1"));
-  auto tva = select(tv0, 0, index_a);
-  TensorView* tva1 = sum(tva, {0});
+  auto tva = select(tv0, 0, index_a); // tva = tv0[0,:,:] of shape (8,8)
+  TensorView* tva1 = sum(tva, {0}); // tva1 of shape (r8,8) or (8)
   fusion_builder.addGroupOutput(tva1);
 
+ std::cout << "Start 3rd group on rank " << grank << std::endl;
   fusion_builder.newGroup(true, 2, at::Device("cuda:2"));
-  auto tvb = select(tv0, 0, index_b);
+  auto tvb = select(tv0, 0, index_b);// tvb = tv0[1,:,:] of shape (8,8)
   TensorView* tvb1 = sum(tvb, {0});
   fusion_builder.addGroupOutput(tvb1);
 
+ std::cout << "Start 4th group on rank " << grank << std::endl;
   fusion_builder.newGroup(true, 3, at::Device("cuda:3"));
   TensorView* tv2 = add(tva1, tvb1);
   fusion_builder.addFusionOutput(tv2);
 
+ std::cout << "Create runtime on rank " << grank << std::endl;
   // create runtime
   MultiDeviceRuntime runtime(fusion_builder.build(), pg, grank);
 
+ std::cout << "Print Fusion on rank " << grank << std::endl;
   // print the fusion
   if (grank == 0) {
     runtime.multiGroupFusion()->print();
@@ -539,7 +547,7 @@ rank 3:
     } else if (grank == 3) {
         options = at::TensorOptions().dtype(at::kFloat).device(at::Device("cuda:3"));
     }
-    at::Tensor input_tv = at::randn({2, 8, 8}, options);
+    at::Tensor input_tv = at::randn({2, 8, 8}, options); //caveat: only used on rank 0
 
 // run
     auto cg_outputs = runtime.runWithInput({input_tv});// Run the multiple kernels created.
