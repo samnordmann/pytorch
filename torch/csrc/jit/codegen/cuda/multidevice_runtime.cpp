@@ -5,7 +5,7 @@
 #include <torch/csrc/jit/codegen/cuda/lower_utils.h>
 #include <torch/csrc/jit/codegen/cuda/multidevice_runtime.h>
 
-#include <fstream>
+// #include <fstream>
 
 namespace torch {
 namespace jit {
@@ -13,20 +13,15 @@ namespace fuser {
 namespace cuda {
 
 MultiGroupFusionBuilder::MultiGroupFusionBuilder() {
-  // Create a new instance of fusion graph to hold
-  //  the flattened fusion.
-  // original_fusion_ = std::make_unique<Fusion>();
-  // original_fusion_ = this;
 
   // Register owning builder to this fusion.
   setActiveMultiGroupFusionBuilder(this);
-  // original_fusion_->setActiveMultiGroupFusionBuilder(this);
 }
 
 // TODO: almost a good time to have a "group parameters" struct.
 void MultiGroupFusionBuilder::newGroup(
     bool auto_schedule,
-    MultiGroupFusion::ProcessRankType process_rank,
+    ProcessRankType process_rank,
     c10::Device device) {
   // Create a new record.
   GroupRecord new_group_record;

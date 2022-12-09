@@ -17,13 +17,55 @@ namespace jit {
 namespace fuser {
 namespace cuda {
 
+using ProcessRankType = int;
+
+//! Record object keeping track of the group construction
+//!  at compute definition stage.
+struct GroupRecord {
+  // Unique identifier for the group.
+  int unique_id = 0;
+
+  // Tracks if this group is meant to be auto-scheduled.
+  bool auto_schedule = false;
+
+  // Tracks which process rank will run this kernel
+  ProcessRankType process_rank = -1;
+
+  // Tracks which device this group will run on.
+  c10::Device device =
+      c10::Device(DeviceType::CUDA, at::cuda::current_device());
+
+  // Tracks list of expressions that go into this group
+  std::vector<Expr*> exprs;
+
+  // Internal states that build up as the user definition
+  //  of the fusion graph runs.
+  //
+  // Note:
+  // Goal is to track tensor values only, and all scalar
+  //  values should be handled on CPU (eventually).
+
+  // All available tensors within the group's context,
+  //  including both group inputs and values produced
+  //  within the group.
+  VectorOfUniqueEntries<TensorView*> context_tensors;
+
+  // All tensors that were computed within the group.
+  VectorOfUniqueEntries<TensorView*> internal_tensors;
+
+  // All inputs to the group.
+  VectorOfUniqueEntries<TensorView*> group_inputs;
+
+  // All outputs to the group.
+  VectorOfUniqueEntries<TensorView*> group_outputs;
+};
+
+
 //! Similar to segmented fusion but simplified to be
 //!  purely manually controlled.
 class TORCH_CUDA_CU_API MultiGroupFusion final : public Fusion {
 
    public:
-  using ProcessRankType = int;
-
   // Print out the fusion in std::cout
   void print();
 
@@ -87,47 +129,6 @@ class TORCH_CUDA_CU_API MultiGroupFusion final : public Fusion {
   std::unordered_map<SegmentedGroup*, ProcessRankType> group_to_rank_map_;
 };
 
-//! Record object keeping track of the group construction
-//!  at compute definition stage.
-struct GroupRecord {
-  // Unique identifier for the group.
-  int unique_id = 0;
-
-  // Tracks if this group is meant to be auto-scheduled.
-  bool auto_schedule = false;
-
-  // Tracks which process rank will run this kernel
-  MultiGroupFusion::ProcessRankType process_rank = -1;
-
-  // Tracks which device this group will run on.
-  c10::Device device =
-      c10::Device(DeviceType::CUDA, at::cuda::current_device());
-
-  // Tracks list of expressions that go into this group
-  std::vector<Expr*> exprs;
-
-  // Internal states that build up as the user definition
-  //  of the fusion graph runs.
-  //
-  // Note:
-  // Goal is to track tensor values only, and all scalar
-  //  values should be handled on CPU (eventually).
-
-  // All available tensors within the group's context,
-  //  including both group inputs and values produced
-  //  within the group.
-  VectorOfUniqueEntries<TensorView*> context_tensors;
-
-  // All tensors that were computed within the group.
-  VectorOfUniqueEntries<TensorView*> internal_tensors;
-
-  // All inputs to the group.
-  VectorOfUniqueEntries<TensorView*> group_inputs;
-
-  // All outputs to the group.
-  VectorOfUniqueEntries<TensorView*> group_outputs;
-};
-
 //! User interface for building multi-group fusion in
 //!  scheduling time.
 class TORCH_CUDA_CU_API MultiGroupFusionBuilder : public Fusion {
@@ -137,16 +138,10 @@ class TORCH_CUDA_CU_API MultiGroupFusionBuilder : public Fusion {
   // User interface for triggering lowering.
   std::unique_ptr<MultiGroupFusion> build();
 
-  // Query function for the fusion containing all
-  //  the expressions.
-  // auto completeFusion() {
-  //   return this;
-  // }
-
   // Mark starting point of a new group, i.e kernel
   void newGroup(
       bool auto_schedule = false,
-      MultiGroupFusion::ProcessRankType process_rank = -1,
+      ProcessRankType process_rank = -1,
       c10::Device device =
           c10::Device(DeviceType::CUDA, at::cuda::current_device()));
 
@@ -186,11 +181,6 @@ class TORCH_CUDA_CU_API MultiGroupFusionBuilder : public Fusion {
   //!  avoid re-computation.
   std::unordered_map<TensorView*, GroupRecord*> context_tensor_map_;
 
-  //! Original fusion this builder will be
-  //!  spliting. Using an owning pointer to
-  //!  avoid redundant copying.
-  // Fusion* original_fusion_ = nullptr;
-
   //! Running counter to generate unique group id.
   int running_group_counter_ = 0;
 
@@ -212,7 +202,7 @@ class TORCH_CUDA_CU_API MultiDeviceRuntime {
   explicit MultiDeviceRuntime(
       std::unique_ptr<MultiGroupFusion> multi_group_fusion,
       c10::intrusive_ptr<c10d::ProcessGroup> process_group,
-      MultiGroupFusion::ProcessRankType process_rank = -1)
+      ProcessRankType process_rank = -1)
       : multi_group_fusion_(std::move(multi_group_fusion)),
         process_group_(process_group), process_rank_(process_rank) {
     // Initialize some rank dependency info
@@ -274,12 +264,12 @@ class TORCH_CUDA_CU_API MultiDeviceRuntime {
 
   // Keep track of which rank to receive the value from, if it
   //  is not to be computed from the current rank.
-  std::unordered_map<Val*, MultiGroupFusion::ProcessRankType>
+  std::unordered_map<Val*, ProcessRankType>
       context_source_rank_;
 
   // Keep track of which rank will use which value to determine where
   //  to send data.
-  using RankVector = VectorOfUniqueEntries<MultiGroupFusion::ProcessRankType>;
+  using RankVector = VectorOfUniqueEntries<ProcessRankType>;
   std::unordered_map<Val*, RankVector> value_to_user_rank_;
 
   // Keeps track of if compilation has run.
@@ -301,7 +291,7 @@ class TORCH_CUDA_CU_API MultiDeviceRuntime {
 
   // Keeps track of process rank owning this runtime,
   //  not sure if this will ever change throughout the runtime's lifetime.
-  MultiGroupFusion::ProcessRankType process_rank_ = -1;
+  ProcessRankType process_rank_ = -1;
 };
 
 } // namespace cuda
