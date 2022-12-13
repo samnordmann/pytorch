@@ -133,6 +133,7 @@ class TORCH_CUDA_CU_API SegmentedGroup {
   friend class FusionKernelRuntime;
   friend class TranslateApplicableWelford;
   friend class MultiGroupFusionBuilder;
+  friend class MultiDeviceGroup;
 
   //! unique identifier of group in the segmented fusion
   int group_id_ = -1;

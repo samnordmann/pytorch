@@ -489,9 +489,9 @@ rank 3:
   auto pg = pgBuilder.getProcessGroup("nccl", store, grank, gsize);
 
 
-  if (gsize != 4){
-    GTEST_SKIP() << "this test must be run with 4 ranks but gsize=" << gsize;
-  }
+  // if (gsize != 4){
+  //   GTEST_SKIP() << "this test must be run with 4 ranks but gsize=" << gsize;
+  // }
 
   MultiGroupFusionBuilder fusion_builder;
   FusionGuard fg(&fusion_builder);
@@ -526,9 +526,11 @@ rank 3:
   TensorView* tv2 = add(tva1, tvb1);
   fusion_builder.addFusionOutput(tv2);
 
- std::cout << "Create runtime on rank " << grank << std::endl;
+ std::cout << "building fusion on rank " << grank << std::endl;
+  std::unique_ptr<MultiGroupFusion> fusion = fusion_builder.build();
   // create runtime
-  MultiDeviceRuntime runtime(fusion_builder.build(), pg, grank);
+ std::cout << "Create runtime on rank " << grank << std::endl;
+  MultiDeviceRuntime runtime(std::move(fusion), pg, grank);
 
  std::cout << "Print Fusion on rank " << grank << std::endl;
   // print the fusion
@@ -566,8 +568,8 @@ rank 3:
     ref = ref.sum({0});
     TORCH_INTERNAL_ASSERT(allclose(ref, cg_outputs[0]), "Obtained output is not the one expected");
   }
-
-  pg->barrier();
+  std::cout << "reached the barrier on rank " << grank << std::endl;
+  // pg->barrier();
 }
 
 #undef NVFUSER_TEST_CUDA_ARCH_GUARD

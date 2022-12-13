@@ -21,22 +21,40 @@ using ProcessRankType = int;
 
 //! Record object keeping track of the group construction
 //!  at compute definition stage.
-struct GroupRecord {
-  // Unique identifier for the group.
-  int unique_id = 0;
+//Maybe we should wrap Group in a class
+// SegmentedMultiGroupFusion inheriting from SegmentFusion
+class TORCH_CUDA_CU_API Group final : public SegmentedGroup {
+public:
+
+  Group(
+        MultiGroupFusionBuilder* multi_group_fusion,
+        bool auto_sch,
+        ProcessRankType prank,
+        c10::Device dev
+      );
 
   // Tracks if this group is meant to be auto-scheduled.
-  bool auto_schedule = false;
-
-  // Tracks which process rank will run this kernel
-  ProcessRankType process_rank = -1;
+  bool auto_schedule;
 
   // Tracks which device this group will run on.
-  c10::Device device =
-      c10::Device(DeviceType::CUDA, at::cuda::current_device());
+  c10::Device device;
 
-  // Tracks list of expressions that go into this group
-  std::vector<Expr*> exprs;
+  //Track the MultiGroupFusion which it belongs to
+  MultiGroupFusionBuilder* multi_group_fusion_;
+
+  // Tracks which process rank will run this kernel
+  ProcessRankType process_rank;
+
+  // Unique identifier for the group.
+  int unique_id;
+
+  MultiGroupFusionBuilder* getMultiGroupFusion() {
+    return multi_group_fusion_;
+  }
+
+
+  // // Tracks list of expressions that go into this group
+  // std::vector<Expr*> exprs;
 
   // Internal states that build up as the user definition
   //  of the fusion graph runs.
@@ -61,6 +79,14 @@ struct GroupRecord {
 };
 
 
+
+
+
+
+
+
+
+
 //! Similar to segmented fusion but simplified to be
 //!  purely manually controlled.
 class TORCH_CUDA_CU_API MultiGroupFusion final : public Fusion {
@@ -76,7 +102,7 @@ class TORCH_CUDA_CU_API MultiGroupFusion final : public Fusion {
 
   // Returns a fusion graph that contains all the expressions
   //  from all the groups, flattened on the same graph.
-  Fusion* completeFusion() {
+  MultiGroupFusionBuilder* completeFusion() {
     return original_fusion_;
   }
 
@@ -97,20 +123,21 @@ class TORCH_CUDA_CU_API MultiGroupFusion final : public Fusion {
   }
 
  private:
+  friend class MultiGroupFusionBuilder;
   // Note: while not directly using `SegmentedFusion`,
   //  still using the layer of segmented groups so we can
   //  re-use all the auto-scheduling and fusion segment
   //  guarding logic if we need.
-  using GroupPtr = std::unique_ptr<SegmentedGroup>;
-  friend class MultiGroupFusionBuilder;
 
+  // using GroupPtr = std::unique_ptr<Group>;
   // Segmented groups, each becoming a separate kernel
   //  at compile time.
-  std::vector<GroupPtr> groups_;
+  std::vector<std::unique_ptr<Group>> groups_;
+  // std::vector<Group> groups_;
 
   // The complete fusion having all the expressions on
   //  the same graph.
-  Fusion* original_fusion_ = nullptr;
+  MultiGroupFusionBuilder* original_fusion_ = nullptr;
   // std::unique_ptr<Fusion> original_fusion_ = nullptr;
 
   // Keeps track of which group to auto schedule
@@ -162,35 +189,38 @@ class TORCH_CUDA_CU_API MultiGroupFusionBuilder : public Fusion {
 
   auto& getCurrentGroup() {
     TORCH_INTERNAL_ASSERT(
-        !group_creation_records_.empty(), "call newGroup first.");
+        !groups_.empty(), "call newGroup first.");
     return *current_group_;
   }
 
-  void setCurrentGroup(GroupRecord* group) {
+  void setCurrentGroup(Group* group) {
     current_group_ = group;
   }
 
  private:
-  std::unique_ptr<SegmentedGroup> buildGroup(const GroupRecord& group_record);
+  // std::unique_ptr<SegmentedGroup> buildGroup(const Group& group_record);
 
   //! Keeps track of user decided group segmentation
   //!  in scheduling time.
-  std::vector<GroupRecord> group_creation_records_;
+  using GroupPtr = std::unique_ptr<Group>;
+  std::vector<GroupPtr> groups_;
 
+public:
   //! Keeps track of currently available tensorviews to
   //!  avoid re-computation.
-  std::unordered_map<TensorView*, GroupRecord*> context_tensor_map_;
+  std::unordered_map<TensorView*, Group*> context_tensor_map_;
 
   //! Running counter to generate unique group id.
   int running_group_counter_ = 0;
 
+private:
   //! Keep track of validity of the current builder.
   //!  each builder can only produce multi-group fusion once.
   bool valid_ = true;
 
   //! Keep track of the current group, which either has been manually set
   //! through setCurrentGroup method or is the latest group created
-  GroupRecord* current_group_;
+  Group* current_group_;
 };
 
 //! Runtime to support running multi-group fusion on
@@ -206,6 +236,7 @@ class TORCH_CUDA_CU_API MultiDeviceRuntime {
       : multi_group_fusion_(std::move(multi_group_fusion)),
         process_group_(process_group), process_rank_(process_rank) {
     // Initialize some rank dependency info
+     std::cout << "buildValueToRankMap on rank " << process_rank << std::endl;
     buildValueToRankMap();
   }
 
