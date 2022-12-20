@@ -405,13 +405,13 @@ TEST_F(NVFuserTest, FusionMultiGPU) {
   // Build actual fusion graphs and pass it to a
   //  multi-device runtime.
   MultiDeviceRuntime runtime(
-      fusion_builder.build(),
+      &fusion_builder,
       pg, grank);
 
-  if (grank == 0) {
-    // See group partitions:
-    runtime.multiGroupFusion()->print();
-  }
+  // if (grank == 0) {
+  //   // See group partitions:
+  //   runtime.multiGroupFusion()->print();
+  // }
 
 
   // Create at input tensors.
@@ -526,11 +526,11 @@ rank 3:
   TensorView* tv2 = add(tva1, tvb1);
   fusion_builder.addFusionOutput(tv2);
 
- std::cout << "building fusion on rank " << grank << std::endl;
-  std::unique_ptr<MultiGroupFusion> fusion = fusion_builder.build();
+//  std::cout << "building fusion on rank " << grank << std::endl;
+  // std::unique_ptr<MultiGroupFusion> fusion = fusion_builder.build();
   // create runtime
  std::cout << "Create runtime on rank " << grank << std::endl;
-  MultiDeviceRuntime runtime(std::move(fusion), pg, grank);
+  MultiDeviceRuntime runtime(&fusion_builder, pg, grank);
 
  std::cout << "Print Fusion on rank " << grank << std::endl;
   // print the fusion

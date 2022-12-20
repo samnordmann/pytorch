@@ -203,6 +203,11 @@ class TORCH_CUDA_CU_API MultiGroupFusionBuilder : public Fusion {
     return groups_;
   }
 
+  MultiGroupFusionBuilder* completeFusion() {
+    return this;
+  }
+
+
   // Mark starting point of a new group, i.e kernel
   void newGroup(
       bool auto_schedule = false,
@@ -272,10 +277,10 @@ class TORCH_CUDA_CU_API MultiDeviceRuntime {
 
  public:
   explicit MultiDeviceRuntime(
-      std::unique_ptr<MultiGroupFusion> multi_group_fusion,
+      MultiGroupFusionBuilder* multi_group_fusion,
       c10::intrusive_ptr<c10d::ProcessGroup> process_group,
       ProcessRankType process_rank = -1)
-      : multi_group_fusion_(std::move(multi_group_fusion)),
+      : multi_group_fusion_(multi_group_fusion),
         process_group_(process_group), process_rank_(process_rank) {
     // Initialize some rank dependency info
      std::cout << "buildValueToRankMap on rank " << process_rank << std::endl;
@@ -287,7 +292,7 @@ class TORCH_CUDA_CU_API MultiDeviceRuntime {
 
   // Interface to querry underlying fusion.
   auto multiGroupFusion() const {
-    return multi_group_fusion_.get();
+    return multi_group_fusion_;
   }
 
   // Interface short-cut to querry the flattened fusion
@@ -349,7 +354,7 @@ class TORCH_CUDA_CU_API MultiDeviceRuntime {
   bool compiled_ = false;
 
   // Underlying multigroup fusion.
-  std::unique_ptr<MultiGroupFusion> multi_group_fusion_ = nullptr;
+  MultiGroupFusionBuilder* multi_group_fusion_ = nullptr;
 
   // Compiled kernels from multi_group_fusion_
   std::vector<CompiledKernelPtr> compiled_kernels_;
