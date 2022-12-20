@@ -3223,7 +3223,7 @@ std::string toString(const SegmentCandidateFinderOptions& segment_options) {
   return ss.str();
 }
 
-void MultiGroupFusionBuilder::print() {
+void MultiGroupFusion::print() {
   std::cout << "MultiGroupFusion {\n";
   for (auto& group_ptr : groups_) {
     detailGroupPrint(std::cout, group_ptr.get());

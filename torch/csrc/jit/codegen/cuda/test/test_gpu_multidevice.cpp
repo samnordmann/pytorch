@@ -115,7 +115,7 @@ TEST_F(NVFuserTest, FusionDoubleReduction_CUDA) {
 
 // TEST_F(NVFuserTest, FusionMutiGroupDoubleReduction_CUDA) {
 //   // Using the new interface to build multi-group fusion
-//   MultiGroupFusionBuilder fusion_builder;
+//   MultiGroupFusion fusion_builder;
 
 //   // Fusion guard is on the fusion managed within builder.
 //   FusionGuard fg(fusion_builder.completeFusion());
@@ -182,7 +182,7 @@ TEST_F(NVFuserTest, FusionDoubleReduction_CUDA) {
 
 // TEST_F(NVFuserTest, FusionMultiRankReduction_CUDA) {
 //   // Using the new interface to build multi-group fusion
-//   MultiGroupFusionBuilder fusion_builder;
+//   MultiGroupFusion fusion_builder;
 
 //   // Fusion guard is on the fusion managed within builder.
 //   FusionGuard fg(fusion_builder.completeFusion());
@@ -306,7 +306,7 @@ TEST_F(NVFuserTest, FusionMutiGroupProcessGroup) {
 
 TEST_F(NVFuserTest, SendRecvTest) {
   // Using the new interface to build multi-group fusion
-  MultiGroupFusionBuilder fusion_builder;
+  MultiGroupFusion fusion_builder;
   int grank, gsize;
 
   if (parse_env(grank, gsize)) {
@@ -339,7 +339,7 @@ TEST_F(NVFuserTest, SendRecvTest) {
 
 TEST_F(NVFuserTest, FusionMultiGPU) {
   // Using the new interface to build multi-group fusion
-  MultiGroupFusionBuilder fusion_builder;
+  MultiGroupFusion fusion_builder;
   int grank, gsize;
 
   // defining the process group
@@ -493,7 +493,7 @@ rank 3:
   //   GTEST_SKIP() << "this test must be run with 4 ranks but gsize=" << gsize;
   // }
 
-  MultiGroupFusionBuilder fusion_builder;
+  MultiGroupFusion fusion_builder;
   FusionGuard fg(&fusion_builder);
 
   TensorView* tv = makeContigTensor(3);
@@ -558,7 +558,7 @@ rank 3:
     ref = ref.sum({0});
     TORCH_INTERNAL_ASSERT(allclose(ref, cg_outputs[0]), "Obtained output is not the one expected");
   }
-  // pg->barrier();
+  pg->barrier();
 }
 
 #undef NVFUSER_TEST_CUDA_ARCH_GUARD

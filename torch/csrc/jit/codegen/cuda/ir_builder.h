@@ -15,7 +15,7 @@ class Kernel;
 
 class IrCloner;
 
-class MultiGroupFusionBuilder;
+class MultiGroupFusion;
 
 // Passkey for builder to register properties with statements, and to call
 // functions in IrContainer
@@ -103,8 +103,8 @@ class TORCH_CUDA_CU_API IrBuilder {
   static Val* newArithmeticExpr(BinaryOpType op_type, Val* lhs, Val* rhs);
   static Val* newLogicExpr(BinaryOpType op_type, Val* lhs, Val* rhs);
 
-  // Register new statement with MultiGroupFusionBuilder.
-  static void newStmt(MultiGroupFusionBuilder*, Statement*);
+  // Register new statement with MultiGroupFusion.
+  static void newStmt(MultiGroupFusion*, Statement*);
 };
 
 //! A wrapper builder with static expression simplification

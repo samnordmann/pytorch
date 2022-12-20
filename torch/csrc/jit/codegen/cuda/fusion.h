@@ -53,7 +53,7 @@ class WelfordResult;
 
 class SegmentCandidateFinder;
 class SegmentedFusion;
-class MultiGroupFusionBuilder;
+class MultiGroupFusion;
 class KernelArgumentHolder;
 
 //! Fusion Guard is our "context manager". It holds the actrive fusion and
@@ -242,7 +242,7 @@ class TORCH_CUDA_CU_API Fusion : public IrContainer {
     return active_multi_group_builder_;
   }
 
-  void setActiveMultiGroupFusionBuilder(MultiGroupFusionBuilder* builder) {
+  void setActiveMultiGroupFusionBuilder(MultiGroupFusion* builder) {
     active_multi_group_builder_ = builder;
   }
 
@@ -299,7 +299,7 @@ class TORCH_CUDA_CU_API Fusion : public IrContainer {
   bool all_tv_uses_valid_ = false;
   bool is_during_update_uses_ = false;
 
-  MultiGroupFusionBuilder* active_multi_group_builder_ = nullptr;
+  MultiGroupFusion* active_multi_group_builder_ = nullptr;
 };
 
 } // namespace cuda

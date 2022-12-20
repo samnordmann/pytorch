@@ -13,7 +13,7 @@ namespace fuser {
 namespace cuda {
 
 Group::Group(
-        MultiGroupFusionBuilder* multi_group_fusion,
+        MultiGroupFusion* multi_group_fusion,
         bool auto_sch, 
         ProcessRankType prank,
         c10::Device dev
@@ -33,14 +33,14 @@ Group::Group(
     }
 }
 
-MultiGroupFusionBuilder::MultiGroupFusionBuilder() {
+MultiGroupFusion::MultiGroupFusion() {
 
   // Register owning builder to this fusion.
   setActiveMultiGroupFusionBuilder(this);
 }
 
 // TODO: almost a good time to have a "group parameters" struct.
-void MultiGroupFusionBuilder::newGroup(
+void MultiGroupFusion::newGroup(
     bool auto_schedule,
     ProcessRankType process_rank,
     c10::Device device) {
@@ -87,7 +87,7 @@ GroupedExpr::GroupedExpr(const GroupedExpr* src, IrCloner* ir_cloner)
 // }
 
 
-void MultiGroupFusionBuilder::newStmt(IrBuilderPasskey, Statement* stmt) {
+void MultiGroupFusion::newStmt(IrBuilderPasskey, Statement* stmt) {
   // Only analyze expressions for now
   if (auto expr = dynamic_cast<Expr*>(stmt)) {
     // Get the current group.
@@ -128,7 +128,7 @@ void MultiGroupFusionBuilder::newStmt(IrBuilderPasskey, Statement* stmt) {
   }
 }
 
-void MultiGroupFusionBuilder::addGroupOutput(TensorView* tv) {
+void MultiGroupFusion::addGroupOutput(TensorView* tv) {
   auto& group = getCurrentGroup();
 
   // Check that the given tensor is defined internally
@@ -144,7 +144,7 @@ void MultiGroupFusionBuilder::addGroupOutput(TensorView* tv) {
   context_tensor_map_[tv] = &group;
 }
 
-void MultiGroupFusionBuilder::addFusionOutput(TensorView* tv) {
+void MultiGroupFusion::addFusionOutput(TensorView* tv) {
   auto& group = getCurrentGroup();
 
   TORCH_INTERNAL_ASSERT(
@@ -159,7 +159,7 @@ void MultiGroupFusionBuilder::addFusionOutput(TensorView* tv) {
   group.addOutput(tv);
 }
 
-void MultiGroupFusionBuilder::addFusionInput(TensorView* tv) {
+void MultiGroupFusion::addFusionInput(TensorView* tv) {
   // Register tv as a global input.
   addInput(tv);
   // original_fusion_->addInput(tv);
@@ -169,7 +169,7 @@ void MultiGroupFusionBuilder::addFusionInput(TensorView* tv) {
 }
 
 // Realize the group record into an actual group
-// std::unique_ptr<SegmentedGroup> MultiGroupFusionBuilder::buildGroup(
+// std::unique_ptr<SegmentedGroup> MultiGroupFusion::buildGroup(
 //     const Group& group) {
 //   // Create a new instance of segmented group.
 //   // auto new_group = std::make_unique<SegmentedGroup>(this);

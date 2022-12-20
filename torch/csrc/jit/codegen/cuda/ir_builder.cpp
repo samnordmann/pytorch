@@ -448,7 +448,7 @@ Val* SimplifyingIrBuilder::minExpr(Val* lhs, Val* rhs) {
 }
 
 void IrBuilder::newStmt(
-    MultiGroupFusionBuilder* multi_group_container,
+    MultiGroupFusion* multi_group_container,
     Statement* stmt) {
   auto container = FusionGuard::getCurFusion();
   multi_group_container->newStmt(IrBuilderPasskey(container), stmt);

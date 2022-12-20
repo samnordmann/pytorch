@@ -27,7 +27,7 @@ class TORCH_CUDA_CU_API Group final : public SegmentedGroup {
 public:
 
   Group(
-        MultiGroupFusionBuilder* multi_group_fusion,
+        MultiGroupFusion* multi_group_fusion,
         bool auto_sch,
         ProcessRankType prank,
         c10::Device dev
@@ -40,7 +40,7 @@ public:
   c10::Device device;
 
   //Track the MultiGroupFusion which it belongs to
-  MultiGroupFusionBuilder* multi_group_fusion_;
+  MultiGroupFusion* multi_group_fusion_;
 
   // Tracks which process rank will run this kernel
   ProcessRankType process_rank;
@@ -48,7 +48,7 @@ public:
   // Unique identifier for the group.
   int unique_id;
 
-  MultiGroupFusionBuilder* getMultiGroupFusion() {
+  MultiGroupFusion* getMultiGroupFusion() {
     return multi_group_fusion_;
   }
 
@@ -156,9 +156,9 @@ private:
 
 //! User interface for building multi-group fusion in
 //!  scheduling time.
-class TORCH_CUDA_CU_API MultiGroupFusionBuilder : public Fusion {
+class TORCH_CUDA_CU_API MultiGroupFusion : public Fusion {
  public:
-  MultiGroupFusionBuilder();
+  MultiGroupFusion();
 
   // Print out the fusion in std::cout
   void print();
@@ -167,11 +167,6 @@ class TORCH_CUDA_CU_API MultiGroupFusionBuilder : public Fusion {
   const auto& fusionGroups() {
     return groups_;
   }
-
-  MultiGroupFusionBuilder* completeFusion() {
-    return this;
-  }
-
 
   // Mark starting point of a new group, i.e kernel
   void newGroup(
@@ -238,7 +233,7 @@ class TORCH_CUDA_CU_API MultiDeviceRuntime {
 
  public:
   explicit MultiDeviceRuntime(
-      MultiGroupFusionBuilder* multi_group_fusion,
+      MultiGroupFusion* multi_group_fusion,
       c10::intrusive_ptr<c10d::ProcessGroup> process_group,
       ProcessRankType process_rank = -1)
       : multi_group_fusion_(multi_group_fusion),
@@ -255,18 +250,12 @@ class TORCH_CUDA_CU_API MultiDeviceRuntime {
     return multi_group_fusion_;
   }
 
-  // Interface short-cut to querry the flattened fusion
-  //  containing all the expressions in all groups.
-  auto flattenedFusion() const {
-    return multi_group_fusion_->completeFusion();
-  }
-
   void buildValueToRankMap();
 
  private:
   // Get list of global inputs to the complete fusion.
   const auto& globalInputs() const {
-    return multi_group_fusion_->completeFusion()->inputs();
+    return multi_group_fusion_->inputs();
   }
 
   // Get list of global outputs from the complete fusion.
@@ -314,7 +303,7 @@ class TORCH_CUDA_CU_API MultiDeviceRuntime {
   bool compiled_ = false;
 
   // Underlying multigroup fusion.
-  MultiGroupFusionBuilder* multi_group_fusion_ = nullptr;
+  MultiGroupFusion* multi_group_fusion_ = nullptr;
 
   // Compiled kernels from multi_group_fusion_
   std::vector<CompiledKernelPtr> compiled_kernels_;
