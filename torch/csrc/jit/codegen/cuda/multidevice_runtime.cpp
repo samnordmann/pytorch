@@ -194,34 +194,6 @@ void MultiGroupFusionBuilder::addFusionInput(TensorView* tv) {
 //   return group;
 // }
 
-std::unique_ptr<MultiGroupFusion> MultiGroupFusionBuilder::build() {
-  TORCH_INTERNAL_ASSERT(valid_, "builder is one time composition");
-
-  std::cout << "Create unique_ptr of MultiGroupFusion" << std::endl;
-  auto multigroup_fusion_ptr = std::make_unique<MultiGroupFusion>();
-  auto& multigroup_fusion = *multigroup_fusion_ptr;
-
-  // Build all the groups according to the record entries:
-  for (auto&& record : groups_) {
-  std::cout << "record=" << record.get() << std::endl;
-    // Build the segmented group
-    // multigroup_fusion.groups_.push_back(std::move(record));
-    // multigroup_fusion.groups_.push_back(&groups_.get());
-
-    multigroup_fusion.groups_.push_back(std::move(record));
-    auto new_group = multigroup_fusion.groups_.back().get();
-  std::cout << "new_group=" << new_group << std::endl;
-  }
-  // Invalidate this builder within original_fusion_
-  // invalidateMultiGroupFusionBuilder();
-  // original_fusion_->invalidateMultiGroupFusionBuilder();
-
-  // Transfer ownership of original fusion.
-  multigroup_fusion.original_fusion_ = this;
-
-  return multigroup_fusion_ptr;
-}
-
 inline IValue MultiDeviceRuntime::getIValueFromFusionVal(Val* val) {
   // Try to find value from the dynamic context.
   auto val_it = context_values_.find(val);
@@ -280,15 +252,12 @@ namespace {
 void updateLaunchParamsFromScheduler(
     SchedulerEntry* scheduler,
     LaunchParams& lparams) {
-    std::cout << "inside updateLaunchParamsFromScheduler. scheduler->params()->isA<ReductionParams>()="<< scheduler->params()->isA<ReductionParams>() << std::endl;
   // Set launch parameters form scheduler.
   if (scheduler->params()->isA<ReductionParams>()) {
     lparams = scheduler->reductionParams().lparams;
-  } else if (scheduler->params()->isA<PointwiseParams>()){
+  } else {
+    TORCH_INTERNAL_ASSERT(scheduler->params()->isA<PointwiseParams>());
     lparams = scheduler->pointwiseParams().lparams;
-  }
-  else{
-    std::cout << "WARN: No launch params were found! Scheduler="<< scheduler << ", scheduler->params()=" << scheduler->params() << std::endl;
   }
 }
 
@@ -309,7 +278,6 @@ void MultiDeviceRuntime::buildValueToRankMap() {
     for (auto input_val : group->input_vals) {
       value_to_user_rank_[input_val].pushBack(group_rank);
     }
-     std::cout << "end of buildValueToRankMap on rank " << process_rank_ << std::endl;
   }
 }
 
@@ -319,23 +287,12 @@ MultiDeviceRuntime::CompiledKernelPtr MultiDeviceRuntime::compileGroup(
   // Make a copy of the fusion graph we want to generate
   //  CUDA kernel and compile.
   auto fusion_from_group = getFusionCopyFromGroup(group);
-  std::cout << "finished getFusionCopyFromGroup on rank " 
-            << process_rank_ 
-            << ". fusion_from_group=" << fusion_from_group.get()
-            << " on rank " << process_rank_
-            << std::endl;
-
   // Placeholder for auto schedule parameters if any.
   c10::optional<SchedulerEntry*> maybe_scheduler_entry = c10::nullopt;
 
   // Auto schedule if requested
-    // std::cout << "going to check: multi_group_fusion_->shouldAutoSchedule(group) " 
-    //         << multi_group_fusion_->shouldAutoSchedule(group) << " on rank " << process_rank_
-    //         << std::endl;
-
   if (group->auto_schedule) {
 
-    std::cout << "entering runtime_info" << " on rank " << process_rank_<< std::endl;
     // Get runtime info from fusion graph and concrete tensor inputs.
     SchedulerRuntimeInfo runtime_info(
         fusion_from_group.get(), group_inputs, true);
@@ -353,20 +310,15 @@ MultiDeviceRuntime::CompiledKernelPtr MultiDeviceRuntime::compileGroup(
     scheduler->schedule(fusion_from_group.get());
 
     maybe_scheduler_entry = scheduler.get();
-    std::cout << "cahcing group's scheduler. scheduler->params()->isA<ReductionParams>()=" << scheduler->params()->isA<ReductionParams>() 
-              << ", scheduler->params()->isA<PointwiseParams>()="<<scheduler->params()->isA<PointwiseParams>()
-              <<std::endl;
     // Cache scheduler in registry to retrieve launch parameters.
     auto_scheduler_registry_[group] = std::move(scheduler);
   }
-  std::cout << "exiting auto scheduling"<< " on rank " << process_rank_ << std::endl;
 
   auto executor_ptr = std::make_unique<FusionExecutor>();
 
   // Infer which device this fusion runs from input device ids.
   // TODO: fix should bind device with group?
   const int device_index = getCommonDeviceCUDA(group_inputs);
-  std::cout << "device_index=" << device_index << " on rank " << process_rank_ << std::endl;
   TORCH_CHECK(device_index >= 0, "device is not coherent for fusion inputs");
 
   // Set launch parameters
@@ -379,13 +331,10 @@ MultiDeviceRuntime::CompiledKernelPtr MultiDeviceRuntime::compileGroup(
   auto args = KernelArgumentHolder::createKernelArgumentHolder(group_inputs);
   // Set parameters inferred by auto scheduler.
   if (maybe_scheduler_entry.has_value()) {
-  std::cout << "maybe_scheduler_entry.has_value()=1"<< " on rank " << process_rank_ << std::endl;
     auto scheduler_entry = maybe_scheduler_entry.value();
     args.setIndexMode(scheduler_entry->indexMode());
     // Set launch parameters with auto scheduler.
-    std::cout << "entering updateLaunchParamsFromScheduler on rank " << process_rank_ << std::endl;
     updateLaunchParamsFromScheduler(scheduler_entry, launch_params);
-    std::cout << "exiting updateLaunchParamsFromScheduler on rank " << process_rank_ << std::endl;
   }
 
   args.setDeviceIndex(device_index);
@@ -452,7 +401,6 @@ void MultiDeviceRuntime::runKernel(
       if (input_source_rank != -1 && input_source_rank != process_rank_) {
         // Receive this value here
         std::vector<at::Tensor> tensor_to_receive = {group_input.at(input_idx).toTensor()}; // holder for the received tensor
-        std::cout << "posting recv task on rank "<< process_rank_<<", src_rank="<< input_source_rank << std::endl;
         auto work = process_group_->recv(tensor_to_receive, input_source_rank, 0); // receive the tensor
         while (!work->isCompleted()); // wait for completion
         group_input.at(input_idx) = (IValue)(tensor_to_receive[0]); // store the received tensor
@@ -469,7 +417,6 @@ void MultiDeviceRuntime::runKernel(
     //  pull the launch parameters from the scheduler.
     auto scheduler_it = auto_scheduler_registry_.find(group);
     if (scheduler_it != auto_scheduler_registry_.end()) {
-      std::cout << "ENTERING updateLaunchParamsFromScheduler from within runKernel for group "<<group_idx << " on rank "<<process_rank_ << std::endl;
       updateLaunchParamsFromScheduler(scheduler_it->second.get(), launch_params);
     }
     outputs = executor->runFusion(
@@ -531,8 +478,6 @@ void MultiDeviceRuntime::runKernel(
 std::vector<at::Tensor> MultiDeviceRuntime::runWithInput(
     std::vector<IValue> inputs) {
 
-  std::cout << "run with input on rank " << process_rank_ << std::endl;
-
   // Make sure inputs align at global boundary.
   TORCH_INTERNAL_ASSERT(inputs.size() == globalInputs().size());
 
@@ -550,13 +495,11 @@ std::vector<at::Tensor> MultiDeviceRuntime::runWithInput(
     auto group_input = getGroupIValueInputs(group);
 
     // Run the lowering and compilation step if we haven't compiled yet.
-  std::cout << "lowring of group " << group_idx << " on rank " << process_rank_ << std::endl;
     if (!compiled_) {
       compiled_kernels_.push_back(compileGroup(group, group_input));
     }
 
     // Launch kernel and record the kernel output into current context
-  std::cout << "runKernel of group " << group_idx << " on rank " << process_rank_ << std::endl;
     runKernel(group_idx, group_input);
   }
 

@@ -495,44 +495,34 @@ rank 3:
 
   MultiGroupFusionBuilder fusion_builder;
   FusionGuard fg(&fusion_builder);
- std::cout << "Start Fusion on rank " << grank << std::endl;
 
   TensorView* tv = makeContigTensor(3);
   auto index_a = IrBuilder::create<Int>(0);
   auto index_b = IrBuilder::create<Int>(1);
   fusion_builder.addFusionInput(tv);
 
- std::cout << "Start 1st group on rank " << grank << std::endl;
 //TODO: automate the device management. Bind device to rank and not to group..?
   fusion_builder.newGroup(true, 0, at::Device("cuda:0"));
- std::cout << "1st group created on rank " << grank << std::endl;
   auto tv0 = add(tv, tv);
   fusion_builder.addGroupOutput(tv0);
 
- std::cout << "Start 2nd group on rank " << grank << std::endl;
   fusion_builder.newGroup(true, 1, at::Device("cuda:1"));
   auto tva = select(tv0, 0, index_a); // tva = tv0[0,:,:] of shape (8,8)
   TensorView* tva1 = sum(tva, {0}); // tva1 of shape (r8,8) or (8)
   fusion_builder.addGroupOutput(tva1);
 
- std::cout << "Start 3rd group on rank " << grank << std::endl;
   fusion_builder.newGroup(true, 2, at::Device("cuda:2"));
   auto tvb = select(tv0, 0, index_b);// tvb = tv0[1,:,:] of shape (8,8)
   TensorView* tvb1 = sum(tvb, {0});
   fusion_builder.addGroupOutput(tvb1);
 
- std::cout << "Start 4th group on rank " << grank << std::endl;
   fusion_builder.newGroup(true, 3, at::Device("cuda:3"));
   TensorView* tv2 = add(tva1, tvb1);
   fusion_builder.addFusionOutput(tv2);
 
-//  std::cout << "building fusion on rank " << grank << std::endl;
-  // std::unique_ptr<MultiGroupFusion> fusion = fusion_builder.build();
   // create runtime
- std::cout << "Create runtime on rank " << grank << std::endl;
   MultiDeviceRuntime runtime(&fusion_builder, pg, grank);
 
- std::cout << "Print Fusion on rank " << grank << std::endl;
   // print the fusion
   if (grank == 0) {
     runtime.multiGroupFusion()->print();
@@ -568,7 +558,6 @@ rank 3:
     ref = ref.sum({0});
     TORCH_INTERNAL_ASSERT(allclose(ref, cg_outputs[0]), "Obtained output is not the one expected");
   }
-  std::cout << "reached the barrier on rank " << grank << std::endl;
   // pg->barrier();
 }
 

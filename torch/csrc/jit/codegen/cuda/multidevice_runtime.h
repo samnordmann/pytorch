@@ -153,38 +153,6 @@ private:
 
 
 
-//! Similar to segmented fusion but simplified to be
-//!  purely manually controlled.
-class TORCH_CUDA_CU_API MultiGroupFusion final : public Fusion {
-
-   public:
-
-  // Print out the fusion in std::cout
-  void print();
-
-  // Returns list of all groups from the fusion.
-  const auto& fusionGroups() {
-    return groups_;
-  }
-
-  // Returns a fusion graph that contains all the expressions
-  //  from all the groups, flattened on the same graph.
-  MultiGroupFusionBuilder* completeFusion() {
-    return original_fusion_;
-  }
-
- private:
-  friend class MultiGroupFusionBuilder;
-  // Segmented groups, each becoming a separate kernel
-  //  at compile time.
-  std::vector<std::unique_ptr<Group>> groups_;
-  // std::vector<Group> groups_;
-
-  // The complete fusion having all the expressions on
-  //  the same graph.
-  MultiGroupFusionBuilder* original_fusion_ = nullptr;
-  // std::unique_ptr<Fusion> original_fusion_ = nullptr;
-};
 
 //! User interface for building multi-group fusion in
 //!  scheduling time.
@@ -194,9 +162,6 @@ class TORCH_CUDA_CU_API MultiGroupFusionBuilder : public Fusion {
 
   // Print out the fusion in std::cout
   void print();
-
-  // User interface for triggering lowering.
-  std::unique_ptr<MultiGroupFusion> build();
 
   // Returns list of all groups from the fusion.
   const auto& fusionGroups() {
@@ -261,10 +226,6 @@ public:
   int running_group_counter_ = 0;
 
 private:
-  //! Keep track of validity of the current builder.
-  //!  each builder can only produce multi-group fusion once.
-  bool valid_ = true;
-
   //! Keep track of the current group, which either has been manually set
   //! through setCurrentGroup method or is the latest group created
   Group* current_group_;
@@ -283,7 +244,6 @@ class TORCH_CUDA_CU_API MultiDeviceRuntime {
       : multi_group_fusion_(multi_group_fusion),
         process_group_(process_group), process_rank_(process_rank) {
     // Initialize some rank dependency info
-     std::cout << "buildValueToRankMap on rank " << process_rank << std::endl;
     buildValueToRankMap();
   }
 
