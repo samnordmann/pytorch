@@ -581,4 +581,4 @@ std::vector<at::Tensor> MultiDeviceRuntime::runWithInput(
 } // namespace cuda
 } // namespace fuser
 } // namespace jit
-} // namespace tor
+} // namespace torch
