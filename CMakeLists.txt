@@ -1,3 +1,5 @@
+execute_process(COMMAND "bash" "-c" "module load tools/git dev/gcc-latest dev/cuda11.4 tools/cmake-latest dev/nccl_2.11.4-1_cuda11.4_x86_64 hpcx-gcc-mt; export LD_PRELOAD=/lib64/libcuda.so; export CUDACXX=/hpc/local/oss/cuda11.4/bin/nvcc")
+
 cmake_minimum_required(VERSION 3.13 FATAL_ERROR)
 #cmake_policy(SET CMP0022 NEW)
 #cmake_policy(SET CMP0023 NEW)

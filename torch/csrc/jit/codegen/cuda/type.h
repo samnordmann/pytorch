@@ -146,7 +146,8 @@ enum class ExprType {
   GridBroadcast,
   GridWelford,
   GroupedGridWelford,
-  AllocateFusedReduction
+  AllocateFusedReduction,
+  GroupedExpr
 };
 
 enum class UnaryOpType {

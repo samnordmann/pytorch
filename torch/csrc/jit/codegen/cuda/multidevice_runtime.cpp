@@ -33,7 +33,6 @@ Group::Group(
     }
 }
 
-
 MultiGroupFusionBuilder::MultiGroupFusionBuilder() {
 
   // Register owning builder to this fusion.
@@ -66,6 +65,28 @@ void MultiGroupFusionBuilder::newGroup(
   setCurrentGroup(groups_.back().get());
 }
 
+GroupedExpr::GroupedExpr(
+    IrBuilderPasskey passkey,
+    Group* group)
+    : Expr(passkey, ExprType::GroupedExpr), group_(group) {
+  for (auto input: group_->group_inputs){
+    addInput(input);
+  }
+  for (auto output: group_->group_outputs){
+    addOutput(output);
+  }
+}
+
+GroupedExpr::GroupedExpr(const GroupedExpr* src, IrCloner* ir_cloner)
+    : Expr(src, ir_cloner), group_(src->getGroup()) {}
+
+
+// void Group::buildGroupedExpr_(){
+//     IrContainer* container = getMultiGroupFusion();
+//     gexpr_ = IrBuilder::create<GroupedExpr>(container, this);
+// }
+
+
 void MultiGroupFusionBuilder::newStmt(IrBuilderPasskey, Statement* stmt) {
   // Only analyze expressions for now
   if (auto expr = dynamic_cast<Expr*>(stmt)) {
@@ -89,8 +110,7 @@ void MultiGroupFusionBuilder::newStmt(IrBuilderPasskey, Statement* stmt) {
       // If we are pulling inputs from other groups, we need
       //  to mark that as a group input.
       if (!current_group.internal_tensors.has(input_tv)) {
-        current_group.group_inputs.pushBack(input_tv);
-        current_group.input_vals.push_back(input_tv);
+        current_group.addInput(input_tv);
       }
     }
 
@@ -117,8 +137,7 @@ void MultiGroupFusionBuilder::addGroupOutput(TensorView* tv) {
       group.internal_tensors.has(tv), tv->toString(), "not in group");
 
   // Add the tv to the group outputs.
-  group.group_outputs.pushBack(tv);
-  group.output_vals.push_back(tv);
+  group.addOutput(tv);
 
   // Add the tv to the global context, since
   //  it is a group output.
@@ -137,8 +156,7 @@ void MultiGroupFusionBuilder::addFusionOutput(TensorView* tv) {
   addOutput(tv);
 
   // Register tv as a group output.
-  group.group_outputs.pushBack(tv);
-  group.output_vals.push_back(tv);
+  group.addOutput(tv);
 }
 
 void MultiGroupFusionBuilder::addFusionInput(TensorView* tv) {
@@ -193,23 +211,9 @@ std::unique_ptr<MultiGroupFusion> MultiGroupFusionBuilder::build() {
     multigroup_fusion.groups_.push_back(std::move(record));
     auto new_group = multigroup_fusion.groups_.back().get();
   std::cout << "new_group=" << new_group << std::endl;
-
-    // track auto scheduled groups:
-    if (new_group->auto_schedule) {
-    std::cout << "auto_schedule!"<< std::endl;
-      multigroup_fusion.auto_scheduled_groups_.insert(new_group);
-    }
-
-  std::cout << "emplace device" << std::endl;
-    // Fill in rank and device info for each group:
-    multigroup_fusion.group_to_device_map_.emplace(
-        std::make_pair(new_group, new_group->device));
-  std::cout << "group to rank map" << std::endl;
-    multigroup_fusion.group_to_rank_map_[new_group] = new_group->process_rank;
   }
-
   // Invalidate this builder within original_fusion_
-  invalidateMultiGroupFusionBuilder();
+  // invalidateMultiGroupFusionBuilder();
   // original_fusion_->invalidateMultiGroupFusionBuilder();
 
   // Transfer ownership of original fusion.
@@ -226,7 +230,7 @@ inline IValue MultiDeviceRuntime::getIValueFromFusionVal(Val* val) {
 }
 
 std::vector<IValue> MultiDeviceRuntime::getGroupIValueInputs(
-    SegmentedGroup* group) {
+    Group* group) {
   std::vector<IValue> group_input;
   std::transform(
       group->input_vals.begin(),
@@ -237,7 +241,7 @@ std::vector<IValue> MultiDeviceRuntime::getGroupIValueInputs(
 }
 
 std::unique_ptr<Fusion> MultiDeviceRuntime::getFusionCopyFromGroup(
-    SegmentedGroup* group) {
+    Group* group) {
   std::unique_ptr<Fusion> fusion_copy = std::make_unique<Fusion>();
   // WAR: copy the complete fusion and then change the inputs and outputs.
   //  to simplify the process of creating a sub-graph of original fusion.
@@ -310,7 +314,7 @@ void MultiDeviceRuntime::buildValueToRankMap() {
 }
 
 MultiDeviceRuntime::CompiledKernelPtr MultiDeviceRuntime::compileGroup(
-    SegmentedGroup* group,
+    Group* group,
     std::vector<IValue> group_inputs) {
   // Make a copy of the fusion graph we want to generate
   //  CUDA kernel and compile.
@@ -325,9 +329,9 @@ MultiDeviceRuntime::CompiledKernelPtr MultiDeviceRuntime::compileGroup(
   c10::optional<SchedulerEntry*> maybe_scheduler_entry = c10::nullopt;
 
   // Auto schedule if requested
-    std::cout << "going to check: multi_group_fusion_->shouldAutoSchedule(group) " 
-            << multi_group_fusion_->shouldAutoSchedule(group) << " on rank " << process_rank_
-            << std::endl;
+    // std::cout << "going to check: multi_group_fusion_->shouldAutoSchedule(group) " 
+    //         << multi_group_fusion_->shouldAutoSchedule(group) << " on rank " << process_rank_
+    //         << std::endl;
 
   if (multi_group_fusion_->shouldAutoSchedule(group)) {
 
@@ -406,7 +410,6 @@ void MultiDeviceRuntime::runKernel(
 
   // Compiled kernel:
   auto& executor = compiled_kernels_.at(group_idx);
-
 
 
   // Device and rank info from this group
@@ -578,4 +581,4 @@ std::vector<at::Tensor> MultiDeviceRuntime::runWithInput(
 } // namespace cuda
 } // namespace fuser
 } // namespace jit
-} // namespace torch
+} // namespace tor

@@ -19,10 +19,10 @@ namespace cuda {
 
 using ProcessRankType = int;
 
-//! Record object keeping track of the group construction
-//!  at compute definition stage.
-//Maybe we should wrap Group in a class
-// SegmentedMultiGroupFusion inheriting from SegmentFusion
+class GroupedExpr;
+
+// Maybe we should wrap Group in a class
+// SegmentedMultiGroupFusion that inherits from SegmentFusion
 class TORCH_CUDA_CU_API Group final : public SegmentedGroup {
 public:
 
@@ -52,6 +52,15 @@ public:
     return multi_group_fusion_;
   }
 
+  void addInput(TensorView* input){
+    group_inputs.pushBack(input);
+    input_vals.push_back(input);
+  }
+
+  void addOutput(TensorView* output){
+    group_outputs.pushBack(output);
+    output_vals.push_back(output);
+  }
 
   // // Tracks list of expressions that go into this group
   // std::vector<Expr*> exprs;
@@ -71,19 +80,76 @@ public:
   // All tensors that were computed within the group.
   VectorOfUniqueEntries<TensorView*> internal_tensors;
 
+// TODO: unify group_inputs with SegmentedGroup::input_vals
   // All inputs to the group.
   VectorOfUniqueEntries<TensorView*> group_inputs;
 
+// TODO: unify group_outputs with SegmentedGroup::output_vals
   // All outputs to the group.
   VectorOfUniqueEntries<TensorView*> group_outputs;
+
+  // GroupedExpr* groupedExpr(){
+  //   if (gexpr_){
+  //     buildGroupedExpr_();
+  //   }
+  //   return gexpr_;
+  // }
+private:
+// // Stores the aggregated expr
+// // WARN:since assignement implies registering to the MultiDeviceFusion,
+// // this can be called only when the inputs/outputs of the group have been set.
+  // GroupedExpr* gexpr_ = nullptr; 
+
+  // void buildGroupedExpr_();
+};
+
+
+//! 1) Definition inheriting from Expr.
+//!      - Members must be private or protected -- why ?
+//!      - Accessor functions for members
+//!      - Constructors need to register with the Fusion after inputs/outputs
+//!         are defined
+//!      - Implementation of bool sameAs(...)
+//!  2) dispatch.h/.cpp must be updated to include dispatch of the new Val
+//!  3) Default mutator function should be added to mutator.h/.cpp
+//!  4) Printing functions should be added to ir_iostream.h/.cpp
+//!  5) Lower case convenience functions should be added to arith.h/.cpp (If
+//!     user facing)
+//!  6) An enum value must be added to ExprType in type.h
+//!  7) A string entry must be added in expr_type_string_map
+//!  8) Entry added to ir_graphviz .cpp/.h
+
+class TORCH_CUDA_CU_API GroupedExpr final : public Expr {
+public:
+
+  GroupedExpr(IrBuilderPasskey, Group* group);
+
+  GroupedExpr(const GroupedExpr* src, IrCloner* ir_cloner);
+
+  Group* getGroup() const{
+    return group_;
+  }
+
+private:
+  Group* group_ = nullptr;
 };
 
 
 
+class TORCH_CUDA_CU_API SendRecv final : public Expr {
+public:
 
+  SendRecv(IrBuilderPasskey, Group* src, Group* dst, TensorView* tv);
 
+  SendRecv(const SendRecv* src, IrCloner* ir_cloner);
 
+private:
+  Group* src_;
 
+  Group* dst_;
+
+  TensorView* tv_;
+};
 
 
 
@@ -92,8 +158,6 @@ public:
 class TORCH_CUDA_CU_API MultiGroupFusion final : public Fusion {
 
    public:
-  // Print out the fusion in std::cout
-  void print();
 
   // Returns list of all groups from the fusion.
   const auto& fusionGroups() {
@@ -108,18 +172,18 @@ class TORCH_CUDA_CU_API MultiGroupFusion final : public Fusion {
 
   // Returns true if the given group is specified by user
   //  to be auto scheduled.
-  bool shouldAutoSchedule(SegmentedGroup* group) {
-    return auto_scheduled_groups_.count(group);
+  bool shouldAutoSchedule(Group* group) {
+    return group->auto_schedule;
   }
 
   // Returns the process rank running the group:
-  auto getProcessRank(SegmentedGroup* group) {
-    return group_to_rank_map_.at(group);
+  auto getProcessRank(Group* group) {
+    return group->process_rank;
   }
 
   // Returns the device running the group:
-  auto getDeviceFor(SegmentedGroup* group) {
-    return group_to_device_map_.at(group);
+  auto getDeviceFor(Group* group) {
+    return group->device;
   }
 
  private:
@@ -139,21 +203,6 @@ class TORCH_CUDA_CU_API MultiGroupFusion final : public Fusion {
   //  the same graph.
   MultiGroupFusionBuilder* original_fusion_ = nullptr;
   // std::unique_ptr<Fusion> original_fusion_ = nullptr;
-
-  // Keeps track of which group to auto schedule
-  std::unordered_set<SegmentedGroup*> auto_scheduled_groups_;
-
-  // Temporary parameters below to enable multi-process and
-  //  mult-device fusion.
-  // This currently seem rather restricted.
-  //
-  // Should really build out some flexibility along this line.
-
-  // Maps from group to the device where the group will run.
-  std::unordered_map<SegmentedGroup*, c10::Device> group_to_device_map_;
-
-  // Maps from group to the process rank that will run this group.
-  std::unordered_map<SegmentedGroup*, ProcessRankType> group_to_rank_map_;
 };
 
 //! User interface for building multi-group fusion in
@@ -161,6 +210,9 @@ class TORCH_CUDA_CU_API MultiGroupFusion final : public Fusion {
 class TORCH_CUDA_CU_API MultiGroupFusionBuilder : public Fusion {
  public:
   MultiGroupFusionBuilder();
+
+  // Print out the fusion in std::cout
+  void print();
 
   // User interface for triggering lowering.
   std::unique_ptr<MultiGroupFusion> build();
@@ -180,6 +232,10 @@ class TORCH_CUDA_CU_API MultiGroupFusionBuilder : public Fusion {
 
   // Make the given tensor a global input
   void addFusionInput(TensorView* tv);
+
+  // bool shouldAutoSchedule(SegmentedGroup* group) {
+  //   return group->shouldAutoSchedule();
+  // }
 
   // Interface to call from ir builder which will
   //  notify any creation of new nodes, so that
@@ -270,12 +326,12 @@ class TORCH_CUDA_CU_API MultiDeviceRuntime {
   // Generate and compile cuda kernel corresponding to
   //  the given segmented group.
   CompiledKernelPtr compileGroup(
-      SegmentedGroup* group,
+      Group* group,
       std::vector<IValue> group_input);
 
   // Retrieve all inputs corresponding to the given group from
   //  the current context.
-  std::vector<IValue> getGroupIValueInputs(SegmentedGroup*);
+  std::vector<IValue> getGroupIValueInputs(Group*);
 
   // Retrieve computed values from the current context,
   //  throws an error if the given val hasn't been computed.
@@ -286,7 +342,7 @@ class TORCH_CUDA_CU_API MultiDeviceRuntime {
   void runKernel(int group_idx, std::vector<IValue>& group_inputs);
 
   // Build actual fusion graph from segmented group.
-  std::unique_ptr<Fusion> getFusionCopyFromGroup(SegmentedGroup* group);
+  std::unique_ptr<Fusion> getFusionCopyFromGroup(Group* group);
 
  private:
   // Workspace when running multiple kernels, keeps track
@@ -314,7 +370,7 @@ class TORCH_CUDA_CU_API MultiDeviceRuntime {
 
   // Keeps track of heuristics that are used to schedule
   //  the auto-scheduled kernels.
-  std::unordered_map<SegmentedGroup*, std::unique_ptr<SchedulerEntry>>
+  std::unordered_map<Group*, std::unique_ptr<SchedulerEntry>>
       auto_scheduler_registry_;
 
   // Process group. Interface for inter-process collectives
