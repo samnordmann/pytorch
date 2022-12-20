@@ -253,16 +253,6 @@ class TORCH_CUDA_CU_API MultiDeviceRuntime {
   void buildValueToRankMap();
 
  private:
-  // Get list of global inputs to the complete fusion.
-  const auto& globalInputs() const {
-    return multi_group_fusion_->inputs();
-  }
-
-  // Get list of global outputs from the complete fusion.
-  const auto& globalOutputs() const {
-    return multi_group_fusion_->completeFusion()->outputs();
-  }
-
   // Generate and compile cuda kernel corresponding to
   //  the given segmented group.
   CompiledKernelPtr compileGroup(

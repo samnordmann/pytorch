@@ -383,8 +383,8 @@ void MultiDeviceRuntime::runKernel(
           context_source_rank_.find(group->input_vals.at(input_idx));
       if (input_source_rank_it == context_source_rank_.end()) {
         std::unordered_set<Val*> global_inputs(
-            multi_group_fusion_->completeFusion()->inputs().begin(),
-            multi_group_fusion_->completeFusion()->inputs().end());
+            multi_group_fusion_->inputs().begin(),
+            multi_group_fusion_->inputs().end());
 
         // Check that if there's no source rank definition then this
         //  value is a global input.
@@ -479,11 +479,11 @@ std::vector<at::Tensor> MultiDeviceRuntime::runWithInput(
     std::vector<IValue> inputs) {
 
   // Make sure inputs align at global boundary.
-  TORCH_INTERNAL_ASSERT(inputs.size() == globalInputs().size());
+  TORCH_INTERNAL_ASSERT(inputs.size() == multi_group_fusion_->inputs().size());
 
   // Make initial context with input values:
   for (auto input_idx : c10::irange(inputs.size())) {
-    context_values_[globalInputs().at(input_idx)] = inputs.at(input_idx);
+    context_values_[multi_group_fusion_->inputs().at(input_idx)] = inputs.at(input_idx);
   }
 
   // Run through the groups to launch kernel
@@ -508,8 +508,8 @@ std::vector<at::Tensor> MultiDeviceRuntime::runWithInput(
 
 //TODO: could be written in an auxiliary function as in getGroupIValueInputs
   std::transform(
-      globalOutputs().begin(),
-      globalOutputs().end(),
+      multi_group_fusion_->outputs().begin(),
+      multi_group_fusion_->outputs().end(),
       std::back_inserter(outputs),
       [this](auto output_val) {
         return getIValueFromFusionVal(output_val).toTensor();
