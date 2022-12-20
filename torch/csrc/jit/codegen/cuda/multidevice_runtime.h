@@ -159,6 +159,9 @@ class TORCH_CUDA_CU_API MultiGroupFusion final : public Fusion {
 
    public:
 
+  // Print out the fusion in std::cout
+  void print();
+
   // Returns list of all groups from the fusion.
   const auto& fusionGroups() {
     return groups_;
@@ -170,30 +173,8 @@ class TORCH_CUDA_CU_API MultiGroupFusion final : public Fusion {
     return original_fusion_;
   }
 
-  // Returns true if the given group is specified by user
-  //  to be auto scheduled.
-  bool shouldAutoSchedule(Group* group) {
-    return group->auto_schedule;
-  }
-
-  // Returns the process rank running the group:
-  auto getProcessRank(Group* group) {
-    return group->process_rank;
-  }
-
-  // Returns the device running the group:
-  auto getDeviceFor(Group* group) {
-    return group->device;
-  }
-
  private:
   friend class MultiGroupFusionBuilder;
-  // Note: while not directly using `SegmentedFusion`,
-  //  still using the layer of segmented groups so we can
-  //  re-use all the auto-scheduling and fusion segment
-  //  guarding logic if we need.
-
-  // using GroupPtr = std::unique_ptr<Group>;
   // Segmented groups, each becoming a separate kernel
   //  at compile time.
   std::vector<std::unique_ptr<Group>> groups_;
@@ -216,6 +197,11 @@ class TORCH_CUDA_CU_API MultiGroupFusionBuilder : public Fusion {
 
   // User interface for triggering lowering.
   std::unique_ptr<MultiGroupFusion> build();
+
+  // Returns list of all groups from the fusion.
+  const auto& fusionGroups() {
+    return groups_;
+  }
 
   // Mark starting point of a new group, i.e kernel
   void newGroup(

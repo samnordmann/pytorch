@@ -298,7 +298,7 @@ void MultiDeviceRuntime::buildValueToRankMap() {
   for (auto group_idx :
        c10::irange(multi_group_fusion_->fusionGroups().size())) {
     auto group = multi_group_fusion_->fusionGroups().at(group_idx).get();
-    auto group_rank = multi_group_fusion_->getProcessRank(group);
+    auto group_rank = group->process_rank;
 
     // Fill the rank which will define the output values
     for (auto output_val : group->output_vals) {
@@ -333,7 +333,7 @@ MultiDeviceRuntime::CompiledKernelPtr MultiDeviceRuntime::compileGroup(
     //         << multi_group_fusion_->shouldAutoSchedule(group) << " on rank " << process_rank_
     //         << std::endl;
 
-  if (multi_group_fusion_->shouldAutoSchedule(group)) {
+  if (group->auto_schedule) {
 
     std::cout << "entering runtime_info" << " on rank " << process_rank_<< std::endl;
     // Get runtime info from fusion graph and concrete tensor inputs.
@@ -413,8 +413,8 @@ void MultiDeviceRuntime::runKernel(
 
 
   // Device and rank info from this group
-  auto group_rank = multi_group_fusion_->getProcessRank(group);
-  auto group_device = multi_group_fusion_->getDeviceFor(group);
+  auto group_rank = group->process_rank;
+  auto group_device = group->device;
 
   // Container for the resulting tensors
   std::vector<at::Tensor> outputs;
