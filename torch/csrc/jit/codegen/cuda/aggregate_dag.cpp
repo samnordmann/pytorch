@@ -1,4 +1,6 @@
 #include <torch/csrc/jit/codegen/cuda/aggregate_dag.h>
+#include <torch/csrc/jit/codegen/cuda/multidevice_runtime.h>
+
 
 namespace torch {
 namespace jit {

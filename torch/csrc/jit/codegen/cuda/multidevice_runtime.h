@@ -20,8 +20,6 @@ namespace cuda {
 
 using ProcessRankType = int;
 
-class AggregateExpr;
-
 // Maybe we should wrap Group in a class
 // SegmentedMultiGroupFusion that inherits from SegmentFusion
 class TORCH_CUDA_CU_API Group final : public SegmentedGroup {
@@ -95,7 +93,6 @@ private:
 };
 
 
-
 //! User interface for building multi-group fusion in
 //!  scheduling time.
 class TORCH_CUDA_CU_API MultiGroupFusion : public Fusion {
@@ -162,9 +159,9 @@ public:
   //! Running counter to generate unique group id.
   int running_group_counter_ = 0;
 
-  IrContainer aggregateDag;
-
 private:
+  AggregateDag aggregate_dag_;
+
   //! Keep track of the current group, which either has been manually set
   //! through setCurrentGroup method or is the latest group created
   Group* current_group_;

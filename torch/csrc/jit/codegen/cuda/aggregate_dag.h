@@ -1,5 +1,18 @@
 #pragma once
-#include <torch/csrc/jit/codegen/cuda/multidevice_runtime.h>
+#include <torch/csrc/jit/codegen/cuda/disjoint_set.h>
+#include <torch/csrc/jit/codegen/cuda/evaluator_common.h>
+#include <torch/csrc/jit/codegen/cuda/executor.h>
+#include <torch/csrc/jit/codegen/cuda/fusion.h>
+#include <torch/csrc/jit/codegen/cuda/fusion_segmenter.h>
+#include <torch/csrc/jit/codegen/cuda/scheduler/all_schedulers.h>
+#include <torch/csrc/jit/codegen/cuda/scheduler/registry.h>
+
+#include <c10/core/DeviceType.h>
+#include <c10/cuda/CUDAFunctions.h>
+#include <torch/csrc/distributed/c10d/TCPStore.hpp>
+#include <torch/csrc/distributed/c10d/ProcessGroupBuilder.hpp>
+
+
 
 namespace torch {
 namespace jit {
@@ -24,7 +37,7 @@ namespace cuda {
 
 class Group;
 
-class TORCH_CUDA_CU_API AggregateExpr final : public Expr {
+class TORCH_CUDA_CU_API AggregateExpr : public Expr {
 public:
 
   AggregateExpr(IrBuilderPasskey, Group* group);
@@ -41,7 +54,7 @@ private:
 
 
 
-class TORCH_CUDA_CU_API SendRecv final : public Expr {
+class TORCH_CUDA_CU_API SendRecv : public Expr {
 public:
 
   SendRecv(IrBuilderPasskey, Group* src, Group* dst, TensorView* tv);
@@ -76,7 +89,7 @@ private:
 //! 5) An enum value must be added to ValType in type.h
 //! 6) A string entry must be added in val_type_string_map
 //!
-class TORCH_CUDA_CU_API MultiGroupTv final : public TensorView {
+class TORCH_CUDA_CU_API MultiGroupTv : public TensorView {
 public:
 
   MultiGroupTv(IrBuilderPasskey, TensorView* tv, Group* group);
@@ -88,9 +101,19 @@ public:
     return group_;
   }
 
+  bool is_ready=false;
+
 private:
   TensorView* tv_ = nullptr;
   Group* group_ = nullptr;
+};
+
+
+class TORCH_CUDA_CU_API AggregateDag : public IrContainer {
+public:
+
+  AggregateDag():IrContainer(){};
+
 };
 
 
