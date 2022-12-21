@@ -461,6 +461,8 @@ class TORCH_CUDA_CU_API TensorView : public Val {
   friend TORCH_CUDA_CU_API OptOutMutator;
   friend class InlineBatchingGuard;
   friend class ir_utils::TVDomainGuard;
+  friend class MultiDeviceTv;
+
 
   // Inline the computation of this tensor into its consumer at the given
   // position. If this tensor is already inlined in a higher position, then this

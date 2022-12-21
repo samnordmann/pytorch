@@ -888,7 +888,7 @@ class TORCH_CUDA_CU_API AllocateFusedReduction final : public Expr {
   Expr* grid_expr_ = nullptr;
 };
 
-// class TORCH_CUDA_CU_API GroupedExpr : public Expr {
+// class TORCH_CUDA_CU_API AggregateExpr : public Expr {
 //  public:
 //   FullOp(IrBuilderPasskey, Val* out, Val* fill_value, DataType dtype);
 

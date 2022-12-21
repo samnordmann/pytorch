@@ -1,4 +1,5 @@
 #pragma once
+#include <torch/csrc/jit/codegen/cuda/aggregate_dag.h>
 #include <torch/csrc/jit/codegen/cuda/disjoint_set.h>
 #include <torch/csrc/jit/codegen/cuda/evaluator_common.h>
 #include <torch/csrc/jit/codegen/cuda/executor.h>
@@ -19,7 +20,7 @@ namespace cuda {
 
 using ProcessRankType = int;
 
-class GroupedExpr;
+class AggregateExpr;
 
 // Maybe we should wrap Group in a class
 // SegmentedMultiGroupFusion that inherits from SegmentFusion
@@ -78,9 +79,9 @@ public:
   // All tensors that were computed within the group.
   VectorOfUniqueEntries<TensorView*> internal_tensors;
 
-  // GroupedExpr* groupedExpr(){
+  // AggregateExpr* AggregateExpr(){
   //   if (gexpr_){
-  //     buildGroupedExpr_();
+  //     buildAggregateExpr_();
   //   }
   //   return gexpr_;
   // }
@@ -88,59 +89,10 @@ private:
 // // Stores the aggregated expr
 // // WARN:since assignement implies registering to the MultiDeviceFusion,
 // // this can be called only when the inputs/outputs of the group have been set.
-  // GroupedExpr* gexpr_ = nullptr; 
+  // AggregateExpr* gexpr_ = nullptr; 
 
-  // void buildGroupedExpr_();
+  // void buildAggregateExpr_();
 };
-
-
-//! 1) Definition inheriting from Expr.
-//!      - Members must be private or protected -- why ?
-//!      - Accessor functions for members
-//!      - Constructors need to register with the Fusion after inputs/outputs
-//!         are defined
-//!      - Implementation of bool sameAs(...)
-//!  2) dispatch.h/.cpp must be updated to include dispatch of the new Val
-//!  3) Default mutator function should be added to mutator.h/.cpp
-//!  4) Printing functions should be added to ir_iostream.h/.cpp
-//!  5) Lower case convenience functions should be added to arith.h/.cpp (If
-//!     user facing)
-//!  6) An enum value must be added to ExprType in type.h
-//!  7) A string entry must be added in expr_type_string_map
-//!  8) Entry added to ir_graphviz .cpp/.h
-
-class TORCH_CUDA_CU_API GroupedExpr final : public Expr {
-public:
-
-  GroupedExpr(IrBuilderPasskey, Group* group);
-
-  GroupedExpr(const GroupedExpr* src, IrCloner* ir_cloner);
-
-  Group* getGroup() const{
-    return group_;
-  }
-
-private:
-  Group* group_ = nullptr;
-};
-
-
-
-class TORCH_CUDA_CU_API SendRecv final : public Expr {
-public:
-
-  SendRecv(IrBuilderPasskey, Group* src, Group* dst, TensorView* tv);
-
-  SendRecv(const SendRecv* src, IrCloner* ir_cloner);
-
-private:
-  Group* src_;
-
-  Group* dst_;
-
-  TensorView* tv_;
-};
-
 
 
 
@@ -209,6 +161,8 @@ public:
 
   //! Running counter to generate unique group id.
   int running_group_counter_ = 0;
+
+  IrContainer aggregateDag;
 
 private:
   //! Keep track of the current group, which either has been manually set

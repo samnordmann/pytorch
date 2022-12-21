@@ -1,11 +1,7 @@
-
-
 #include <torch/csrc/jit/codegen/cuda/fusion_segmenter.h>
 #include <torch/csrc/jit/codegen/cuda/ir_utils.h>
 #include <torch/csrc/jit/codegen/cuda/lower_utils.h>
 #include <torch/csrc/jit/codegen/cuda/multidevice_runtime.h>
-
-// #include <fstream>
 
 namespace torch {
 namespace jit {
@@ -64,27 +60,6 @@ void MultiGroupFusion::newGroup(
   //Set the newly created group as the current group
   setCurrentGroup(groups_.back().get());
 }
-
-GroupedExpr::GroupedExpr(
-    IrBuilderPasskey passkey,
-    Group* group)
-    : Expr(passkey, ExprType::GroupedExpr), group_(group) {
-  for (auto input: group_->input_vals){
-    addInput(input);
-  }
-  for (auto output: group_->output_vals){
-    addOutput(output);
-  }
-}
-
-GroupedExpr::GroupedExpr(const GroupedExpr* src, IrCloner* ir_cloner)
-    : Expr(src, ir_cloner), group_(src->getGroup()) {}
-
-
-// void Group::buildGroupedExpr_(){
-//     IrContainer* container = getMultiGroupFusion();
-//     gexpr_ = IrBuilder::create<GroupedExpr>(container, this);
-// }
 
 
 void MultiGroupFusion::newStmt(IrBuilderPasskey, Statement* stmt) {
@@ -167,6 +142,25 @@ void MultiGroupFusion::addFusionInput(TensorView* tv) {
   // Add this tv to the global context.
   context_tensor_map_[tv] = nullptr;
 }
+
+
+// void MultiGroupFusion::buildAggregateDag() {
+//   for (auto group : multi_group_fusion_->fusionGroups()) {
+//     auto group_rank = group->process_rank;
+
+//     // Fill the rank which will define the output values
+//     for (auto output_val : group->output_vals) {
+//       context_source_rank_[output_val] = group_rank;
+//     }
+
+//     // Fill the rank which will consume the input values
+//     for (auto input_val : group->input_vals) {
+//       value_to_user_rank_[input_val].pushBack(group_rank);
+//     }
+//   }
+// }
+
+
 
 // Realize the group record into an actual group
 // std::unique_ptr<SegmentedGroup> MultiGroupFusion::buildGroup(
