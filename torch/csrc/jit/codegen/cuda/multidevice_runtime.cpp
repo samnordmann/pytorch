@@ -69,10 +69,10 @@ GroupedExpr::GroupedExpr(
     IrBuilderPasskey passkey,
     Group* group)
     : Expr(passkey, ExprType::GroupedExpr), group_(group) {
-  for (auto input: group_->group_inputs){
+  for (auto input: group_->input_vals){
     addInput(input);
   }
-  for (auto output: group_->group_outputs){
+  for (auto output: group_->output_vals){
     addOutput(output);
   }
 }
@@ -97,7 +97,7 @@ void MultiGroupFusion::newStmt(IrBuilderPasskey, Statement* stmt) {
       // Check that all inputs required by this new expression
       //  are defined under the current group's context.
       //
-      // TODO (Shiming):
+      // TODO:
       //   we should at some point support re-computation, i.e.
       // pull expressions out of other groups and re-materialize them.
       // Not a huge priority for now.

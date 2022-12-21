@@ -52,13 +52,11 @@ public:
     return multi_group_fusion_;
   }
 
-  void addInput(TensorView* input){
-    group_inputs.pushBack(input);
+  void addInput(Val* input){
     input_vals.push_back(input);
   }
 
-  void addOutput(TensorView* output){
-    group_outputs.pushBack(output);
+  void addOutput(Val* output){
     output_vals.push_back(output);
   }
 
@@ -79,14 +77,6 @@ public:
 
   // All tensors that were computed within the group.
   VectorOfUniqueEntries<TensorView*> internal_tensors;
-
-// TODO: unify group_inputs with SegmentedGroup::input_vals
-  // All inputs to the group.
-  VectorOfUniqueEntries<TensorView*> group_inputs;
-
-// TODO: unify group_outputs with SegmentedGroup::output_vals
-  // All outputs to the group.
-  VectorOfUniqueEntries<TensorView*> group_outputs;
 
   // GroupedExpr* groupedExpr(){
   //   if (gexpr_){
