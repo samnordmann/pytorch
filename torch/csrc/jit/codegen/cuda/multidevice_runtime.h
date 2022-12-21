@@ -103,7 +103,7 @@ class TORCH_CUDA_CU_API MultiGroupFusion : public Fusion {
   void print();
 
   // Returns list of all groups from the fusion.
-  const auto& fusionGroups() {
+  const auto& groups() {
     return groups_;
   }
 
@@ -148,7 +148,7 @@ class TORCH_CUDA_CU_API MultiGroupFusion : public Fusion {
 
   //! Keeps track of user decided group segmentation
   //!  in scheduling time.
-  using GroupPtr = std::unique_ptr<Group>;
+  using GroupPtr = std::shared_ptr<Group>;
   std::vector<GroupPtr> groups_;
 
 public:

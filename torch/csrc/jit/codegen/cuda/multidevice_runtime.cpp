@@ -47,7 +47,7 @@ void MultiGroupFusion::newGroup(
   //                            auto_schedule,
   //                            process_rank,
   //                            device);
-  auto new_group = std::make_unique<Group>(this,
+  auto new_group = std::make_shared<Group>(this,
                                            auto_schedule,
                                            process_rank,
                                            device);
@@ -55,7 +55,7 @@ void MultiGroupFusion::newGroup(
 
 
   // Save the newly created group record.
-  groups_.push_back(std::move(new_group));
+  groups_.push_back(new_group);
 
   //Set the newly created group as the current group
   setCurrentGroup(groups_.back().get());
@@ -142,25 +142,6 @@ void MultiGroupFusion::addFusionInput(TensorView* tv) {
   // Add this tv to the global context.
   context_tensor_map_[tv] = nullptr;
 }
-
-
-// void MultiGroupFusion::buildAggregateDag() {
-//   for (auto group : multi_group_fusion_->fusionGroups()) {
-//     auto group_rank = group->process_rank;
-
-//     // Fill the rank which will define the output values
-//     for (auto output_val : group->output_vals) {
-//       context_source_rank_[output_val] = group_rank;
-//     }
-
-//     // Fill the rank which will consume the input values
-//     for (auto input_val : group->input_vals) {
-//       value_to_user_rank_[input_val].pushBack(group_rank);
-//     }
-//   }
-// }
-
-
 
 // Realize the group record into an actual group
 // std::unique_ptr<SegmentedGroup> MultiGroupFusion::buildGroup(
@@ -259,8 +240,8 @@ void updateLaunchParamsFromScheduler(
 
 void MultiDeviceRuntime::buildValueToRankMap() {
   for (auto group_idx :
-       c10::irange(multi_group_fusion_->fusionGroups().size())) {
-    auto group = multi_group_fusion_->fusionGroups().at(group_idx).get();
+       c10::irange(multi_group_fusion_->groups().size())) {
+    auto group = multi_group_fusion_->groups().at(group_idx).get();
     auto group_rank = group->process_rank;
 
     // Fill the rank which will define the output values
@@ -349,7 +330,7 @@ void MultiDeviceRuntime::runKernel(
     int group_idx,
     std::vector<IValue>& group_input) {
   // Segmented group to run:
-  auto group = multi_group_fusion_->fusionGroups().at(group_idx).get();
+  auto group = multi_group_fusion_->groups().at(group_idx).get();
 
   // Compiled kernel:
   auto& executor = compiled_kernels_.at(group_idx);
@@ -482,8 +463,8 @@ std::vector<at::Tensor> MultiDeviceRuntime::runWithInput(
 
   // Run through the groups to launch kernel
   for (auto group_idx :
-       c10::irange(multi_group_fusion_->fusionGroups().size())) {
-    auto group = multi_group_fusion_->fusionGroups().at(group_idx).get();
+       c10::irange(multi_group_fusion_->groups().size())) {
+    auto group = multi_group_fusion_->groups().at(group_idx).get();
 
     // Convert group inputs from fusion value to IValue.
     auto group_input = getGroupIValueInputs(group);

@@ -114,6 +114,14 @@ public:
 
   AggregateDag():IrContainer(){};
 
+  void build(MultiGroupFusion* fusion);
+private:
+  friend MultiGroupFusion;
+  using GroupPtrVector = VectorOfUniqueEntries<std::shared_ptr<Group>>;
+
+  std::unordered_map<Val*, GroupPtrVector> producers;
+
+  std::unordered_map<Val*, GroupPtrVector> consumers;
 };
 
 

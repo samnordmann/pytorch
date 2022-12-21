@@ -36,6 +36,23 @@ MultiGroupTv::MultiGroupTv(
     }
 
 
+void AggregateDag::build(MultiGroupFusion* fusion) {
+  for (auto group: fusion->groups()) {
+
+    for (auto output_val : group->output_vals) {
+      producers[output_val].pushBack(group);
+    }
+
+    for (auto input_val : group->input_vals) {
+      consumers[input_val].pushBack(group);
+    }
+  }
+}
+
+
+
+
+
 } // namespace cuda
 } // namespace fuser
 } // namespace jit
