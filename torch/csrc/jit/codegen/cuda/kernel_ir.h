@@ -888,27 +888,6 @@ class TORCH_CUDA_CU_API AllocateFusedReduction final : public Expr {
   Expr* grid_expr_ = nullptr;
 };
 
-// class TORCH_CUDA_CU_API AggregateExpr : public Expr {
-//  public:
-//   FullOp(IrBuilderPasskey, Val* out, Val* fill_value, DataType dtype);
-
-//   FullOp(const FullOp* src, IrCloner* ir_cloner);
-
-//   Expr* shallowCopy() const override;
-
-//   bool sameAs(const Statement* other) const override;
-
-//   void addInternalVal(Val* val) {
-//     TORCH_INTERNAL_ASSERT(val != nullptr);
-//     internal_vals_.push_back(val);
-//   }
-
-//  private:
-//  internal_vals_
-//  internal_exprs_
-
-// };
-
 } // namespace kir
 } // namespace cuda
 } // namespace fuser

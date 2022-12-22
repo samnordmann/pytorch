@@ -3,6 +3,7 @@
 #include <torch/csrc/jit/codegen/cuda/fusion.h>
 #include <torch/csrc/jit/codegen/cuda/ir_all_nodes.h>
 #include <torch/csrc/jit/codegen/cuda/ir_container.h>
+#include <torch/csrc/jit/codegen/cuda/aggregate_dag.h>
 
 namespace torch {
 namespace jit {
@@ -16,6 +17,9 @@ class Kernel;
 class IrCloner;
 
 class MultiGroupFusion;
+class AggregateVal;
+class AggregateExpr;
+class SendRecv;
 
 // Passkey for builder to register properties with statements, and to call
 // functions in IrContainer
