@@ -89,11 +89,11 @@ public:
 
   AggregateExpr(IrBuilderPasskey, Group* group);
 
-//   AggregateExpr(const AggregateExpr* src, IrCloner* ir_cloner);
-
-  Group* getGroup() const{
+  const Group* getGroup() const{
     return group_;
   }
+
+  Expr* shallowCopy() const override;
 
   void addInput(Val* input) {
     Expr::addInput(input);
@@ -114,6 +114,8 @@ public:
 
   SendRecv(IrBuilderPasskey);
 
+  Expr* shallowCopy() const override;
+
   void addInput(Val* input) {
     Expr::addInput(input);
   }
@@ -121,8 +123,6 @@ public:
   void addOutput(Val* input) {
     Expr::addInput(input);
   }
-
-
 };
 
 
@@ -134,12 +134,10 @@ public:
   void build(MultiGroupFusion* fusion);
 private:
   friend MultiGroupFusion;
-//   using GroupPtr = std::shared_ptr<Group>;
-//   using GroupPtrVector = VectorOfUniqueEntries<GroupPtr>;
 
   std::unordered_map<Val*, AggregateVal*> producer;
 
-//   std::unordered_map<Val*, GroupPtrVector> consumers;
+//   std::unordered_map<Val*, VectorOfUniqueEntries<std::shared_ptr<Group>>> consumers;
 };
 
 
