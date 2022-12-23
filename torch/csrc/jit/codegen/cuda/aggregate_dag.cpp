@@ -77,6 +77,40 @@ void AggregateDag::build(MultiGroupFusion* fusion) {
 
 
 
+std::ostream& operator<< (std::ostream &out, AggregateVal const& data) {
+    return out << "AggregateVal represents Val " <<  data.getOriginalVal()
+              << "on group " << data.getGroup() << "\n";
+}
+
+std::ostream& operator<< (std::ostream &out, AggregateExpr const& data) {
+    return out << "AggregateExpr represents Group " <<  data.getGroup() << "\n";
+}
+
+std::ostream& operator<< (std::ostream &out, SendRecv const& data) {
+    out << "SendRecv with inputs ";
+    for (auto input: data.inputs())
+      out << input;
+    out<< " and outputs ";
+    for (auto output: data.outputs())
+      out << output;
+    out << "\n";
+    return out;
+}
+
+std::ostream& operator<< (std::ostream &out, AggregateDag const& data) {
+    out << "AggregateDag with Vals ";
+    for (auto val: data.vals())
+      out << val;
+    out<< " and Exprs ";
+    for (auto expr: data.unordered_exprs())
+      out << expr;
+    out << "\n";
+    return out;
+}
+
+
+
+
 
 } // namespace cuda
 } // namespace fuser
