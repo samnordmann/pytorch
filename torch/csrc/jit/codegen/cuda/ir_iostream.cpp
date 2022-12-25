@@ -7,6 +7,7 @@
 #include <torch/csrc/jit/codegen/cuda/ir_utils.h>
 #include <torch/csrc/jit/codegen/cuda/kernel.h>
 #include <torch/csrc/jit/codegen/cuda/lower_utils.h>
+#include <torch/csrc/jit/codegen/cuda/multidevice_runtime.h>
 
 #include <c10/util/irange.h>
 
@@ -256,9 +257,9 @@ void IrPrinter::handle(const AggregateVal* av) {
     }
   }
 
-  os_ << "AggregateVal represents Val ";
+  os_ << "AggregateVal representing Val ";
   handle(av->getOriginalVal());
-  os_ << " on group at address " << av->getGroup();
+  os_ << " on group with id " << av->getGroup()->unique_id << "\n";
 }
 
 void IrPrinter::handle(const NamedScalar* ns) {

@@ -137,15 +137,8 @@ public:
 
   void build(MultiGroupFusion* fusion);
 
-  void print(){
-    std::cout << "AggregateDag with Vals ";
-    for (auto val: vals())
-      std::cout << val;
-    std::cout << " and Exprs ";
-    for (auto expr: unordered_exprs())
-      std::cout << expr;
-    std::cout << "\n" << std::endl;
-  }
+  void print();
+
 private:
   friend MultiGroupFusion;
 

@@ -525,7 +525,6 @@ rank 3:
   if (grank==0){
     fusion.buildAggregateDag();
     fusion.aggregateDag().print();
-    std::cout << fusion.aggregateDag() << std::endl;
   }
 
   // create runtime

@@ -1,5 +1,6 @@
 #include <torch/csrc/jit/codegen/cuda/aggregate_dag.h>
 #include <torch/csrc/jit/codegen/cuda/multidevice_runtime.h>
+#include <torch/csrc/jit/codegen/cuda/ir_printer.h>
 
 
 namespace torch {
@@ -113,17 +114,16 @@ std::ostream& operator<< (std::ostream &out, SendRecv const& data) {
     return out;
 }
 
-std::ostream& operator<< (std::ostream &out, AggregateDag const& data) {
-    out << "AggregateDag with Vals ";
-    for (auto val: data.vals())
-      out << val;
-    out<< " and Exprs ";
-    for (auto expr: data.unordered_exprs())
-      out << expr;
-    out << "\n";
-    return out;
-}
-
+  void AggregateDag::print(){
+    IrPrinter p(std::cout);
+    std::cout << "AggregateDag containing Vals {\n";
+    for (auto val: vals())
+      p.handle((AggregateVal*)val);
+    std::cout << "}\n and Exprs {";
+    for (auto expr: unordered_exprs())
+      std::cout << expr;
+    std::cout << "}\n" << std::endl;
+  }
 
 
 
