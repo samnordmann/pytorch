@@ -68,6 +68,8 @@ class TORCH_CUDA_CU_API IrCloner : private OptInConstDispatch {
   void handle(const ComplexDouble*) override;
   void handle(const NamedScalar*) override;
 
+  void handle(const AggregateVal*) override;
+
   void handle(const FullOp*) override;
   void handle(const ARangeOp*) override;
   void handle(const EyeOp*) override;

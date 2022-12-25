@@ -42,8 +42,10 @@ class MultiGroupFusion;
 //! 4a) Printing functions should be added to ir_iostream.h/.cpp --done
 //! 4b) Graphviz generation must be added to ir_graphviz.h/.cpp
 //! 5) An enum value must be added to ValType in type.h -- done
-//! 6) A string entry must be added in val_type_string_map
+//! 6) A string entry must be added in val_type_string_map -- I don't find it
 //!
+// Must also declare IrCloner::handle and instantiate IrBuilder::clone
+// I also added this headerfile to ir_all_nodes.h
 class TORCH_CUDA_CU_API AggregateVal : public Val {
 public:
 
@@ -162,4 +164,5 @@ std::ostream& operator<< (std::ostream &out, AggregateDag const& data);
 } // namespace cuda
 } // namespace fuser
 } // namespace jit
-} // na
+} // namespace torch
+
