@@ -1,6 +1,7 @@
 #if defined(USE_CUDA)
 #include <gtest/gtest.h>
 
+#include <torch/csrc/jit/codegen/cuda/aggregate_dag.h>
 #include <torch/csrc/jit/codegen/cuda/arith.h>
 #include <torch/csrc/jit/codegen/cuda/codegen.h>
 #include <torch/csrc/jit/codegen/cuda/disjoint_set.h>
@@ -115,14 +116,14 @@ TEST_F(NVFuserTest, FusionDoubleReduction_CUDA) {
 
 // TEST_F(NVFuserTest, FusionMutiGroupDoubleReduction_CUDA) {
 //   // Using the new interface to build multi-group fusion
-//   MultiGroupFusion fusion_builder;
+//   MultiGroupFusion fusion;
 
 //   // Fusion guard is on the fusion managed within builder.
-//   FusionGuard fg(fusion_builder.completeFusion());
+//   FusionGuard fg(fusion.completeFusion());
 
 //   TensorView* tv0 = makeContigTensor(3);
 
-//   fusion_builder.addFusionInput(tv0);
+//   fusion.addFusionInput(tv0);
 
 //   // Each expression has to belong to some group,
 //   //  and each group will become one cuda kernel
@@ -132,29 +133,29 @@ TEST_F(NVFuserTest, FusionDoubleReduction_CUDA) {
 //   //  The builder now points to the first created group,
 //   // all operations following this line will make changes
 //   // to the first group.
-//   fusion_builder.newGroup(
+//   fusion.newGroup(
 //       // auto-schedule
 //       true);
 
 //   TensorView* tv1 = sum(tv0, {0});
 
-//   fusion_builder.addGroupOutput(tv1);
+//   fusion.addGroupOutput(tv1);
 
 //   // Create the second group.
 //   //  The builder now points to the second created group,
 //   // all operations following this line will make changes
 //   // to the second group.
-//   fusion_builder.newGroup(
+//   fusion.newGroup(
 //       // auto-schedule
 //       true);
 
 //   TensorView* tv2 = sum(tv1, {0});
 
-//   fusion_builder.addFusionOutput(tv2);
+//   fusion.addFusionOutput(tv2);
 
 //   // Build actual fusion graphs and pass it to a
 //   //  multi-device runtime.
-//   MultiDeviceRuntime runtime(fusion_builder.build());
+//   MultiDeviceRuntime runtime(fusion.build());
 
 //   // Create at input tensors.
 //   auto options = at::TensorOptions().dtype(at::kFloat).device(at::kCUDA, 0);
@@ -182,14 +183,14 @@ TEST_F(NVFuserTest, FusionDoubleReduction_CUDA) {
 
 // TEST_F(NVFuserTest, FusionMultiRankReduction_CUDA) {
 //   // Using the new interface to build multi-group fusion
-//   MultiGroupFusion fusion_builder;
+//   MultiGroupFusion fusion;
 
 //   // Fusion guard is on the fusion managed within builder.
-//   FusionGuard fg(fusion_builder.completeFusion());
+//   FusionGuard fg(fusion.completeFusion());
 
 //   TensorView* tv0 = makeContigTensor(3);
 
-//   fusion_builder.addFusionInput(tv0);
+//   fusion.addFusionInput(tv0);
 
 //   // Each expression has to belong to some group,
 //   //  and each group will become one cuda kernel
@@ -199,7 +200,7 @@ TEST_F(NVFuserTest, FusionDoubleReduction_CUDA) {
 //   //  The builder now points to the first created group,
 //   // all operations following this line will make changes
 //   // to the first group.
-//   fusion_builder.newGroup(
+//   fusion.newGroup(
 //       // auto-schedule
 //       true,
 //       // Process rank that runs this group:
@@ -210,13 +211,13 @@ TEST_F(NVFuserTest, FusionDoubleReduction_CUDA) {
 
 //   TensorView* tv1 = sum(tv0, {0});
 
-//   fusion_builder.addGroupOutput(tv1);
+//   fusion.addGroupOutput(tv1);
 
 //   // Create the second group.
 //   //  The builder now points to the second created group,
 //   // all operations following this line will make changes
 //   // to the second group.
-//   fusion_builder.newGroup(
+//   fusion.newGroup(
 //       // auto-schedule
 //       true,
 //       // Process rank that runs this group:
@@ -227,12 +228,12 @@ TEST_F(NVFuserTest, FusionDoubleReduction_CUDA) {
 
 //   TensorView* tv2 = sum(tv1, {0});
 
-//   fusion_builder.addFusionOutput(tv2);
+//   fusion.addFusionOutput(tv2);
 
 //   // Build actual fusion graphs and pass it to a
 //   //  multi-device runtime.
 //   MultiDeviceRuntime runtime(
-//       fusion_builder.build(),
+//       fusion.build(),
 //       // Process rank that should come from ENV:
 //       -1);
 
@@ -306,7 +307,7 @@ TEST_F(NVFuserTest, FusionMutiGroupProcessGroup) {
 
 TEST_F(NVFuserTest, SendRecvTest) {
   // Using the new interface to build multi-group fusion
-  MultiGroupFusion fusion_builder;
+  MultiGroupFusion fusion;
   int grank, gsize;
 
   if (parse_env(grank, gsize)) {
@@ -339,7 +340,7 @@ TEST_F(NVFuserTest, SendRecvTest) {
 
 TEST_F(NVFuserTest, FusionMultiGPU) {
   // Using the new interface to build multi-group fusion
-  MultiGroupFusion fusion_builder;
+  MultiGroupFusion fusion;
   int grank, gsize;
 
   // defining the process group
@@ -356,11 +357,11 @@ TEST_F(NVFuserTest, FusionMultiGPU) {
   // process group defined
 
   // Fusion guard is on the fusion managed within builder.
-  FusionGuard fg(&fusion_builder);
+  FusionGuard fg(&fusion);
 
   TensorView* tv0 = makeContigTensor(3);
 
-  fusion_builder.addFusionInput(tv0);
+  fusion.addFusionInput(tv0);
 
   // Each expression has to belong to some group,
   //  and each group will become one cuda kernel
@@ -370,7 +371,7 @@ TEST_F(NVFuserTest, FusionMultiGPU) {
   //  The builder now points to the first created group,
   // all operations following this line will make changes
   // to the first group.
-  fusion_builder.newGroup(
+  fusion.newGroup(
       // auto-schedule
       true,
       // Process rank that runs this group:
@@ -382,13 +383,13 @@ TEST_F(NVFuserTest, FusionMultiGPU) {
 
   TensorView* tv1 = sum(tv0, {0});
 
-  fusion_builder.addGroupOutput(tv1);
+  fusion.addGroupOutput(tv1);
 
   // Create the second group.
   //  The builder now points to the second created group,
   // all operations following this line will make changes
   // to the second group.
-  fusion_builder.newGroup(
+  fusion.newGroup(
       // auto-schedule
       true,
       // Process rank that runs this group:
@@ -400,12 +401,12 @@ TEST_F(NVFuserTest, FusionMultiGPU) {
 
   TensorView* tv2 = sum(tv1, {0});
 
-  fusion_builder.addFusionOutput(tv2);
+  fusion.addFusionOutput(tv2);
 
   // Build actual fusion graphs and pass it to a
   //  multi-device runtime.
   MultiDeviceRuntime runtime(
-      &fusion_builder,
+      &fusion,
       pg, grank);
 
   // if (grank == 0) {
@@ -493,35 +494,41 @@ rank 3:
   //   GTEST_SKIP() << "this test must be run with 4 ranks but gsize=" << gsize;
   // }
 
-  MultiGroupFusion fusion_builder;
-  FusionGuard fg(&fusion_builder);
+  MultiGroupFusion fusion;
+  FusionGuard fg(&fusion);
 
   TensorView* tv = makeContigTensor(3);
   auto index_a = IrBuilder::create<Int>(0);
   auto index_b = IrBuilder::create<Int>(1);
-  fusion_builder.addFusionInput(tv);
+  fusion.addFusionInput(tv);
 
 //TODO: automate the device management. Bind device to rank and not to group..?
-  fusion_builder.newGroup(true, 0, at::Device("cuda:0"));
+  fusion.newGroup(true, 0, at::Device("cuda:0"));
   auto tv0 = add(tv, tv);
-  fusion_builder.addGroupOutput(tv0);
+  fusion.addGroupOutput(tv0);
 
-  fusion_builder.newGroup(true, 1, at::Device("cuda:1"));
+  fusion.newGroup(true, 1, at::Device("cuda:1"));
   auto tva = select(tv0, 0, index_a); // tva = tv0[0,:,:] of shape (8,8)
   TensorView* tva1 = sum(tva, {0}); // tva1 of shape (r8,8) or (8)
-  fusion_builder.addGroupOutput(tva1);
+  fusion.addGroupOutput(tva1);
 
-  fusion_builder.newGroup(true, 2, at::Device("cuda:2"));
+  fusion.newGroup(true, 2, at::Device("cuda:2"));
   auto tvb = select(tv0, 0, index_b);// tvb = tv0[1,:,:] of shape (8,8)
   TensorView* tvb1 = sum(tvb, {0});
-  fusion_builder.addGroupOutput(tvb1);
+  fusion.addGroupOutput(tvb1);
 
-  fusion_builder.newGroup(true, 3, at::Device("cuda:3"));
+  fusion.newGroup(true, 3, at::Device("cuda:3"));
   TensorView* tv2 = add(tva1, tvb1);
-  fusion_builder.addFusionOutput(tv2);
+  fusion.addFusionOutput(tv2);
+
+// aggregateDag
+  if (grank==0){
+    fusion.buildAggregateDag();
+    // fusion.aggregateDag().print();
+  }
 
   // create runtime
-  MultiDeviceRuntime runtime(&fusion_builder, pg, grank);
+  MultiDeviceRuntime runtime(&fusion, pg, grank);
 
   // print the fusion
   if (grank == 0) {

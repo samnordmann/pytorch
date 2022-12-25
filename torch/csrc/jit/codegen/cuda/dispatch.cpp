@@ -83,6 +83,9 @@ void Val::dispatch(T handler, Val* val) {
     case ValType::TensorIndex:
       ptr(handler)->handle(val->as<kir::TensorIndex>());
       return;
+    case ValType::AggregateVal:
+      ptr(handler)->handle(val->as<AggregateVal>());
+      return;
     default:
       break;
   }
@@ -271,6 +274,9 @@ void Val::constDispatch(T handler, const Val* val) {
       return;
     case ValType::TensorIndex:
       ptr(handler)->handle(val->as<kir::TensorIndex>());
+      return;
+    case ValType::AggregateVal:
+      ptr(handler)->handle(val->as<AggregateVal>());
       return;
     default:
       break;
@@ -468,6 +474,9 @@ void Val::mutatorDispatch(T mutator, Val* val) {
       return;
     case ValType::TensorIndex:
       ptr(mutator)->mutate(val->as<kir::TensorIndex>());
+      return;
+    case ValType::AggregateVal:
+      ptr(mutator)->mutate(val->as<AggregateVal>());
       return;
     default:
       break;
@@ -739,6 +748,10 @@ void OptOutConstDispatch::handle(const kir::TensorIndex* stmt) {
   unhandled(stmt);
 }
 
+void OptOutConstDispatch::handle(const AggregateVal* stmt) {
+  unhandled(stmt);
+}
+
 // Exprs
 void OptOutConstDispatch::handle(const FullOp* stmt) {
   unhandled(stmt);
@@ -895,6 +908,10 @@ void OptOutDispatch::handle(kir::Predicate* stmt) {
   unhandled(stmt);
 }
 void OptOutDispatch::handle(kir::TensorIndex* stmt) {
+  unhandled(stmt);
+}
+
+void OptOutDispatch::handle(AggregateVal* stmt) {
   unhandled(stmt);
 }
 

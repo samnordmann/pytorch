@@ -246,6 +246,21 @@ void IrPrinter::handle(const ComplexDouble* c) {
   }
 }
 
+void IrPrinter::handle(const AggregateVal* av) {
+  if (print_inline_) {
+    if (auto def = av->definition()) {
+      os_ << "( ";
+      handle(def);
+      os_ << " )";
+      return;
+    }
+  }
+
+  os_ << "AggregateVal represents Val ";
+  handle(av->getOriginalVal());
+  os_ << " on group at address " << av->getGroup();
+}
+
 void IrPrinter::handle(const NamedScalar* ns) {
   os_ << ns->name();
 }

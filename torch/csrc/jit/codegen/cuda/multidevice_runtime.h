@@ -143,6 +143,14 @@ class TORCH_CUDA_CU_API MultiGroupFusion : public Fusion {
     current_group_ = group;
   }
 
+  AggregateDag aggregateDag(){
+    return aggregate_dag_;
+  }
+
+  void buildAggregateDag(){
+    aggregate_dag_.build(this);
+  }
+
  private:
   // std::unique_ptr<SegmentedGroup> buildGroup(const Group& group_record);
 

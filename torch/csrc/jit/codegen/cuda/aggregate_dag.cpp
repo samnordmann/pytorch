@@ -36,10 +36,26 @@ SendRecv::SendRecv(IrBuilderPasskey passkey)
 
 AggregateVal::AggregateVal(
     IrBuilderPasskey passkey, Val* val, Group* group)
-    : Val(passkey, val->vtype(), val->dtype()),
+    : Val(passkey, ValType::AggregateVal, val->dtype()),
     original_val_(val), group_(group) {
       //TODO: add a mapping from original val to AggregateVal.
     }
+
+AggregateVal::AggregateVal(const AggregateVal* src, IrCloner* ir_cloner)
+    : Val(src, ir_cloner), original_val_(src->original_val_), group_(src->group_) {}
+
+
+bool AggregateVal::sameAs(const Statement* other) const {
+  if (this == other) {
+    return true;
+  }
+  if (!other->isA<AggregateVal>()) {
+    return false;
+  }
+  const auto other_aggregate_val = other->as<AggregateVal>();
+  return original_val_->sameAs(other_aggregate_val->original_val_)
+          && group_->unique_id == other_aggregate_val->group_->unique_id;
+}
 
 AggregateDag::AggregateDag():IrContainer(){}
 
@@ -48,39 +64,39 @@ void AggregateDag::build(MultiGroupFusion* fusion) {
     auto group = group_ptr.get();
     IrContainer* container = (IrContainer*)this;
 
-    auto expr = IrBuilder::create<AggregateExpr>(container, group);
+    // auto expr = IrBuilder::create<AggregateExpr>(container, group);
 
     for (auto output_val : group->output_vals) {
       auto val = IrBuilder::create<AggregateVal>(container, output_val, group);
-      producer[output_val] = val;
-      expr->addOutput(val);
-      val->setDefinition(expr);
+      // producer[output_val] = val;
+      // expr->addOutput(val);
+      // val->setDefinition(expr);
     }
 
-    for (auto input_val : group->input_vals) {
-      auto val = IrBuilder::create<AggregateVal>(container, input_val, group);
-      // consumers[input_val].pushBack(val);
-      expr->addInput(val);
-      if (producer.find(input_val) != producer.end()){
-        //means that input_val is not a global input and 
-        // is produced by another group
-        auto src = producer[input_val];
-        auto sendRecv = IrBuilder::create<SendRecv>(container);
-        sendRecv->addInput(src);
-        sendRecv->addOutput(val);
-        val->setDefinition(sendRecv);
-      }
-    }
+    // for (auto input_val : group->input_vals) {
+    //   auto val = IrBuilder::create<AggregateVal>(container, input_val, group);
+    //   // consumers[input_val].pushBack(val);
+    //   expr->addInput(val);
+    //   if (producer.find(input_val) != producer.end()){
+    //     //means that input_val is not a global input and 
+    //     // is produced by another group
+    //     auto src = producer[input_val];
+    //     auto sendRecv = IrBuilder::create<SendRecv>(container);
+    //     sendRecv->addInput(src);
+    //     sendRecv->addOutput(val);
+    //     val->setDefinition(sendRecv);
+    //   }
+    // }
   }
 }
 
 
 
 
-std::ostream& operator<< (std::ostream &out, AggregateVal const& data) {
-    return out << "AggregateVal represents Val " <<  data.getOriginalVal()
-              << "on group " << data.getGroup() << "\n";
-}
+// std::ostream& operator<< (std::ostream &out, AggregateVal const& data) {
+//     return out << "AggregateVal represents Val " <<  data.getOriginalVal()
+//               << "on group " << data.getGroup() << "\n";
+// }
 
 std::ostream& operator<< (std::ostream &out, AggregateExpr const& data) {
     return out << "AggregateExpr represents Group " <<  data.getGroup() << "\n";

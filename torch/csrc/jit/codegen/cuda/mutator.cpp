@@ -125,6 +125,10 @@ void OptOutMutator::mutate(kir::TensorIndex*) {
   TORCH_INTERNAL_ASSERT(false, "Not implemented yet.");
 }
 
+void OptOutMutator::mutate(AggregateVal*) {
+  TORCH_INTERNAL_ASSERT(false, "Not implemented yet.");
+}
+
 void OptOutMutator::mutate(FullOp* fop) {
   Val* out = maybeMutated(fop->output(0));
   Val* fill_value = maybeMutated(fop->getFillValue());

@@ -67,6 +67,8 @@ class Int;
 class ComplexDouble;
 class NamedScalar;
 
+class AggregateVal;
+
 // Exprs
 class FullOp;
 class ARangeOp;
@@ -143,6 +145,8 @@ class TORCH_CUDA_CU_API OptOutConstDispatch : public PolymorphicBase {
   virtual void handle(const kir::Predicate*);
   virtual void handle(const kir::TensorIndex*);
 
+  virtual void handle(const AggregateVal*);
+
   // Exprs
   virtual void handle(const FullOp* stmt);
   virtual void handle(const ARangeOp* stmt);
@@ -210,6 +214,8 @@ class TORCH_CUDA_CU_API OptOutDispatch : public PolymorphicBase {
 
   virtual void handle(kir::Predicate*);
   virtual void handle(kir::TensorIndex*);
+
+  virtual void handle(AggregateVal*);
 
   // Exprs
   virtual void handle(FullOp* stmt);
@@ -319,6 +325,8 @@ class TORCH_CUDA_CU_API OptOutMutator : public PolymorphicBase {
 
   virtual void mutate(kir::Predicate*);
   virtual void mutate(kir::TensorIndex*);
+
+  virtual void mutate(AggregateVal*);
 
   // Exprs
   virtual void mutate(FullOp*);

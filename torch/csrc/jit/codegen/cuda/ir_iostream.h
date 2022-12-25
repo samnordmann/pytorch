@@ -108,6 +108,8 @@ class TORCH_CUDA_CU_API IrPrinter : public OptInConstDispatch {
   void handle(const kir::Predicate*) final;
   void handle(const kir::TensorIndex*) final;
 
+  void handle(const AggregateVal*) final;
+
   void handle(const kir::GridBroadcast*) final;
   void handle(const kir::GridReduction*) final;
   void handle(const kir::GroupedGridReduction*) final;

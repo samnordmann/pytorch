@@ -31,23 +31,25 @@ class MultiGroupFusion;
 //! new Val:
 //!
 //! 1) Definition inheriting from Val
-//!     - Members must be private or protected
-//!     - Accessor functions for members
-//!     - Must call Val constructor, Val constructor registers with fusion
-//!     - Implementation of bool sameAs(...)
-//!     - Must implement a "cloning" constructor, ex.
+//!     - Members must be private or protected -- done
+//!     - Accessor functions for members -- done
+//!     - Must call Val constructor, Val constructor registers with fusion -- done
+//!     - Implementation of bool sameAs(...) -- done 
+//!     - Must implement a "cloning" constructor, ex. -- done
 //!        Int::Int(const Int* src, IrCloner* ir_cloner)
-//! 2) dispatch.h/.cpp must be updated to include dispatch of the new Val
-//! 3) Default mutator function should be added to mutator.cpp
-//! 4a) Printing functions should be added to ir_iostream.h/.cpp
+//! 2) dispatch.h/.cpp must be updated to include dispatch of the new Val --done 
+//! 3) Default mutator function should be added to mutator.cpp -- done but not implemented
+//! 4a) Printing functions should be added to ir_iostream.h/.cpp --done
 //! 4b) Graphviz generation must be added to ir_graphviz.h/.cpp
-//! 5) An enum value must be added to ValType in type.h
+//! 5) An enum value must be added to ValType in type.h -- done
 //! 6) A string entry must be added in val_type_string_map
 //!
 class TORCH_CUDA_CU_API AggregateVal : public Val {
 public:
 
   AggregateVal(IrBuilderPasskey passkey, Val* val, Group* group);
+
+  AggregateVal(const AggregateVal* src, IrCloner* ir_cloner);
 
   const Val* getOriginalVal() const{
     return original_val_;
@@ -57,7 +59,7 @@ public:
     return group_;
   }
 
-  bool is_ready=false;
+  bool sameAs(const Statement* other) const override;
 
 private:
   Val* original_val_;
@@ -132,17 +134,32 @@ public:
   AggregateDag();
 
   void build(MultiGroupFusion* fusion);
+
+  void print(){
+    std::cout << "AggregateDag with Vals ";
+    for (auto val: vals())
+      std::cout << val;
+    std::cout << " and Exprs ";
+    for (auto expr: unordered_exprs())
+      std::cout << expr;
+    std::cout << "\n" << std::endl;
+  }
 private:
   friend MultiGroupFusion;
 
   std::unordered_map<Val*, AggregateVal*> producer;
 
+
 //   std::unordered_map<Val*, VectorOfUniqueEntries<std::shared_ptr<Group>>> consumers;
 };
+
+std::ostream& operator<< (std::ostream &out, AggregateVal const& data);
+std::ostream& operator<< (std::ostream &out, AggregateExpr const& data);
+std::ostream& operator<< (std::ostream &out, SendRecv const& data);
+std::ostream& operator<< (std::ostream &out, AggregateDag const& data);
 
 
 } // namespace cuda
 } // namespace fuser
 } // namespace jit
-} // namespace torch
-
+} // na
