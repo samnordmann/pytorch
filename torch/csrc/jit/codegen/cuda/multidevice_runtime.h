@@ -52,6 +52,8 @@ public:
   }
 
   void addInput(Val* input){
+    TORCH_INTERNAL_ASSERT(!std::count (input_vals.begin(), input_vals.end(), input),
+      "added twice the same val as input of the current group");
     input_vals.push_back(input);
   }
 

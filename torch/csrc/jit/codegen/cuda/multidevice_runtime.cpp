@@ -84,7 +84,9 @@ void MultiGroupFusion::newStmt(IrBuilderPasskey, Statement* stmt) {
 
       // If we are pulling inputs from other groups, we need
       //  to mark that as a group input.
-      if (!current_group.internal_tensors.has(input_tv)) {
+      if (!current_group.internal_tensors.has(input_tv)
+          && !std::count (current_group.input_vals.begin(), current_group.input_vals.end(), input_tv)
+          ){
         current_group.addInput(input_tv);
       }
     }
