@@ -726,6 +726,7 @@ libtorch_cuda_core_sources = [
     "torch/csrc/jit/codegen/cuda/manager.cpp",
     "torch/csrc/jit/codegen/cuda/maxinfo_propagator.cpp",
     "torch/csrc/jit/codegen/cuda/multidevice_runtime.cpp",
+    "torch/csrc/jit/codegen/cuda/multigroup_fusion.cpp",
     "torch/csrc/jit/codegen/cuda/mutator.cpp",
     "torch/csrc/jit/codegen/cuda/non_divisible_split.cpp",
     "torch/csrc/jit/codegen/cuda/ops/alias.cpp",

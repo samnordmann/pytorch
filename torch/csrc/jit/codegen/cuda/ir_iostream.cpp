@@ -7,7 +7,7 @@
 #include <torch/csrc/jit/codegen/cuda/ir_utils.h>
 #include <torch/csrc/jit/codegen/cuda/kernel.h>
 #include <torch/csrc/jit/codegen/cuda/lower_utils.h>
-#include <torch/csrc/jit/codegen/cuda/multidevice_runtime.h>
+#include <torch/csrc/jit/codegen/cuda/multigroup_fusion.h>
 
 #include <c10/util/irange.h>
 

@@ -1,5 +1,5 @@
 #include <torch/csrc/jit/codegen/cuda/aggregate_dag.h>
-#include <torch/csrc/jit/codegen/cuda/multidevice_runtime.h>
+#include <torch/csrc/jit/codegen/cuda/multigroup_fusion.h>
 #include <torch/csrc/jit/codegen/cuda/ir_printer.h>
 
 
@@ -7,7 +7,6 @@ namespace torch {
 namespace jit {
 namespace fuser {
 namespace cuda {
-
 
 AggregateExpr::AggregateExpr(
     IrBuilderPasskey passkey,
@@ -35,9 +34,6 @@ bool AggregateExpr::sameAs(const Statement* other) const {
 
   return group_== other_op->getGroup();
 }
-
-
-
 
 
 SendRecv::SendRecv(IrBuilderPasskey passkey, AggregateVal* out, AggregateVal* in)
@@ -68,10 +64,6 @@ bool SendRecv::sameAs(const Statement* other) const {
 }
 
 
-
-
-
-
 AggregateVal::AggregateVal(
     IrBuilderPasskey passkey, Val* val, Group* group)
     : Val(passkey, ValType::AggregateVal, val->dtype()),
@@ -81,7 +73,6 @@ AggregateVal::AggregateVal(
 
 AggregateVal::AggregateVal(const AggregateVal* src, IrCloner* ir_cloner)
     : Val(src, ir_cloner), original_val_(src->original_val_), group_(src->group_) {}
-
 
 bool AggregateVal::sameAs(const Statement* other) const {
   if (this == other) {
@@ -94,9 +85,6 @@ bool AggregateVal::sameAs(const Statement* other) const {
   return original_val_->sameAs(other_aggregate_val->original_val_)
           && group_->unique_id == other_aggregate_val->group_->unique_id;
 }
-
-
-
 
 
 AggregateDag::AggregateDag():IrContainer(){}
@@ -137,37 +125,11 @@ void AggregateDag::build(MultiGroupFusion* fusion) {
   }
 }
 
-
-
-
-// std::ostream& operator<< (std::ostream &out, AggregateVal const& data) {
-//     return out << "AggregateVal represents Val " <<  data.getOriginalVal()
-//               << "on group " << data.getGroup() << "\n";
-// }
-
-std::ostream& operator<< (std::ostream &out, AggregateExpr const& data) {
-    return out << "AggregateExpr represents Group " <<  data.getGroup() << "\n";
-}
-
-std::ostream& operator<< (std::ostream &out, SendRecv const& data) {
-    out << "SendRecv with inputs ";
-    for (auto input: data.inputs())
-      out << input;
-    out<< " and outputs ";
-    for (auto output: data.outputs())
-      out << output;
-    out << "\n";
-    return out;
-}
-
   void AggregateDag::print(){
     IrPrinter p(std::cout);
     std::cout << "AggregateDag containing Vals {\n";
     for (auto val: vals()){
-      std::cout <<"   ";
-      // p.handle((AggregateVal*)val);
-      std::cout <<(AggregateVal*)val;
-      std::cout <<"\n";
+      std::cout <<"   " << (AggregateVal*)val << "\n";
     }
     std::cout << "}\n and Exprs {\n";
     for (auto expr: unordered_exprs()){
@@ -175,8 +137,6 @@ std::ostream& operator<< (std::ostream &out, SendRecv const& data) {
     }
     std::cout << "}\n" << std::endl;
   }
-
-
 
 
 } // namespace cuda

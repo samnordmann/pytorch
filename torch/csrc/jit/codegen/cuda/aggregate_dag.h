@@ -1,17 +1,4 @@
 #pragma once
-// #include <torch/csrc/jit/codegen/cuda/disjoint_set.h>
-// #include <torch/csrc/jit/codegen/cuda/evaluator_common.h>
-// #include <torch/csrc/jit/codegen/cuda/executor.h>
-// #include <torch/csrc/jit/codegen/cuda/fusion.h>
-// #include <torch/csrc/jit/codegen/cuda/fusion_segmenter.h>
-// #include <torch/csrc/jit/codegen/cuda/scheduler/all_schedulers.h>
-// #include <torch/csrc/jit/codegen/cuda/scheduler/registry.h>
-
-// #include <c10/core/DeviceType.h>
-// #include <c10/cuda/CUDAFunctions.h>
-// #include <torch/csrc/distributed/c10d/TCPStore.hpp>
-// #include <torch/csrc/distributed/c10d/ProcessGroupBuilder.hpp>
-
 #include <torch/csrc/jit/codegen/cuda/ir_base_nodes.h>
 #include <torch/csrc/jit/codegen/cuda/ir_container.h>
 
@@ -23,7 +10,6 @@ namespace cuda {
 
 class Group;
 class MultiGroupFusion;
-
 
 //! Adding a Val:
 //! Right now adding a Val is quite involved. Val's can be defined in ir.h or in
@@ -69,9 +55,6 @@ private:
 };
 
 
-
-
-
 //! 1) Definition inheriting from Expr.
 //!      - Members must be private or protected -- done, but why ?
 //!      - Accessor functions for members
@@ -86,10 +69,8 @@ private:
 //!  6) An enum value must be added to ExprType in type.h --done
 //!  7) A string entry must be added in expr_type_string_map
 //!  8) Entry added to ir_graphviz .cpp/.h
-
 // must also implement shallowCopy
 // must also update ir_cloner.h/.cpp with handle function
-
 
 class TORCH_CUDA_CU_API AggregateExpr : public Expr {
 public:
@@ -117,7 +98,6 @@ public:
 private:
   Group* group_;
 };
-
 
 
 class TORCH_CUDA_CU_API SendRecv : public Expr {
@@ -157,15 +137,7 @@ private:
   friend MultiGroupFusion;
 
   std::unordered_map<Val*, AggregateVal*> producer;
-
-
-//   std::unordered_map<Val*, VectorOfUniqueEntries<std::shared_ptr<Group>>> consumers;
 };
-
-std::ostream& operator<< (std::ostream &out, AggregateVal const& data);
-std::ostream& operator<< (std::ostream &out, AggregateExpr const& data);
-std::ostream& operator<< (std::ostream &out, SendRecv const& data);
-std::ostream& operator<< (std::ostream &out, AggregateDag const& data);
 
 
 } // namespace cuda

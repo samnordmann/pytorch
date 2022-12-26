@@ -7,7 +7,7 @@
 #include <torch/csrc/jit/codegen/cuda/ir_graphviz.h>
 #include <torch/csrc/jit/codegen/cuda/ir_iostream.h>
 #include <torch/csrc/jit/codegen/cuda/ir_utils.h>
-#include <torch/csrc/jit/codegen/cuda/multidevice_runtime.h>
+#include <torch/csrc/jit/codegen/cuda/multigroup_fusion.h>
 #include <torch/csrc/jit/codegen/cuda/scheduler/debug_utils.h>
 
 #include <sstream>

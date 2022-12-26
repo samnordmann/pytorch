@@ -21,6 +21,7 @@
 #include <torch/csrc/jit/codegen/cuda/kernel_ir.h>
 #include <torch/csrc/jit/codegen/cuda/lower2device.h>
 #include <torch/csrc/jit/codegen/cuda/mma_type.h>
+#include <torch/csrc/jit/codegen/cuda/multigroup_fusion.h>
 #include <torch/csrc/jit/codegen/cuda/multidevice_runtime.h>
 #include <torch/csrc/jit/codegen/cuda/mutator.h>
 #include <torch/csrc/jit/codegen/cuda/ops/all_ops.h>

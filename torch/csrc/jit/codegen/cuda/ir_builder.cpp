@@ -2,7 +2,7 @@
 #include <torch/csrc/jit/codegen/cuda/ir_builder.h>
 #include <torch/csrc/jit/codegen/cuda/ir_cloner.h>
 #include <torch/csrc/jit/codegen/cuda/kernel.h>
-#include <torch/csrc/jit/codegen/cuda/multidevice_runtime.h>
+#include <torch/csrc/jit/codegen/cuda/multigroup_fusion.h>
 
 namespace torch {
 namespace jit {
