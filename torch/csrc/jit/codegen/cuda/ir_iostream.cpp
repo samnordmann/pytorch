@@ -248,18 +248,18 @@ void IrPrinter::handle(const ComplexDouble* c) {
 }
 
 void IrPrinter::handle(const AggregateVal* av) {
-  if (print_inline_) {
-    if (auto def = av->definition()) {
-      os_ << "( ";
-      handle(def);
-      os_ << " )";
-      return;
-    }
-  }
+  // if (print_inline_) {
+  //   if (auto def = av->definition()) {
+  //     os_ << "( ";
+  //     handle(def);
+  //     os_ << " )";
+  //     return;
+  //   }
+  // }
 
   os_ << "AggregateVal representing Val ";
   handle(av->getOriginalVal());
-  os_ << " on group with id " << av->getGroup()->unique_id << "\n";
+  os_ << " on group " << av->getGroup()->unique_id;
 }
 
 void IrPrinter::handle(const NamedScalar* ns) {
@@ -704,6 +704,29 @@ void IrPrinter::handle(const ViewAsScalar* top) {
 void IrPrinter::handle(const ViewOp* top) {
   indent() << top->out() << " = view( " << top->in() << " )\n";
 }
+
+void IrPrinter::handle(const AggregateExpr* ae) {
+  os_ << "AggregateExpr representing Group " << ae->getGroup()->unique_id<<".";
+  os_<< "Inputs={";
+  for (auto input: ae->inputs()){
+    handle(((AggregateVal*)input)->getOriginalVal()); //todo: dynamic cast
+    os_<< ", ";
+  }
+  os_<< "}. Outputs={";
+  for (auto output: ae->outputs()){
+    handle(((AggregateVal*)output)->getOriginalVal()); //todo: dynamic cast
+    os_<< ", ";
+  }
+  os_<< "}.";
+}
+
+void IrPrinter::handle(const SendRecv* sr) {
+  os_ << "Send/Receive Val {";
+  handle(sr->in()->getOriginalVal());
+  os_ << "} from group " << sr->in()->getGroup()->unique_id;
+  os_ << " to group " << sr->out()->getGroup()->unique_id;
+}
+
 
 void IrPrinter::handle(const kir::Predicate* node) {
   switch (node->predicate_type()) {

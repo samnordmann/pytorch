@@ -54,6 +54,8 @@ class IrCloner;
 class IrContainer;
 class IrBuilderPasskey;
 class IrContainerPasskey;
+class AggregateExpr;
+class SendRecv;
 
 namespace kir {
 class Kernel;

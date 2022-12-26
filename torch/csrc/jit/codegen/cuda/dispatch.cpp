@@ -217,6 +217,12 @@ void Expr::dispatch(T handler, Expr* expr) {
     case ExprType::AllocateFusedReduction:
       ptr(handler)->handle(expr->as<kir::AllocateFusedReduction>());
       return;
+    case ExprType::AggregateExpr:
+      ptr(handler)->handle(expr->as<AggregateExpr>());
+      return;
+    case ExprType::SendRecv:
+      ptr(handler)->handle(expr->as<SendRecv>());
+      return;
     default:
       TORCH_INTERNAL_ASSERT(false, "Unknown exprtype in dispatch!");
   }
@@ -408,6 +414,12 @@ void Expr::constDispatch(T handler, const Expr* expr) {
       return;
     case ExprType::AllocateFusedReduction:
       ptr(handler)->handle(expr->as<kir::AllocateFusedReduction>());
+      return;
+    case ExprType::AggregateExpr:
+      ptr(handler)->handle(expr->as<AggregateExpr>());
+      return;
+    case ExprType::SendRecv:
+      ptr(handler)->handle(expr->as<SendRecv>());
       return;
     default:
       TORCH_INTERNAL_ASSERT(false, "Unknown exprtype in dispatch!");
@@ -608,6 +620,12 @@ void Expr::mutatorDispatch(T mutator, Expr* expr) {
       return;
     case ExprType::AllocateFusedReduction:
       ptr(mutator)->mutate(expr->as<kir::AllocateFusedReduction>());
+      return;
+    case ExprType::AggregateExpr:
+      ptr(mutator)->mutate(expr->as<kir::AllocateFusedReduction>());
+      return;
+    case ExprType::SendRecv:
+      ptr(mutator)->mutate(expr->as<SendRecv>());
       return;
     default:
       TORCH_INTERNAL_ASSERT(false, "Unknown exprtype in dispatch!");
@@ -876,6 +894,13 @@ void OptOutConstDispatch::handle(const kir::AllocateFusedReduction* stmt) {
   unhandled(stmt);
 }
 
+void OptOutConstDispatch::handle(const AggregateExpr* stmt) {
+  unhandled(stmt);
+}
+void OptOutConstDispatch::handle(const SendRecv* stmt) {
+  unhandled(stmt);
+}
+
 void OptOutDispatch::unhandled(Statement*) {}
 
 // Vals
@@ -1036,6 +1061,12 @@ void OptOutDispatch::handle(kir::GroupedGridWelford* stmt) {
   unhandled(stmt);
 }
 void OptOutDispatch::handle(kir::AllocateFusedReduction* stmt) {
+  unhandled(stmt);
+}
+void OptOutDispatch::handle(AggregateExpr* stmt) {
+  unhandled(stmt);
+}
+void OptOutDispatch::handle(SendRecv* stmt) {
   unhandled(stmt);
 }
 

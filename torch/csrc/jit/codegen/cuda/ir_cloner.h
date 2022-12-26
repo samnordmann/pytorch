@@ -96,6 +96,9 @@ class TORCH_CUDA_CU_API IrCloner : private OptInConstDispatch {
   void handle(const Merge*) override;
   void handle(const Swizzle2D*) override;
 
+  void handle(const AggregateExpr*) override;
+  void handle(const SendRecv*) override;
+
  protected:
   // We keep track of the original -> clone map so we don't
   // duplicate clones of the same object if referenced multiple times

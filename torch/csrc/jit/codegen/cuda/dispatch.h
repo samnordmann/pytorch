@@ -93,6 +93,9 @@ class GatherOp;
 class ViewAsScalar;
 class ViewOp;
 
+class AggregateExpr;
+class SendRecv;
+
 // Exprs
 class Split;
 class Merge;
@@ -190,6 +193,9 @@ class TORCH_CUDA_CU_API OptOutConstDispatch : public PolymorphicBase {
   virtual void handle(const kir::GridWelford*);
   virtual void handle(const kir::GroupedGridWelford*);
   virtual void handle(const kir::AllocateFusedReduction*);
+
+  virtual void handle(const AggregateExpr*);
+  virtual void handle(const SendRecv*);
 };
 
 class TORCH_CUDA_CU_API OptOutDispatch : public PolymorphicBase {
@@ -260,6 +266,9 @@ class TORCH_CUDA_CU_API OptOutDispatch : public PolymorphicBase {
   virtual void handle(kir::GridWelford* stmt);
   virtual void handle(kir::GroupedGridWelford* stmt);
   virtual void handle(kir::AllocateFusedReduction* stmt);
+
+  virtual void handle(AggregateExpr* stmt);
+  virtual void handle(SendRecv* stmt);
 };
 
 class TORCH_CUDA_CU_API OptInConstDispatch : public OptOutConstDispatch {
@@ -371,6 +380,9 @@ class TORCH_CUDA_CU_API OptOutMutator : public PolymorphicBase {
   virtual void mutate(kir::GridWelford*);
   virtual void mutate(kir::GroupedGridWelford*);
   virtual void mutate(kir::AllocateFusedReduction*);
+
+  virtual void mutate(AggregateExpr*);
+  virtual void mutate(SendRecv*);
 
  protected:
   void removeExpr(IrContainer*, Expr*);

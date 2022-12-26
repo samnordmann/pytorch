@@ -79,6 +79,9 @@ IR_BUILDER_INSTANTIATE(MmaOp)
 IR_BUILDER_INSTANTIATE(BroadcastOp)
 IR_BUILDER_INSTANTIATE(SqueezeOp)
 
+IR_BUILDER_INSTANTIATE(AggregateExpr)
+IR_BUILDER_INSTANTIATE(SendRecv)
+
 Val* IrBuilder::newResult(DataType dtype) {
   switch (dtype) {
     case DataType::Bool:

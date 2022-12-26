@@ -126,6 +126,9 @@ class TORCH_CUDA_CU_API IrPrinter : public OptInConstDispatch {
   void handle(const kir::UpdateMagicZero*) final;
   void handle(const kir::AllocateFusedReduction*) final;
 
+  void handle(const AggregateExpr*) final;
+  void handle(const SendRecv*) final;
+
   // IR math printer overrides these to prevent them from printing, keep
   // override
   void handle(const Split*) override;

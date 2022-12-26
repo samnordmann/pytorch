@@ -73,19 +73,22 @@ private:
 
 
 //! 1) Definition inheriting from Expr.
-//!      - Members must be private or protected -- why ?
+//!      - Members must be private or protected -- done, but why ?
 //!      - Accessor functions for members
 //!      - Constructors need to register with the Fusion after inputs/outputs
 //!         are defined
 //!      - Implementation of bool sameAs(...)
-//!  2) dispatch.h/.cpp must be updated to include dispatch of the new Val
+//!  2) dispatch.h/.cpp must be updated to include dispatch of the new Val -- done
 //!  3) Default mutator function should be added to mutator.h/.cpp
-//!  4) Printing functions should be added to ir_iostream.h/.cpp
+//!  4) Printing functions should be added to ir_iostream.h/.cpp --done
 //!  5) Lower case convenience functions should be added to arith.h/.cpp (If
 //!     user facing)
-//!  6) An enum value must be added to ExprType in type.h
+//!  6) An enum value must be added to ExprType in type.h --done
 //!  7) A string entry must be added in expr_type_string_map
 //!  8) Entry added to ir_graphviz .cpp/.h
+
+// must also implement shallowCopy
+// must also update ir_cloner.h/.cpp with handle function
 
 
 class TORCH_CUDA_CU_API AggregateExpr : public Expr {
@@ -93,19 +96,23 @@ public:
 
   AggregateExpr(IrBuilderPasskey, Group* group);
 
+  AggregateExpr(const AggregateExpr* src, IrCloner* ir_cloner);
+
+  bool sameAs(const Statement* other) const override;
+
   const Group* getGroup() const{
     return group_;
   }
 
   Expr* shallowCopy() const override;
 
-  void addInput(Val* input) {
-    Expr::addInput(input);
-  }
+  // void addInput(Val* input) {
+  //   Expr::addInput(input);
+  // }
 
-  void addOutput(Val* input) {
-    Expr::addInput(input);
-  }
+  // void addOutput(Val* input) {
+  //   Expr::addInput(input);
+  // }
 
 private:
   Group* group_;
@@ -116,17 +123,28 @@ private:
 class TORCH_CUDA_CU_API SendRecv : public Expr {
 public:
 
-  SendRecv(IrBuilderPasskey);
+  SendRecv(IrBuilderPasskey, AggregateVal* out, AggregateVal* in);
+
+  SendRecv(const SendRecv* src, IrCloner* ir_cloner);
 
   Expr* shallowCopy() const override;
 
-  void addInput(Val* input) {
-    Expr::addInput(input);
+  bool sameAs(const Statement* other) const override;
+
+  // void addOutput(Val* input) {
+  //   Expr::addInput(input);
+  // }
+
+  AggregateVal* out() const {
+    return out_;
+  }
+  AggregateVal* in() const {
+    return in_;
   }
 
-  void addOutput(Val* input) {
-    Expr::addInput(input);
-  }
+  private:
+    AggregateVal* const out_ = nullptr;
+    AggregateVal* const in_ = nullptr;
 };
 
 

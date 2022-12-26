@@ -188,6 +188,14 @@ void IrCloner::handle(const Swizzle2D* swizzle) {
   clone_ = IrBuilder::clone(swizzle, this);
 }
 
+void IrCloner::handle(const AggregateExpr* aggrExp) {
+  clone_ = IrBuilder::clone(aggrExp, this);
+}
+
+void IrCloner::handle(const SendRecv* sendRecv) {
+  clone_ = IrBuilder::clone(sendRecv, this);
+}
+
 TensorView* RecomputeTv::recompute(TensorView* tv) {
   FusionGuard fg(tv->fusion());
 

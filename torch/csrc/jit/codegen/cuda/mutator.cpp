@@ -201,6 +201,22 @@ void OptOutMutator::mutate(UnaryOp* uop) {
   IrBuilder::create<UnaryOp>(container, uop_type, out, in);
 }
 
+void OptOutMutator::mutate(SendRecv* sr) {
+  AggregateVal* out = dynamic_cast<AggregateVal*>(maybeMutated(sr->out()));
+  AggregateVal* in = dynamic_cast<AggregateVal*>(maybeMutated(sr->in()));
+
+  if (out->sameAs(sr->out()) && in->sameAs(sr->in())) {
+    return;
+  }
+  auto container = sr->container();
+  container->removeExpr(sr);
+  IrBuilder::create<SendRecv>(container, out, in);
+}
+
+void OptOutMutator::mutate(AggregateExpr*) {
+  TORCH_INTERNAL_ASSERT(false, "Not implemented yet.");
+}
+
 void OptOutMutator::mutate(BinaryOp* bop) {
   Val* out = maybeMutated(bop->out());
   Val* lhs = maybeMutated(bop->lhs());

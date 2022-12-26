@@ -385,6 +385,10 @@ static const char* expr_type2string(ExprType t) {
       return "Swizzle2DInt";
     case ExprType::PairSelect:
       return "PairSelect";
+    case ExprType::AggregateExpr:
+      return "AggregateExpr";
+    case ExprType::SendRecv:
+      return "SendRecv";
     default:
       TORCH_INTERNAL_ASSERT(false, "No string found for expr type.");
   }
