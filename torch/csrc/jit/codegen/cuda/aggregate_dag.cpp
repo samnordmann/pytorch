@@ -13,12 +13,6 @@ AggregateExpr::AggregateExpr(
     IrBuilderPasskey passkey,
     Group* group)
     : Expr(passkey, ExprType::AggregateExpr), group_(group) {
-  // for (auto input: group_->input_vals){
-  //   addInput(input);
-  // }
-  // for (auto output: group_->output_vals){
-  //   addOutput(output);
-  // }
 }
 
 AggregateExpr::AggregateExpr(const AggregateExpr* src, IrCloner* ir_cloner)
@@ -68,7 +62,7 @@ bool SendRecv::sameAs(const Statement* other) const {
   if (!other->isA<SendRecv>()) {
     return false;
   }
-  const auto other_op = other->as<SendRecv>();
+  // const auto other_op = other->as<SendRecv>();
 
   return Expr::sameAs(other);
 }
@@ -114,7 +108,6 @@ void AggregateDag::build(MultiGroupFusion* fusion) {
     std::vector<AggregateVal*> inputs;
     std::vector<AggregateVal*> outputs;
 
-
     for (auto output_val : group->output_vals) {
       auto val = IrBuilder::create<AggregateVal>(container, output_val, group);
       producer[output_val] = val;
@@ -134,13 +127,13 @@ void AggregateDag::build(MultiGroupFusion* fusion) {
     }
 
     auto expr = IrBuilder::create<AggregateExpr>(container, group);
-    // for (auto out: outputs){
-      // expr->addOutput(out);
-      // out->setDefinition(expr);
-    // }
-    // for (auto in: inputs){
-      // expr->addInput(in);
-    // }
+    for (auto out: outputs){
+      expr->addOutput(out);
+      out->setDefinition(expr);
+    }
+    for (auto in: inputs){
+      expr->addInput(in);
+    }
   }
 }
 

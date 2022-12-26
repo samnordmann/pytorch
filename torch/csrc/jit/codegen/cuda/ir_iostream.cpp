@@ -248,14 +248,14 @@ void IrPrinter::handle(const ComplexDouble* c) {
 }
 
 void IrPrinter::handle(const AggregateVal* av) {
-  // if (print_inline_) {
-  //   if (auto def = av->definition()) {
-  //     os_ << "( ";
-  //     handle(def);
-  //     os_ << " )";
-  //     return;
-  //   }
-  // }
+  if (print_inline_) {
+    if (auto def = av->definition()) {
+      os_ << "( ";
+      handle(def);
+      os_ << " )";
+      return;
+    }
+  }
 
   os_ << "AggregateVal representing Val ";
   handle(av->getOriginalVal());
@@ -709,12 +709,12 @@ void IrPrinter::handle(const AggregateExpr* ae) {
   os_ << "AggregateExpr representing Group " << ae->getGroup()->unique_id<<".";
   os_<< "Inputs={";
   for (auto input: ae->inputs()){
-    handle(((AggregateVal*)input)->getOriginalVal()); //todo: dynamic cast
+    handle((dynamic_cast<AggregateVal*>(input))->getOriginalVal()); //todo: dynamic cast
     os_<< ", ";
   }
   os_<< "}. Outputs={";
   for (auto output: ae->outputs()){
-    handle(((AggregateVal*)output)->getOriginalVal()); //todo: dynamic cast
+    handle((dynamic_cast<AggregateVal*>(output))->getOriginalVal()); //todo: dynamic cast
     os_<< ", ";
   }
   os_<< "}.";

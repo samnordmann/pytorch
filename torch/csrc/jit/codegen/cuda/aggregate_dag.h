@@ -106,13 +106,13 @@ public:
 
   Expr* shallowCopy() const override;
 
-  // void addInput(Val* input) {
-  //   Expr::addInput(input);
-  // }
+  void addInput(AggregateVal* input) {
+    Expr::addInput(input);
+  }
 
-  // void addOutput(Val* input) {
-  //   Expr::addInput(input);
-  // }
+  void addOutput(AggregateVal* output) {
+    Expr::addOutput(output);
+  }
 
 private:
   Group* group_;
@@ -130,10 +130,6 @@ public:
   Expr* shallowCopy() const override;
 
   bool sameAs(const Statement* other) const override;
-
-  // void addOutput(Val* input) {
-  //   Expr::addInput(input);
-  // }
 
   AggregateVal* out() const {
     return out_;

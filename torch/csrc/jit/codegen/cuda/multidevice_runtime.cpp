@@ -137,7 +137,6 @@ void MultiGroupFusion::addFusionOutput(TensorView* tv) {
 void MultiGroupFusion::addFusionInput(TensorView* tv) {
   // Register tv as a global input.
   addInput(tv);
-  // original_fusion_->addInput(tv);
 
   // Add this tv to the global context.
   context_tensor_map_[tv] = nullptr;
