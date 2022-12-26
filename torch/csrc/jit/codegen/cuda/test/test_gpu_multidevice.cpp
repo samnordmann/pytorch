@@ -115,157 +115,6 @@ TEST_F(NVFuserTest, FusionDoubleReduction_CUDA) {
   testValidate(&fusion, cg_outputs, {input}, {ref}, __LINE__, __FILE__);
 }
 
-// TEST_F(NVFuserTest, FusionMutiGroupDoubleReduction_CUDA) {
-//   // Using the new interface to build multi-group fusion
-//   MultiGroupFusion fusion;
-
-//   // Fusion guard is on the fusion managed within builder.
-//   FusionGuard fg(fusion.completeFusion());
-
-//   TensorView* tv0 = makeContigTensor(3);
-
-//   fusion.addFusionInput(tv0);
-
-//   // Each expression has to belong to some group,
-//   //  and each group will become one cuda kernel
-//   //  after lowering time.
-
-//   // Create the first group.
-//   //  The builder now points to the first created group,
-//   // all operations following this line will make changes
-//   // to the first group.
-//   fusion.newGroup(
-//       // auto-schedule
-//       true);
-
-//   TensorView* tv1 = sum(tv0, {0});
-
-//   fusion.addGroupOutput(tv1);
-
-//   // Create the second group.
-//   //  The builder now points to the second created group,
-//   // all operations following this line will make changes
-//   // to the second group.
-//   fusion.newGroup(
-//       // auto-schedule
-//       true);
-
-//   TensorView* tv2 = sum(tv1, {0});
-
-//   fusion.addFusionOutput(tv2);
-
-//   // Build actual fusion graphs and pass it to a
-//   //  multi-device runtime.
-//   MultiDeviceRuntime runtime(fusion.build());
-
-//   // Create at input tensors.
-//   auto options = at::TensorOptions().dtype(at::kFloat).device(at::kCUDA, 0);
-//   at::Tensor input = at::randn({8, 8, 8}, options);
-
-//   // See group partitions:
-//   runtime.multiGroupFusion()->print();
-
-//   // Run the multiple kernels created.
-//   // To see the two kernels generated:
-//   // PYTORCH_NVFUSER_DUMP=cuda_kernel ./test_jit
-//   // --gtest_filter=*GroupDoubleReduction*
-//   auto cg_outputs = runtime.runWithInput({input});
-
-//   // Validate result
-//   auto ref = input.sum(0).sum(0);
-//   testValidate(
-//       runtime.flattenedFusion(),
-//       cg_outputs,
-//       {input},
-//       {ref},
-//       __LINE__,
-//       __FILE__);
-// }
-
-// TEST_F(NVFuserTest, FusionMultiRankReduction_CUDA) {
-//   // Using the new interface to build multi-group fusion
-//   MultiGroupFusion fusion;
-
-//   // Fusion guard is on the fusion managed within builder.
-//   FusionGuard fg(fusion.completeFusion());
-
-//   TensorView* tv0 = makeContigTensor(3);
-
-//   fusion.addFusionInput(tv0);
-
-//   // Each expression has to belong to some group,
-//   //  and each group will become one cuda kernel
-//   //  after lowering time.
-
-//   // Create the first group.
-//   //  The builder now points to the first created group,
-//   // all operations following this line will make changes
-//   // to the first group.
-//   fusion.newGroup(
-//       // auto-schedule
-//       true,
-//       // Process rank that runs this group:
-//       // -1 means all group runs.
-//       -1,
-//       // Cuda device that runs this group:
-//       c10::Device(DeviceType::CUDA, at::cuda::current_device()));
-
-//   TensorView* tv1 = sum(tv0, {0});
-
-//   fusion.addGroupOutput(tv1);
-
-//   // Create the second group.
-//   //  The builder now points to the second created group,
-//   // all operations following this line will make changes
-//   // to the second group.
-//   fusion.newGroup(
-//       // auto-schedule
-//       true,
-//       // Process rank that runs this group:
-//       // -1 means all group runs.
-//       -1,
-//       // Cuda device that runs this group:
-//       c10::Device(DeviceType::CUDA, at::cuda::current_device()));
-
-//   TensorView* tv2 = sum(tv1, {0});
-
-//   fusion.addFusionOutput(tv2);
-
-//   // Build actual fusion graphs and pass it to a
-//   //  multi-device runtime.
-//   MultiDeviceRuntime runtime(
-//       fusion.build(),
-//       // Process rank that should come from ENV:
-//       -1);
-
-//   // Create at input tensors.
-//   auto options = at::TensorOptions().dtype(at::kFloat).device(at::kCUDA, 0);
-//   at::Tensor input = at::randn({8, 8, 8}, options);
-
-//   // See group partitions:
-//   runtime.multiGroupFusion()->print();
-
-//   // Run the multiple kernels created.
-//   // To see the two kernels generated:
-//   // PYTORCH_NVFUSER_DUMP=cuda_kernel ./test_jit
-//   // --gtest_filter=*GroupDoubleReduction*
-//   auto cg_outputs = runtime.runWithInput({input});
-
-//   // Validate result
-
-//   // Only the rank holding the output should check the
-//   //  result here:
-//   // if(rank = ...?)
-//   auto ref = input.sum(0).sum(0);
-//   testValidate(
-//       runtime.flattenedFusion(),
-//       cg_outputs,
-//       {input},
-//       {ref},
-//       __LINE__,
-//       __FILE__);
-// }
-
 int parse_env(int &grank, int &gsize) {
     char *env;
 
@@ -408,7 +257,7 @@ TEST_F(NVFuserTest, FusionMultiGPU) {
   //  multi-device runtime.
   MultiDeviceRuntime runtime(
       &fusion,
-      pg, grank);
+      pg);
 
   // if (grank == 0) {
   //   // See group partitions:
@@ -529,7 +378,7 @@ rank 3:
   }
 
   // create runtime
-  MultiDeviceRuntime runtime(&fusion, pg, grank);
+  MultiDeviceRuntime runtime(&fusion, pg);
 
   // print the fusion
   if (grank == 0) {

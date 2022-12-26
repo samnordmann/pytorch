@@ -19,9 +19,38 @@ namespace jit {
 namespace fuser {
 namespace cuda {
 
+enum class StatusType {
+  not_ready,
+  in_progress,
+  ready
+};
+
+// We only need to iterate over the aggregateDag.
+// At initialization, we take all the statements of the dags and we check if the rank has to deal with this statment
+// This should be implemented in a handle function
+// the rank deals with a group if it runs it
+// the rank deals with AggregateValue iff it belongs to a group ran by it
+// the rank deals with send/recv if its receiver or sender
+
+// for all AggregateStatement that the rank deals with, it initialize an entry in status with key StatusType::not_ready
+// then we will only be iterating over the status. Run exits only when all status are "ready"
+// We choose for now an eager approach: we do smth as soon as we can.
+
+// AggregateVals are put "ready" when an IValue is ready. So for global input this can be done at init
+// For the other it is when the "definition" of the AggregateVal is ready
+
+// An AggregateExpr can be launched iff all its AggregateVals input are "ready"
+// When its launched it is marked as in_progress
+// When it is "ready" we can tag its output as ready
+
+// A send can be posted iff its input is ready. It can be marked "ready" when send is complete?
+
+// A receive can be posted as soon as the space for receiveing as been allocated.
+
 //! Runtime to support running multi-group fusion on
 //!  multiple devices.
-class TORCH_CUDA_CU_API MultiDeviceRuntime {
+
+class TORCH_CUDA_CU_API MultiDeviceRuntime : public OptOutDispatch {
   using CompiledKernelPtr = std::unique_ptr<FusionExecutor>;
 
  public:
@@ -30,9 +59,17 @@ class TORCH_CUDA_CU_API MultiDeviceRuntime {
       c10::intrusive_ptr<c10d::ProcessGroup> process_group,
       ProcessRankType process_rank = -1)
       : multi_group_fusion_(multi_group_fusion),
-        process_group_(process_group), process_rank_(process_rank) {
+        process_group_(process_group), process_rank_((ProcessRankType)process_group->getRank()),
+          a_dag_(multi_group_fusion->aggregateDag()) {
     // Initialize some rank dependency info
     buildValueToRankMap();
+
+    for (auto val: a_dag_.vals()){
+      status[val] = StatusType::not_ready;
+    }
+    for (auto expr: a_dag_.unordered_exprs()){
+      status[expr] = StatusType::not_ready;
+    }
   }
 
   // Run kernels with the given global inputs, compile if needed.
@@ -44,6 +81,8 @@ class TORCH_CUDA_CU_API MultiDeviceRuntime {
   }
 
   void buildValueToRankMap();
+
+  std::unordered_map<Statement*, StatusType> status;
 
  private:
   // Generate and compile cuda kernel corresponding to
@@ -102,6 +141,8 @@ class TORCH_CUDA_CU_API MultiDeviceRuntime {
   // Keeps track of process rank owning this runtime,
   //  not sure if this will ever change throughout the runtime's lifetime.
   ProcessRankType process_rank_ = -1;
+
+  AggregateDag a_dag_;
 };
 
 } // namespace cuda
