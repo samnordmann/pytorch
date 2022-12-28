@@ -24,6 +24,41 @@ Group::Group(MultiGroupFusion* multi_group_fusion, bool auto_sch,
     }
 }
 
+std::unique_ptr<Fusion> Group::makeFusionCopy() {
+  std::unique_ptr<Fusion> fusion_copy = std::make_unique<Fusion>();
+  // WAR: copy the complete fusion and then change the inputs and outputs.
+  //  to simplify the process of creating a sub-graph of original fusion.
+  auto original_to_copy_map =
+      Fusion::copy(multi_group_fusion_, fusion_copy.get());
+
+  // Remove original inputs
+  std::vector<Val*> input_list(
+      fusion_copy->inputs().begin(), fusion_copy->inputs().end());
+  for (auto inp : input_list) {
+    fusion_copy->removeInput(inp);
+  }
+
+  // Remove original outputs
+  std::vector<Val*> output_list(
+      fusion_copy->outputs().begin(), fusion_copy->outputs().end());
+  for (auto out : output_list) {
+    fusion_copy->removeOutput(out);
+  }
+
+  // Add group inputs
+  for (auto input : input_vals) {
+    fusion_copy->addInput(original_to_copy_map.clone(input));
+  }
+
+  // Add group outputs
+  for (auto output : output_vals) {
+    fusion_copy->addOutput(original_to_copy_map.clone(output));
+  }
+
+  return fusion_copy;
+}
+
+
 MultiGroupFusion::MultiGroupFusion() {
 
   // Register owning builder to this fusion.

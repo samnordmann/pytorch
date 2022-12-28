@@ -27,41 +27,6 @@ std::vector<IValue> MultiDeviceRuntime::getGroupIValueInputs(
   return group_input;
 }
 
-std::unique_ptr<Fusion> MultiDeviceRuntime::getFusionCopyFromGroup(
-    Group* group) {
-  std::unique_ptr<Fusion> fusion_copy = std::make_unique<Fusion>();
-  // WAR: copy the complete fusion and then change the inputs and outputs.
-  //  to simplify the process of creating a sub-graph of original fusion.
-  auto original_to_copy_map =
-      Fusion::copy(group->completeFusion(), fusion_copy.get());
-
-  // Remove original inputs
-  std::vector<Val*> input_list(
-      fusion_copy->inputs().begin(), fusion_copy->inputs().end());
-  for (auto inp : input_list) {
-    fusion_copy->removeInput(inp);
-  }
-
-  // Remove original outputs
-  std::vector<Val*> output_list(
-      fusion_copy->outputs().begin(), fusion_copy->outputs().end());
-  for (auto out : output_list) {
-    fusion_copy->removeOutput(out);
-  }
-
-  // Add group inputs
-  for (auto input : group->input_vals) {
-    fusion_copy->addInput(original_to_copy_map.clone(input));
-  }
-
-  // Add group outputs
-  for (auto output : group->output_vals) {
-    fusion_copy->addOutput(original_to_copy_map.clone(output));
-  }
-
-  return fusion_copy;
-}
-
 namespace {
 // Update launch parameters if scheduler needs to set the launch params.
 void updateLaunchParamsFromScheduler(
@@ -101,7 +66,7 @@ MultiDeviceRuntime::CompiledKernelPtr MultiDeviceRuntime::compileGroup(
     std::vector<IValue> group_inputs) {
   // Make a copy of the fusion graph we want to generate
   //  CUDA kernel and compile.
-  auto fusion_from_group = getFusionCopyFromGroup(group);
+  auto fusion_from_group = group->makeFusionCopy();
   // Placeholder for auto schedule parameters if any.
   c10::optional<SchedulerEntry*> maybe_scheduler_entry = c10::nullopt;
 

@@ -27,17 +27,21 @@ public:
   // Tracks if this group is meant to be auto-scheduled.
   bool auto_schedule;
 
-  // Tracks which device this group will run on.
+  // Tracks which device this group will run on. Should belong to runtime? Not necessarily bc optimization can depend on it. Same for rank
   c10::Device device;
 
   //Track the MultiGroupFusion which it belongs to
-  MultiGroupFusion* multi_group_fusion_;
+  MultiGroupFusion* multi_group_fusion_; //TODO: put in private
 
   // Tracks which process rank will run this kernel
-  ProcessRankType process_rank;
+  ProcessRankType process_rank; //Should belong to runtime? I think no bc optimization can depend on it. Same for rank
 
   // Unique identifier for the group.
   int unique_id;
+
+  // Copy the complete fusion and then change the inputs and outputs.
+  // TODO: can probably be optimized this to simplify
+  std::unique_ptr<Fusion> makeFusionCopy();
 
   MultiGroupFusion* getMultiGroupFusion() {
     return multi_group_fusion_;
@@ -56,7 +60,7 @@ public:
   // All available tensors within the group's context,
   //  including both group inputs and values produced
   //  within the group.
-  VectorOfUniqueEntries<TensorView*> context_tensors;
+  VectorOfUniqueEntries<TensorView*> context_tensors; //TODO: not useful. remove, and also maybe remove internal_tensors.
 
   // All tensors that were computed within the group.
   VectorOfUniqueEntries<TensorView*> internal_tensors;

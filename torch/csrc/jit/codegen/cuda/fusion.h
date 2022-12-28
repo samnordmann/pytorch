@@ -255,7 +255,7 @@ class TORCH_CUDA_CU_API Fusion : public IrContainer {
   friend SegmentedFusion;
   friend class TranslateApplicableWelford;
   friend Val;
-  friend class MultiDeviceRuntime;
+  friend class Group;
 
   static IrCloner copy(const Fusion* from, Fusion* to);
 
