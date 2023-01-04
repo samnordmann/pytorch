@@ -87,7 +87,7 @@ bool AggregateVal::sameAs(const Statement* other) const {
 }
 
 
-AggregateDag::AggregateDag():IrContainer(){}
+AggregateDag::AggregateDag():Fusion(){}
 
 void AggregateDag::build(MultiGroupFusion* fusion) {
   for (auto group_ptr: fusion->groups()) {
@@ -105,12 +105,16 @@ void AggregateDag::build(MultiGroupFusion* fusion) {
     for (auto input_val : group->input_vals) {
       auto val = IrBuilder::create<AggregateVal>(container, input_val, group);
       inputs.push_back(val);
+      consumers.insert({input_val, val});
       if (producer.find(input_val) != producer.end()){
         //means that input_val is not a global input and 
         // is produced by another group
         auto src = producer[input_val];
         auto sendRecv = IrBuilder::create<SendRecv>(container, val, src);
         val->setDefinition(sendRecv);
+      } else {
+        //add as global input of the aggregate dag
+        addInput(val);
       }
     }
 
@@ -121,6 +125,11 @@ void AggregateDag::build(MultiGroupFusion* fusion) {
     }
     for (auto in: inputs){
       expr->addInput(in);
+    }
+  }
+  for (auto it: producer){
+    if (consumers.count(it.first)==0){
+        addOutput(it.second);
     }
   }
 }

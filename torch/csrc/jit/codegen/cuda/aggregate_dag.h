@@ -1,6 +1,7 @@
 #pragma once
 #include <torch/csrc/jit/codegen/cuda/ir_base_nodes.h>
 #include <torch/csrc/jit/codegen/cuda/ir_container.h>
+#include <torch/csrc/jit/codegen/cuda/fusion.h>
 
 
 namespace torch {
@@ -124,7 +125,7 @@ public:
 };
 
 
-class TORCH_CUDA_CU_API AggregateDag : public IrContainer {
+class TORCH_CUDA_CU_API AggregateDag : public Fusion {
 public:
 
   AggregateDag();
@@ -137,6 +138,7 @@ private:
   friend MultiGroupFusion;
 
   std::unordered_map<Val*, AggregateVal*> producer;
+  std::unordered_multimap<Val*, AggregateVal*> consumers;
 };
 
 

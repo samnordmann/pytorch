@@ -109,8 +109,8 @@ class TORCH_CUDA_CU_API MultiGroupFusion : public Fusion {
     current_group_ = group;
   }
 
-  AggregateDag aggregateDag(){
-    return aggregate_dag_;
+  AggregateDag* aggregateDag(){
+    return &aggregate_dag_;
   }
 
   void buildAggregateDag(){

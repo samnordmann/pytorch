@@ -32,35 +32,55 @@ std::unique_ptr<Fusion> Group::makeFusionCopy() {
       Fusion::copy(multi_group_fusion_, fusion_copy.get());
 
   // Remove original inputs
-  std::vector<Val*> input_list(
-      fusion_copy->inputs().begin(), fusion_copy->inputs().end());
-  for (auto inp : input_list) {
-    fusion_copy->removeInput(inp);
-  }
-
+  std::for_each(fusion_copy->inputs().begin(), fusion_copy->inputs().end(),
+                                                    [&](auto input){fusion_copy->removeInput(input);});
   // Remove original outputs
-  std::vector<Val*> output_list(
-      fusion_copy->outputs().begin(), fusion_copy->outputs().end());
-  for (auto out : output_list) {
-    fusion_copy->removeOutput(out);
-  }
+  std::for_each(fusion_copy->outputs().begin(), fusion_copy->outputs().end(),
+                                                    [&](auto output){fusion_copy->removeOutput(output);});
 
-  // Add group inputs
-  for (auto input : input_vals) {
-    fusion_copy->addInput(original_to_copy_map.clone(input));
-  }
+  // // Add group inputs
+  std::for_each(input_vals.begin(), input_vals.end(), 
+                  [&](auto input){fusion_copy->addInput(original_to_copy_map.clone(input));});
 
-  // Add group outputs
-  for (auto output : output_vals) {
-    fusion_copy->addOutput(original_to_copy_map.clone(output));
-  }
+
+  // // Add group outputs
+  std::for_each(output_vals.begin(), output_vals.end(), 
+                  [&](auto output){fusion_copy->addOutput(original_to_copy_map.clone(output));});
 
   return fusion_copy;
 }
 
 
-MultiGroupFusion::MultiGroupFusion() {
+  // auto original_to_copy_map =
+  //     Fusion::copy(group->completeFusion(), fusion_copy.get());
 
+  // // Remove original inputs
+  // std::vector<Val*> input_list(
+  //     fusion_copy->inputs().begin(), fusion_copy->inputs().end());
+  // for (auto inp : input_list) {
+  //   fusion_copy->removeInput(inp);
+  // }
+
+  // // Remove original outputs
+  // std::vector<Val*> output_list(
+  //     fusion_copy->outputs().begin(), fusion_copy->outputs().end());
+  // for (auto out : output_list) {
+  //   fusion_copy->removeOutput(out);
+  // }
+
+  // // Add group inputs
+  // for (auto input : group->input_vals) {
+  //   fusion_copy->addInput(original_to_copy_map.clone(input));
+  // }
+
+  // // Add group outputs
+  // for (auto output : group->output_vals) {
+  //   fusion_copy->addOutput(original_to_copy_map.clone(output));
+  // }
+
+
+MultiGroupFusion::MultiGroupFusion() {
+  Fusion();
   // Register owning builder to this fusion.
   setActiveMultiGroupFusionBuilder(this);
 }

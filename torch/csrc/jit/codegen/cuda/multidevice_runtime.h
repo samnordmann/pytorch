@@ -50,7 +50,7 @@ enum class StatusType {
 //! Runtime to support running multi-group fusion on
 //!  multiple devices.
 
-class TORCH_CUDA_CU_API MultiDeviceRuntime : public OptOutDispatch {
+class TORCH_CUDA_CU_API MultiDeviceRuntime : public IterVisitor {
   using CompiledKernelPtr = std::unique_ptr<FusionExecutor>;
 
  public:
@@ -58,17 +58,24 @@ class TORCH_CUDA_CU_API MultiDeviceRuntime : public OptOutDispatch {
       MultiGroupFusion* multi_group_fusion,
       c10::intrusive_ptr<c10d::ProcessGroup> process_group,
       ProcessRankType process_rank = -1)
-      : multi_group_fusion_(multi_group_fusion),
+      : IterVisitor(), multi_group_fusion_(multi_group_fusion),
         process_group_(process_group), process_rank_((ProcessRankType)process_group->getRank()),
           a_dag_(multi_group_fusion->aggregateDag()) {
     // Initialize some rank dependency info
     buildValueToRankMap();
 
-    for (auto val: a_dag_.vals()){
+    for (auto val: a_dag_->vals()){
       status[val] = StatusType::not_ready;
     }
-    for (auto expr: a_dag_.unordered_exprs()){
+    for (auto expr: a_dag_->unordered_exprs()){
       status[expr] = StatusType::not_ready;
+    }
+    traverseTo(a_dag_, a_dag_->outputs());
+  }
+
+  void handle(Statement* stmt) {
+    if (!process_rank_){
+      std::cout<<"Runtime reads:\n"<< stmt <<"\n"<<std::endl;
     }
   }
 
@@ -142,7 +149,7 @@ class TORCH_CUDA_CU_API MultiDeviceRuntime : public OptOutDispatch {
   //  not sure if this will ever change throughout the runtime's lifetime.
   ProcessRankType process_rank_ = -1;
 
-  AggregateDag a_dag_;
+  AggregateDag* a_dag_;
 };
 
 } // namespace cuda

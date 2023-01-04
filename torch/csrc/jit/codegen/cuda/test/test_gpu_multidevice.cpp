@@ -374,7 +374,7 @@ rank 3:
 // aggregateDag
   if (grank==0){
     fusion.buildAggregateDag();
-    fusion.aggregateDag().print();
+    fusion.aggregateDag()->print();
   }
 
   // create runtime
