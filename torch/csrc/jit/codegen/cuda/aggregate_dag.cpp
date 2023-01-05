@@ -87,7 +87,7 @@ bool AggregateVal::sameAs(const Statement* other) const {
 }
 
 
-AggregateDag::AggregateDag():Fusion(){}
+AggregateDag::AggregateDag():Fusion(), IterVisitor(){}
 
 void AggregateDag::build(MultiGroupFusion* fusion) {
   for (auto group_ptr: fusion->groups()) {
@@ -113,7 +113,7 @@ void AggregateDag::build(MultiGroupFusion* fusion) {
         auto sendRecv = IrBuilder::create<SendRecv>(container, val, src);
         val->setDefinition(sendRecv);
       } else {
-        //add as global input of the aggregate dag
+        //add val as global input of the aggregate dag
         addInput(val);
       }
     }
@@ -129,23 +129,11 @@ void AggregateDag::build(MultiGroupFusion* fusion) {
   }
   for (auto it: producer){
     if (consumers.count(it.first)==0){
+      //add val as global output of the aggregate dag
         addOutput(it.second);
     }
   }
 }
-
-  void AggregateDag::print(){
-    IrPrinter p(std::cout);
-    std::cout << "AggregateDag containing Vals {\n";
-    for (auto val: vals()){
-      std::cout <<"   " << (AggregateVal*)val << "\n";
-    }
-    std::cout << "}\n and Exprs {\n";
-    for (auto expr: unordered_exprs()){
-      std::cout <<"   " << expr <<"\n";
-    }
-    std::cout << "}\n" << std::endl;
-  }
 
 
 } // namespace cuda

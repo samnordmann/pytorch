@@ -70,14 +70,9 @@ class TORCH_CUDA_CU_API MultiDeviceRuntime : public IterVisitor {
     for (auto expr: a_dag_->unordered_exprs()){
       status[expr] = StatusType::not_ready;
     }
-    traverseTo(a_dag_, a_dag_->outputs());
   }
 
-  void handle(Statement* stmt) {
-    if (!process_rank_){
-      std::cout<<"Runtime reads:\n"<< stmt <<"\n"<<std::endl;
-    }
-  }
+  void handle(Statement* stmt);
 
   // Run kernels with the given global inputs, compile if needed.
   std::vector<at::Tensor> runWithInput(std::vector<IValue> inputs);

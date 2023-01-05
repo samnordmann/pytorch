@@ -2,6 +2,7 @@
 #include <torch/csrc/jit/codegen/cuda/ir_base_nodes.h>
 #include <torch/csrc/jit/codegen/cuda/ir_container.h>
 #include <torch/csrc/jit/codegen/cuda/fusion.h>
+#include <torch/csrc/jit/codegen/cuda/ir_printer.h>
 
 
 namespace torch {
@@ -125,14 +126,22 @@ public:
 };
 
 
-class TORCH_CUDA_CU_API AggregateDag : public Fusion {
+class TORCH_CUDA_CU_API AggregateDag : public Fusion, IterVisitor {
 public:
 
   AggregateDag();
 
   void build(MultiGroupFusion* fusion);
 
-  void print();
+  void print(){
+    std::cout << "AggregateDag's Statements, traversing from inputs to outputs {\n";
+    traverseTo(this, outputs());
+    std::cout << "}\n" << std::endl;
+  };
+
+  void handle(Statement* stmt) {
+    std::cout << "  " << stmt << "\n";
+  }
 
 private:
   friend MultiGroupFusion;
