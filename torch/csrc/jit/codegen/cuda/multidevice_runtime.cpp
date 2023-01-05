@@ -9,7 +9,6 @@ namespace jit {
 namespace fuser {
 namespace cuda {
 
-
 inline IValue MultiDeviceRuntime::getIValueFromFusionVal(Val* val) {
   // Try to find value from the dynamic context.
   auto val_it = context_values_.find(val);
@@ -253,20 +252,19 @@ void MultiDeviceRuntime::runKernel(
   }
 }
 
-// void MultiDeviceRuntime::handle(AggregateExpr* aExpr){
-//   auto group = aExpr->getGroup();
-//     // Convert group inputs from fusion value to IValue.
-//     auto group_input = getGroupIValueInputs(group);
+void MultiDeviceRuntime::handle(AggregateExpr* aExpr){
+  auto group = aExpr->getGroup();
+  // Convert group inputs from fusion value to IValue.
+  auto group_input = getGroupIValueInputs(group);
 
-//     // Run the lowering and compilation step if we haven't compiled yet.
-//     if (!compiled_) {
-//       compiled_kernels_.push_back(compileGroup(group, group_input));
-//     }
+  // Run the lowering and compilation step if we haven't compiled yet.
+  if (!compiled_) {
+    compiled_kernels_[group] = compileGroup(group, group_input);
+  }
 
-//     // Launch kernel and record the kernel output into current context
-//     runKernel(group_idx, group_input);
-// }
-
+  // Launch kernel and record the kernel output into current context
+  runKernel(group, group_input);
+}
 
 std::vector<at::Tensor> MultiDeviceRuntime::runWithInput(
     std::vector<IValue> inputs) {
@@ -278,25 +276,12 @@ std::vector<at::Tensor> MultiDeviceRuntime::runWithInput(
   for (auto input_idx : c10::irange(inputs.size())) {
     context_values_[multi_group_fusion_->inputs().at(input_idx)] = inputs.at(input_idx);
   }
-  // traverseTo(a_dag_, a_dag_->outputs());
+
   // Run through the groups to launch kernel
-  for (auto group : multi_group_fusion_->groups()){
-
-    // Convert group inputs from fusion value to IValue.
-    auto group_input = getGroupIValueInputs(group);
-
-    // Run the lowering and compilation step if we haven't compiled yet.
-    if (!compiled_) {
-      compiled_kernels_[group] = compileGroup(group, group_input);
-    }
-
-    // Launch kernel and record the kernel output into current context
-    runKernel(group, group_input);
-  }
+  traverseTo(a_dag_, a_dag_->outputs());
 
   // Collect global outputs from context
   std::vector<at::Tensor> outputs;
-
 //TODO: could be written in an auxiliary function as in getGroupIValueInputs
   std::transform(
       multi_group_fusion_->outputs().begin(),

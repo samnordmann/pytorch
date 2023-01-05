@@ -371,14 +371,15 @@ rank 3:
   TensorView* tv2 = add(tva1, tvb1);
   fusion.addFusionOutput(tv2);
 
-// aggregateDag
-  if (grank==0){
-    fusion.buildAggregateDag();
-    fusion.aggregateDag()->print();
-  }
-
+  //build the multidevice graph. TODO: move this step somewhere else.
+  fusion.buildAggregateDag();
   // create runtime
   MultiDeviceRuntime runtime(&fusion, pg);
+
+// aggregateDag
+  if (grank==0){
+    fusion.aggregateDag()->print();
+  }
 
   // print the fusion
   if (grank == 0) {

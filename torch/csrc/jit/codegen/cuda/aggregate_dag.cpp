@@ -9,7 +9,7 @@ namespace cuda {
 
 AggregateExpr::AggregateExpr(
     IrBuilderPasskey passkey,
-    Group* group)
+    GroupPtr group)
     : Expr(passkey, ExprType::AggregateExpr), group_(group) {
 }
 
@@ -64,7 +64,7 @@ bool SendRecv::sameAs(const Statement* other) const {
 
 
 AggregateVal::AggregateVal(
-    IrBuilderPasskey passkey, Val* val, Group* group)
+    IrBuilderPasskey passkey, Val* val, GroupPtr group)
     : Val(passkey, ValType::AggregateVal, val->dtype()),
     original_val_(val), group_(group) {
       //TODO: add a mapping from original val to AggregateVal.
@@ -89,8 +89,7 @@ bool AggregateVal::sameAs(const Statement* other) const {
 AggregateDag::AggregateDag():Fusion(), IterVisitor(){}
 
 void AggregateDag::build(MultiGroupFusion* fusion) {
-  for (auto group_ptr: fusion->groups()) {
-    auto group = group_ptr.get();
+  for (auto group: fusion->groups()) {
     IrContainer* container = (IrContainer*)this;
     std::vector<AggregateVal*> inputs;
     std::vector<AggregateVal*> outputs;

@@ -53,10 +53,6 @@ enum class StatusType {
 class TORCH_CUDA_CU_API MultiDeviceRuntime : public IterVisitor {
  public:
   using CompiledKernelPtr = std::unique_ptr<FusionExecutor>;
-  using GroupPtr = std::shared_ptr<Group>;
-
-// // TODO:implement
-//   ~MultiDeviceRuntime(){};
 
   explicit MultiDeviceRuntime(
       MultiGroupFusion* multi_group_fusion,
@@ -77,7 +73,7 @@ class TORCH_CUDA_CU_API MultiDeviceRuntime : public IterVisitor {
   }
 
 
-  // void handle(AggregateExpr* stmt);
+  void handle(AggregateExpr* aExpr);
 
   // void handle(Statement* stmt);
   // Run kernels with the given global inputs, compile if needed.

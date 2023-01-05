@@ -13,6 +13,7 @@ namespace fuser {
 namespace cuda {
 
 using ProcessRankType = int;
+using GroupPtr = std::shared_ptr<Group>;
 
 class TORCH_CUDA_CU_API Group final : public SegmentedGroup {
 public:
@@ -99,13 +100,13 @@ class TORCH_CUDA_CU_API MultiGroupFusion : public Fusion {
   // Interface that is called insided IrBuilder each time a new ir is created
   void newStmt(IrBuilderPasskey, Statement* stmt);
 
-  auto& getCurrentGroup() {
+  auto getCurrentGroup() {
     TORCH_INTERNAL_ASSERT(
         !groups_.empty(), "call newGroup first.");
-    return *current_group_;
+    return current_group_;
   }
 
-  void setCurrentGroup(Group* group) {
+  void setCurrentGroup(GroupPtr group) {
     current_group_ = group;
   }
 
@@ -124,7 +125,7 @@ class TORCH_CUDA_CU_API MultiGroupFusion : public Fusion {
 public:
   //! Keeps track of currently available tensorviews to
   //!  avoid re-computation.
-  std::unordered_map<TensorView*, Group*> context_tensor_map_;
+  std::unordered_map<TensorView*, GroupPtr> context_tensor_map_;
 
   //! Running counter to generate unique group id.
   int running_group_counter_ = 0;
@@ -135,7 +136,7 @@ private:
 
   //! Keep track of the current group, which either has been manually set
   //! through setCurrentGroup method or is the latest group created
-  Group* current_group_;
+  GroupPtr current_group_;
 };
 
 } // namespace cuda

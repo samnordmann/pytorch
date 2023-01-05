@@ -92,75 +92,75 @@ void MultiGroupFusion::newGroup(bool auto_schedule, ProcessRankType process_rank
                                                     process_rank, device));
 
   //Set the newly created group as the current group
-  setCurrentGroup(groups_.back().get());
+  setCurrentGroup(groups_.back());
 }
 
 
 void MultiGroupFusion::newStmt(IrBuilderPasskey, Statement* stmt)
 {
   if (auto expr = dynamic_cast<Expr*>(stmt)) {
-    auto& current_group = getCurrentGroup();
+    auto current_group = getCurrentGroup();
 
     for (auto input_tv : ir_utils::filterByType<TensorView>(expr->inputs())) {
       // Check that all inputs required by this new expression
       //  are defined under the current group's context.
       TORCH_INTERNAL_ASSERT(
-          current_group.context_tensors.has(input_tv),
+          current_group->context_tensors.has(input_tv),
           "tensor input ",
           input_tv->toString(),
           " not in context");
 
       // If we are pulling inputs from other groups, we need
       //  to mark that as a group input.
-      if (!current_group.internal_tensors.has(input_tv)
-          && !std::count (current_group.input_vals.begin(), current_group.input_vals.end(), input_tv)
+      if (!current_group->internal_tensors.has(input_tv)
+          && !std::count (current_group->input_vals.begin(), current_group->input_vals.end(), input_tv)
           ){
-        current_group.addInput(input_tv);
+        current_group->addInput(input_tv);
       }
     }
 
     for (auto output_tv : ir_utils::filterByType<TensorView>(expr->outputs())) {
       // Track defined values under current context
-      current_group.context_tensors.pushBack(output_tv);
+      current_group->context_tensors.pushBack(output_tv);
 
       // Track internally defined tensors, i.e. not from context.
-      current_group.internal_tensors.pushBack(output_tv);
+      current_group->internal_tensors.pushBack(output_tv);
     }
 
     // Created this way, the expression list is
     //  guaranteed to be in topological order.
-    current_group.exprs_.push_back(expr);
+    current_group->exprs_.push_back(expr);
   }
 }
 
 void MultiGroupFusion::addGroupOutput(TensorView* tv) {
-  auto& group = getCurrentGroup();
+  auto group = getCurrentGroup();
 
   // Check that the given tensor is defined internally
   //  within the group's context.
   TORCH_INTERNAL_ASSERT(
-      group.internal_tensors.has(tv), tv->toString(), "not in group");
+      group->internal_tensors.has(tv), tv->toString(), "not in group");
 
   // Add the tv to the group outputs.
-  group.addOutput(tv);
+  group->addOutput(tv);
 
   // Add the tv to the global context, since
   //  it is a group output.
-  context_tensor_map_[tv] = &group;
+  context_tensor_map_[tv] = group;
 }
 
 void MultiGroupFusion::addFusionOutput(TensorView* tv) {
-  auto& group = getCurrentGroup();
+  auto group = getCurrentGroup();
 
   TORCH_INTERNAL_ASSERT(
-      group.internal_tensors.has(tv),
+      group->internal_tensors.has(tv),
       "can only add tensors from current group to fusion output.");
 
   // Register tv as a global ouputput.
   addOutput(tv);
 
   // Register tv as a group output.
-  group.addOutput(tv);
+  group->addOutput(tv);
 }
 
 void MultiGroupFusion::addFusionInput(TensorView* tv) {

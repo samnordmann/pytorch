@@ -13,6 +13,8 @@ namespace cuda {
 
 class Group;
 class MultiGroupFusion;
+using GroupPtr = std::shared_ptr<Group>;
+
 
 //! Adding a Val:
 //! Right now adding a Val is quite involved. Val's can be defined in ir.h or in
@@ -38,7 +40,7 @@ class MultiGroupFusion;
 class TORCH_CUDA_CU_API AggregateVal : public Val {
 public:
 
-  AggregateVal(IrBuilderPasskey passkey, Val* val, Group* group);
+  AggregateVal(IrBuilderPasskey passkey, Val* val, GroupPtr group);
 
   AggregateVal(const AggregateVal* src, IrCloner* ir_cloner);
 
@@ -46,7 +48,7 @@ public:
     return original_val_;
   }
 
-  const Group* getGroup() const{
+  const GroupPtr getGroup() const{
     return group_;
   }
 
@@ -54,7 +56,7 @@ public:
 
 private:
   Val* original_val_;
-  Group* group_;
+  GroupPtr group_;
 };
 
 
@@ -78,13 +80,13 @@ private:
 class TORCH_CUDA_CU_API AggregateExpr : public Expr {
 public:
 
-  AggregateExpr(IrBuilderPasskey, Group* group);
+  AggregateExpr(IrBuilderPasskey, GroupPtr group);
 
   AggregateExpr(const AggregateExpr* src, IrCloner* ir_cloner);
 
   bool sameAs(const Statement* other) const override;
 
-  const Group* getGroup() const{
+  const GroupPtr getGroup() const{
     return group_;
   }
 
@@ -99,7 +101,7 @@ public:
   }
 
 private:
-  Group* group_;
+  GroupPtr group_;
 };
 
 
