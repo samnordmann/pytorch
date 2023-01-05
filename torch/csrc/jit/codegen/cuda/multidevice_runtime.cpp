@@ -9,6 +9,7 @@ namespace jit {
 namespace fuser {
 namespace cuda {
 
+
 inline IValue MultiDeviceRuntime::getIValueFromFusionVal(Val* val) {
   // Try to find value from the dynamic context.
   auto val_it = context_values_.find(val);
@@ -17,7 +18,7 @@ inline IValue MultiDeviceRuntime::getIValueFromFusionVal(Val* val) {
 }
 
 std::vector<IValue> MultiDeviceRuntime::getGroupIValueInputs(
-    Group* group) {
+    GroupPtr group) {
   std::vector<IValue> group_input;
   std::transform(
       group->input_vals.begin(),
@@ -44,9 +45,7 @@ void updateLaunchParamsFromScheduler(
 } // namespace
 
 void MultiDeviceRuntime::buildValueToRankMap() {
-  for (auto group_idx :
-       c10::irange(multi_group_fusion_->groups().size())) {
-    auto group = multi_group_fusion_->groups().at(group_idx).get();
+  for (auto group : multi_group_fusion_->groups()) {
     auto group_rank = group->process_rank;
 
     // Fill the rank which will define the output values
@@ -62,7 +61,7 @@ void MultiDeviceRuntime::buildValueToRankMap() {
 }
 
 MultiDeviceRuntime::CompiledKernelPtr MultiDeviceRuntime::compileGroup(
-    Group* group,
+    GroupPtr group,
     std::vector<IValue> group_inputs) {
   // Make a copy of the fusion graph we want to generate
   //  CUDA kernel and compile.
@@ -132,13 +131,12 @@ MultiDeviceRuntime::CompiledKernelPtr MultiDeviceRuntime::compileGroup(
 // TODO: this name should probably be runGroup now, since it doesn't
 //  necessarily launch a kernel.
 void MultiDeviceRuntime::runKernel(
-    int group_idx,
+    GroupPtr group,
     std::vector<IValue>& group_input) {
   // Segmented group to run:
-  auto group = multi_group_fusion_->groups().at(group_idx).get();
 
   // Compiled kernel:
-  auto& executor = compiled_kernels_.at(group_idx);
+  auto& executor = compiled_kernels_[group];
 
 
   // Device and rank info from this group
@@ -255,6 +253,21 @@ void MultiDeviceRuntime::runKernel(
   }
 }
 
+// void MultiDeviceRuntime::handle(AggregateExpr* aExpr){
+//   auto group = aExpr->getGroup();
+//     // Convert group inputs from fusion value to IValue.
+//     auto group_input = getGroupIValueInputs(group);
+
+//     // Run the lowering and compilation step if we haven't compiled yet.
+//     if (!compiled_) {
+//       compiled_kernels_.push_back(compileGroup(group, group_input));
+//     }
+
+//     // Launch kernel and record the kernel output into current context
+//     runKernel(group_idx, group_input);
+// }
+
+
 std::vector<at::Tensor> MultiDeviceRuntime::runWithInput(
     std::vector<IValue> inputs) {
 
@@ -265,22 +278,20 @@ std::vector<at::Tensor> MultiDeviceRuntime::runWithInput(
   for (auto input_idx : c10::irange(inputs.size())) {
     context_values_[multi_group_fusion_->inputs().at(input_idx)] = inputs.at(input_idx);
   }
-
+  // traverseTo(a_dag_, a_dag_->outputs());
   // Run through the groups to launch kernel
-  for (auto group_idx :
-       c10::irange(multi_group_fusion_->groups().size())) {
-    auto group = multi_group_fusion_->groups().at(group_idx).get();
+  for (auto group : multi_group_fusion_->groups()){
 
     // Convert group inputs from fusion value to IValue.
     auto group_input = getGroupIValueInputs(group);
 
     // Run the lowering and compilation step if we haven't compiled yet.
     if (!compiled_) {
-      compiled_kernels_.push_back(compileGroup(group, group_input));
+      compiled_kernels_[group] = compileGroup(group, group_input);
     }
 
     // Launch kernel and record the kernel output into current context
-    runKernel(group_idx, group_input);
+    runKernel(group, group_input);
   }
 
   // Collect global outputs from context

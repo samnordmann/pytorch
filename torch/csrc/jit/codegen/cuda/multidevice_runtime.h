@@ -51,9 +51,13 @@ enum class StatusType {
 //!  multiple devices.
 
 class TORCH_CUDA_CU_API MultiDeviceRuntime : public IterVisitor {
-  using CompiledKernelPtr = std::unique_ptr<FusionExecutor>;
-
  public:
+  using CompiledKernelPtr = std::unique_ptr<FusionExecutor>;
+  using GroupPtr = std::shared_ptr<Group>;
+
+// // TODO:implement
+//   ~MultiDeviceRuntime(){};
+
   explicit MultiDeviceRuntime(
       MultiGroupFusion* multi_group_fusion,
       c10::intrusive_ptr<c10d::ProcessGroup> process_group,
@@ -72,8 +76,10 @@ class TORCH_CUDA_CU_API MultiDeviceRuntime : public IterVisitor {
     }
   }
 
-  void handle(Statement* stmt);
 
+  // void handle(AggregateExpr* stmt);
+
+  // void handle(Statement* stmt);
   // Run kernels with the given global inputs, compile if needed.
   std::vector<at::Tensor> runWithInput(std::vector<IValue> inputs);
 
@@ -90,12 +96,12 @@ class TORCH_CUDA_CU_API MultiDeviceRuntime : public IterVisitor {
   // Generate and compile cuda kernel corresponding to
   //  the given segmented group.
   CompiledKernelPtr compileGroup(
-      Group* group,
+      GroupPtr group,
       std::vector<IValue> group_input);
 
   // Retrieve all inputs corresponding to the given group from
   //  the current context.
-  std::vector<IValue> getGroupIValueInputs(Group*);
+  std::vector<IValue> getGroupIValueInputs(GroupPtr);
 
   // Retrieve computed values from the current context,
   //  throws an error if the given val hasn't been computed.
@@ -103,10 +109,7 @@ class TORCH_CUDA_CU_API MultiDeviceRuntime : public IterVisitor {
 
   // Run the kernel corresponding to the given index, with the given
   //  pytorch tensor inputs.
-  void runKernel(int group_idx, std::vector<IValue>& group_inputs);
-
-  // Build actual fusion graph from segmented group.
-  std::unique_ptr<Fusion> getFusionCopyFromGroup(Group* group);
+  void runKernel(GroupPtr group, std::vector<IValue>& group_inputs);
 
  private:
   // Workspace when running multiple kernels, keeps track
@@ -130,11 +133,11 @@ class TORCH_CUDA_CU_API MultiDeviceRuntime : public IterVisitor {
   MultiGroupFusion* multi_group_fusion_ = nullptr;
 
   // Compiled kernels from multi_group_fusion_
-  std::vector<CompiledKernelPtr> compiled_kernels_;
+  std::unordered_map<GroupPtr, CompiledKernelPtr> compiled_kernels_;
 
   // Keeps track of heuristics that are used to schedule
   //  the auto-scheduled kernels.
-  std::unordered_map<Group*, std::unique_ptr<SchedulerEntry>>
+  std::unordered_map<GroupPtr, std::unique_ptr<SchedulerEntry>>
       auto_scheduler_registry_;
 
   // Process group. Interface for inter-process collectives
