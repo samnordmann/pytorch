@@ -8,8 +8,7 @@ namespace fuser {
 namespace cuda {
 
 AggregateExpr::AggregateExpr(
-    IrBuilderPasskey passkey,
-    GroupPtr group)
+    IrBuilderPasskey passkey, GroupPtr group)
     : Expr(passkey, ExprType::AggregateExpr), group_(group) {
 }
 

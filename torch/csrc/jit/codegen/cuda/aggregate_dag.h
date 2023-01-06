@@ -44,7 +44,7 @@ public:
 
   AggregateVal(const AggregateVal* src, IrCloner* ir_cloner);
 
-  const Val* getOriginalVal() const{
+  Val* getOriginalVal() const{
     return original_val_;
   }
 

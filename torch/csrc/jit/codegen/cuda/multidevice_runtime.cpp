@@ -122,13 +122,8 @@ MultiDeviceRuntime::CompiledKernelPtr MultiDeviceRuntime::compileGroup(
   return executor_ptr;
 }
 
-// TODO:
-//  As we build out the logic we probably want to separate
-//  multifusion logic from actual runtime.
 
 // Launch kernel and record the kernel output into current context
-// TODO: this name should probably be runGroup now, since it doesn't
-//  necessarily launch a kernel.
 void MultiDeviceRuntime::runKernel(
     GroupPtr group,
     std::vector<IValue>& group_input) {
@@ -138,56 +133,12 @@ void MultiDeviceRuntime::runKernel(
   auto& executor = compiled_kernels_[group];
 
 
-  // Device and rank info from this group
-  auto group_rank = group->process_rank;
-  auto group_device = group->device;
 
   // Container for the resulting tensors
   std::vector<at::Tensor> outputs;
 
-  // In the case where either rank is -1, we default to always
-  //  run this group.
-  bool always_run = group_rank == -1 || process_rank_ == -1;
-  bool running_kernel = always_run || group_rank == process_rank_;
-  // ========================================================================
-  //  Section for receiving data from other rank:
-  auto input_n = group_input.size();
-  TORCH_INTERNAL_ASSERT(group->input_vals.size() == input_n);
 
-  if (running_kernel) {
-    for (auto input_idx : c10::irange(input_n)) {
-      auto input_source_rank_it =
-          context_source_rank_.find(group->input_vals.at(input_idx));
-      if (input_source_rank_it == context_source_rank_.end()) {
-        std::unordered_set<Val*> global_inputs(
-            multi_group_fusion_->inputs().begin(),
-            multi_group_fusion_->inputs().end());
-
-        // Check that if there's no source rank definition then this
-        //  value is a global input.
-        // TODO:
-        // At the very beginning of this run the global inputs could be
-        //  on any device so there'd need to be an initial processing
-        //  to make sure all the running groups have them available.
-        TORCH_INTERNAL_ASSERT(
-            global_inputs.count(group->input_vals.at(input_idx)));
-        continue;
-      }
-
-      auto input_source_rank = input_source_rank_it->second;
-      if (input_source_rank != -1 && input_source_rank != process_rank_) {
-        // Receive this value here
-        std::vector<at::Tensor> tensor_to_receive = {group_input.at(input_idx).toTensor()}; // holder for the received tensor
-        auto work = process_group_->recv(tensor_to_receive, input_source_rank, 0); // receive the tensor
-        while (!work->isCompleted()); // wait for completion
-        group_input.at(input_idx) = (IValue)(tensor_to_receive[0]); // store the received tensor
-      }
-    }
-  }
-  // ========================================================================
-  //  Section for running the kernel:
-
-  if (running_kernel) {
+  if (shouldRun(group)) {
     // Use default launch parameters.
     LaunchParams launch_params;
     // If the kernel was auto-scheduled, we need to
@@ -203,9 +154,7 @@ void MultiDeviceRuntime::runKernel(
         //  be able to do dynamic shape yet.
         0);
   } else {
-    // For simplicity, just allocate space for all the potential
-    //  kernel outputs. Optimization possible but quite open ended
-    //  for now.
+    // Allocate space for kernel outputs.
     // TODO only allocate if we are gonna indeed use this Ivalue in a future kernel
     outputs = executor->allocOutputSpace(group_input);
   }
@@ -213,7 +162,6 @@ void MultiDeviceRuntime::runKernel(
   // Store the outputs or place holders in the context
   // Bind context tensors to the actual kernel outputs:
   int number_of_outputs = group->output_vals.size();
-
   TORCH_INTERNAL_ASSERT(outputs.size() == number_of_outputs);
 
   for (auto output_idx : c10::irange(number_of_outputs)) {
@@ -223,32 +171,26 @@ void MultiDeviceRuntime::runKernel(
     // Fill tensor data or placeholder to context.
     context_values_[output_val] = outputs.at(output_idx);
   }
+}
 
-  // ========================================================================
-  //  Section for sending data to other rank:
+void MultiDeviceRuntime::handle(SendRecv* sr){
+  auto sender_group = sr->in()->getGroup();
+  auto receiver_group = sr->out()->getGroup();
 
-  // Running_kernel would mean that current rank has valid data,
-  //  !always_run would mean that some ranks do not have it so we need to
-  //  send it.
-  if (running_kernel && !always_run) {
-    for (auto output_val : group->output_vals) {
-      auto destination_it = value_to_user_rank_.find(output_val);
-      if (destination_it == value_to_user_rank_.end()) {
-        // Not an intermediate value.
-        continue;
-      }
+  bool is_sender = shouldRun(sender_group);
+  bool is_receiver = shouldRun(receiver_group);
+  int sender_rank = sender_group->process_rank;
+  int receiver_rank = receiver_group->process_rank;
+  auto val = sr->in()->getOriginalVal();
 
-      std::vector<at::Tensor> tensor_to_send = {context_values_.at(output_val).toTensor()};
-      auto& rank_vector = destination_it->second;
-      if (rank_vector.has(-1)) {
-        // TODO: send to all ranks
-      } else {
-        for (auto rank : rank_vector.vector()) {
-          // Send to rank
-          process_group_->send(tensor_to_send, rank, 0);
-        }
-      }
-    }
+  std::vector<at::Tensor> tensor = {context_values_.at(val).toTensor()};
+  if (is_sender){
+      process_group_->send(tensor, receiver_rank, 0);
+  }
+  if (is_receiver){
+        auto work = process_group_->recv(tensor, sender_rank, 0); // receive the tensor
+        while (!work->isCompleted()); // wait for completion
+        context_values_[val] = (IValue)(tensor[0]); // store the received tensor
   }
 }
 

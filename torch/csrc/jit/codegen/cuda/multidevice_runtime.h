@@ -19,11 +19,11 @@ namespace jit {
 namespace fuser {
 namespace cuda {
 
-enum class StatusType {
-  not_ready,
-  in_progress,
-  ready
-};
+// enum class StatusType {
+//   not_ready,
+//   in_progress,
+//   ready
+// };
 
 // We only need to iterate over the aggregateDag.
 // At initialization, we take all the statements of the dags and we check if the rank has to deal with this statment
@@ -64,16 +64,17 @@ class TORCH_CUDA_CU_API MultiDeviceRuntime : public IterVisitor {
     // Initialize some rank dependency info
     buildValueToRankMap();
 
-    for (auto val: a_dag_->vals()){
-      status[val] = StatusType::not_ready;
-    }
-    for (auto expr: a_dag_->unordered_exprs()){
-      status[expr] = StatusType::not_ready;
-    }
+    // for (auto val: a_dag_->vals()){
+    //   status[val] = StatusType::not_ready;
+    // }
+    // for (auto expr: a_dag_->unordered_exprs()){
+    //   status[expr] = StatusType::not_ready;
+    // }
   }
 
 
   void handle(AggregateExpr* aExpr);
+  void handle(SendRecv* sr);
 
   // void handle(Statement* stmt);
   // Run kernels with the given global inputs, compile if needed.
@@ -86,7 +87,11 @@ class TORCH_CUDA_CU_API MultiDeviceRuntime : public IterVisitor {
 
   void buildValueToRankMap();
 
-  std::unordered_map<Statement*, StatusType> status;
+  bool shouldRun(GroupPtr group){
+    return group->process_rank == process_rank_;
+  }
+
+  // std::unordered_map<Statement*, StatusType> status;
 
  private:
   // Generate and compile cuda kernel corresponding to
