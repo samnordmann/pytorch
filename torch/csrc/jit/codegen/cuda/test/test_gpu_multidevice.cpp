@@ -383,7 +383,7 @@ rank 3:
 
   // print the fusion
   if (grank == 0) {
-    runtime.multiGroupFusion()->print();
+    fusion.print();
   }
 
   // Create input tensors.

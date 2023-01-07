@@ -43,22 +43,6 @@ void updateLaunchParamsFromScheduler(
 
 } // namespace
 
-void MultiDeviceRuntime::buildValueToRankMap() {
-  for (auto group : multi_group_fusion_->groups()) {
-    auto group_rank = group->process_rank;
-
-    // Fill the rank which will define the output values
-    for (auto output_val : group->output_vals) {
-      context_source_rank_[output_val] = group_rank;
-    }
-
-    // Fill the rank which will consume the input values
-    for (auto input_val : group->input_vals) {
-      value_to_user_rank_[input_val].pushBack(group_rank);
-    }
-  }
-}
-
 MultiDeviceRuntime::CompiledKernelPtr MultiDeviceRuntime::compileGroup(
     GroupPtr group,
     std::vector<IValue> group_inputs) {
@@ -122,22 +106,42 @@ MultiDeviceRuntime::CompiledKernelPtr MultiDeviceRuntime::compileGroup(
   return executor_ptr;
 }
 
+void MultiDeviceRuntime::handle(SendRecv* sr){
+  auto sender_group = sr->in()->getGroup();
+  auto receiver_group = sr->out()->getGroup();
 
-// Launch kernel and record the kernel output into current context
-void MultiDeviceRuntime::runKernel(
-    GroupPtr group,
-    std::vector<IValue>& group_input) {
-  // Segmented group to run:
+  bool is_sender = shouldRun(sender_group);
+  bool is_receiver = shouldRun(receiver_group);
+  int sender_rank = sender_group->process_rank;
+  int receiver_rank = receiver_group->process_rank;
+  auto val = sr->in()->getOriginalVal();
 
-  // Compiled kernel:
+  std::vector<at::Tensor> tensor = {context_values_.at(val).toTensor()};
+  if (is_sender){
+      process_group_->send(tensor, receiver_rank, 0);
+  }
+  if (is_receiver){
+        auto work = process_group_->recv(tensor, sender_rank, 0); // receive the tensor
+        while (!work->isCompleted()); // wait for completion
+        context_values_[val] = (IValue)(tensor[0]); // store the received tensor
+  }
+}
+
+void MultiDeviceRuntime::handle(AggregateExpr* aExpr){
+  auto group = aExpr->getGroup();
+  // Convert group inputs from fusion value to IValue.
+  auto group_input = getGroupIValueInputs(group);
+
+  // Run the lowering and compilation step if we haven't compiled yet.
+  if (!compiled_kernels_.count(group)) {
+    compiled_kernels_[group] = compileGroup(group, group_input);
+  }
   auto& executor = compiled_kernels_[group];
 
-
+  // Launch kernel and record the kernel output into current context
 
   // Container for the resulting tensors
   std::vector<at::Tensor> outputs;
-
-
   if (shouldRun(group)) {
     // Use default launch parameters.
     LaunchParams launch_params;
@@ -171,41 +175,6 @@ void MultiDeviceRuntime::runKernel(
     // Fill tensor data or placeholder to context.
     context_values_[output_val] = outputs.at(output_idx);
   }
-}
-
-void MultiDeviceRuntime::handle(SendRecv* sr){
-  auto sender_group = sr->in()->getGroup();
-  auto receiver_group = sr->out()->getGroup();
-
-  bool is_sender = shouldRun(sender_group);
-  bool is_receiver = shouldRun(receiver_group);
-  int sender_rank = sender_group->process_rank;
-  int receiver_rank = receiver_group->process_rank;
-  auto val = sr->in()->getOriginalVal();
-
-  std::vector<at::Tensor> tensor = {context_values_.at(val).toTensor()};
-  if (is_sender){
-      process_group_->send(tensor, receiver_rank, 0);
-  }
-  if (is_receiver){
-        auto work = process_group_->recv(tensor, sender_rank, 0); // receive the tensor
-        while (!work->isCompleted()); // wait for completion
-        context_values_[val] = (IValue)(tensor[0]); // store the received tensor
-  }
-}
-
-void MultiDeviceRuntime::handle(AggregateExpr* aExpr){
-  auto group = aExpr->getGroup();
-  // Convert group inputs from fusion value to IValue.
-  auto group_input = getGroupIValueInputs(group);
-
-  // Run the lowering and compilation step if we haven't compiled yet.
-  if (!compiled_) {
-    compiled_kernels_[group] = compileGroup(group, group_input);
-  }
-
-  // Launch kernel and record the kernel output into current context
-  runKernel(group, group_input);
 }
 
 std::vector<at::Tensor> MultiDeviceRuntime::runWithInput(

@@ -140,7 +140,16 @@ public:
     std::cout << "AggregateDag's Statements, traversing from inputs to outputs {\n";
     traverseTo(this, outputs());
     std::cout << "}\n" << std::endl;
-  };
+
+    std::cout << "Inputs:\n";
+    for (auto input: inputs()){
+      std::cout << input << "\n";
+    }
+    std::cout << "Outputs:\n";
+    for (auto output: outputs()){
+      std::cout << output << "\n";
+    }
+  }
 
   void handle(Statement* stmt) {
     std::cout << "  " << stmt << "\n";

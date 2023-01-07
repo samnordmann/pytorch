@@ -58,40 +58,20 @@ class TORCH_CUDA_CU_API MultiDeviceRuntime : public IterVisitor {
       MultiGroupFusion* multi_group_fusion,
       c10::intrusive_ptr<c10d::ProcessGroup> process_group,
       ProcessRankType process_rank = -1)
-      : IterVisitor(), multi_group_fusion_(multi_group_fusion),
-        process_group_(process_group), process_rank_((ProcessRankType)process_group->getRank()),
-          a_dag_(multi_group_fusion->aggregateDag()) {
-    // Initialize some rank dependency info
-    buildValueToRankMap();
-
-    // for (auto val: a_dag_->vals()){
-    //   status[val] = StatusType::not_ready;
-    // }
-    // for (auto expr: a_dag_->unordered_exprs()){
-    //   status[expr] = StatusType::not_ready;
-    // }
-  }
+      : IterVisitor(),process_group_(process_group),
+      process_rank_((ProcessRankType)process_group->getRank()),
+       multi_group_fusion_(multi_group_fusion), a_dag_(multi_group_fusion->aggregateDag()) {}
 
 
   void handle(AggregateExpr* aExpr);
   void handle(SendRecv* sr);
 
-  // void handle(Statement* stmt);
   // Run kernels with the given global inputs, compile if needed.
   std::vector<at::Tensor> runWithInput(std::vector<IValue> inputs);
-
-  // Interface to querry underlying fusion.
-  auto multiGroupFusion() const {
-    return multi_group_fusion_;
-  }
-
-  void buildValueToRankMap();
 
   bool shouldRun(GroupPtr group){
     return group->process_rank == process_rank_;
   }
-
-  // std::unordered_map<Statement*, StatusType> status;
 
  private:
   // Generate and compile cuda kernel corresponding to
@@ -108,31 +88,10 @@ class TORCH_CUDA_CU_API MultiDeviceRuntime : public IterVisitor {
   //  throws an error if the given val hasn't been computed.
   inline IValue getIValueFromFusionVal(Val* val);
 
-  // Run the kernel corresponding to the given index, with the given
-  //  pytorch tensor inputs.
-  void runKernel(GroupPtr group, std::vector<IValue>& group_inputs);
-
  private:
   // Workspace when running multiple kernels, keeps track
   //  of intermediate tensors produced by each kernel.
   std::unordered_map<Val*, IValue> context_values_;
-
-  // Keep track of which rank to receive the value from, if it
-  //  is not to be computed from the current rank.
-  std::unordered_map<Val*, ProcessRankType>
-      context_source_rank_;
-
-  // Keep track of which rank will use which value to determine where
-  //  to send data.
-  using RankVector = VectorOfUniqueEntries<ProcessRankType>;
-  std::unordered_map<Val*, RankVector> value_to_user_rank_;
-
-  // Keeps track of if compilation has run.
-  bool compiled_ = false;
-
-  // Underlying multigroup fusion.
-  MultiGroupFusion* multi_group_fusion_ = nullptr;
-
   // Compiled kernels from multi_group_fusion_
   std::unordered_map<GroupPtr, CompiledKernelPtr> compiled_kernels_;
 
@@ -146,7 +105,9 @@ class TORCH_CUDA_CU_API MultiDeviceRuntime : public IterVisitor {
 
   // Keeps track of process rank owning this runtime,
   //  not sure if this will ever change throughout the runtime's lifetime.
-  ProcessRankType process_rank_ = -1;
+  ProcessRankType process_rank_;
+
+  MultiGroupFusion* multi_group_fusion_ = nullptr;
 
   AggregateDag* a_dag_;
 };
