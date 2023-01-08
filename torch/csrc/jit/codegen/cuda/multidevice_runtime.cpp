@@ -110,20 +110,31 @@ void MultiDeviceRuntime::handle(SendRecv* sr){
   auto sender_group = sr->in()->getGroup();
   auto receiver_group = sr->out()->getGroup();
 
+  // check if current process receives
   bool is_sender = shouldRun(sender_group);
+  // check if current process sends
   bool is_receiver = shouldRun(receiver_group);
+
   int sender_rank = sender_group->process_rank;
   int receiver_rank = receiver_group->process_rank;
+
+  // Val corresponding to the sent tensor
   auto val = sr->in()->getOriginalVal();
 
+// container for the sent/received tensor
   std::vector<at::Tensor> tensor = {context_values_.at(val).toTensor()};
+
   if (is_sender){
-      process_group_->send(tensor, receiver_rank, 0);
+    // sending the tensor
+    process_group_->send(tensor, receiver_rank, 0);
   }
   if (is_receiver){
-        auto work = process_group_->recv(tensor, sender_rank, 0); // receive the tensor
-        while (!work->isCompleted()); // wait for completion
-        context_values_[val] = (IValue)(tensor[0]); // store the received tensor
+    // receiving the tensor
+    auto work = process_group_->recv(tensor, sender_rank, 0);
+    // wait for completion
+    while (!work->isCompleted());
+    // store the receive tensor
+    context_values_[val] = (IValue)(tensor[0]);
   }
 }
 
@@ -193,7 +204,6 @@ std::vector<at::Tensor> MultiDeviceRuntime::runWithInput(
 
   // Collect global outputs from context
   std::vector<at::Tensor> outputs;
-//TODO: could be written in an auxiliary function as in getGroupIValueInputs
   std::transform(
       multi_group_fusion_->outputs().begin(),
       multi_group_fusion_->outputs().end(),

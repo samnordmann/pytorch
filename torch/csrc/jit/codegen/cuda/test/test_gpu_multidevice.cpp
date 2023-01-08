@@ -253,6 +253,7 @@ TEST_F(NVFuserTest, FusionMultiGPU) {
 
   fusion.addFusionOutput(tv2);
 
+  fusion.buildAggregateDag();
   // Build actual fusion graphs and pass it to a
   //  multi-device runtime.
   MultiDeviceRuntime runtime(

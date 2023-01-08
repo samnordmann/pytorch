@@ -56,8 +56,6 @@ bool SendRecv::sameAs(const Statement* other) const {
   if (!other->isA<SendRecv>()) {
     return false;
   }
-  // const auto other_op = other->as<SendRecv>();
-
   return Expr::sameAs(other);
 }
 
@@ -65,9 +63,7 @@ bool SendRecv::sameAs(const Statement* other) const {
 AggregateVal::AggregateVal(
     IrBuilderPasskey passkey, Val* val, GroupPtr group)
     : Val(passkey, ValType::AggregateVal, val->dtype()),
-    original_val_(val), group_(group) {
-      //TODO: add a mapping from original val to AggregateVal.
-    }
+    original_val_(val), group_(group) {}
 
 AggregateVal::AggregateVal(const AggregateVal* src, IrCloner* ir_cloner)
     : Val(src, ir_cloner), original_val_(src->original_val_), group_(src->group_) {}
@@ -88,26 +84,38 @@ bool AggregateVal::sameAs(const Statement* other) const {
 AggregateDag::AggregateDag():Fusion(), IterVisitor(){}
 
 void AggregateDag::build(MultiGroupFusion* fusion) {
+  // iterate over all groups in the multigroup fusion
   for (auto group: fusion->groups()) {
+    // set the container we will add the IR to
     IrContainer* container = (IrContainer*)this;
+    // temp container for the inputs of the current group
     std::vector<AggregateVal*> inputs;
+    // temp container for the outputs of the current group
     std::vector<AggregateVal*> outputs;
 
     for (auto output_val : group->output_vals) {
+      // creates the AggregateVal corresponding to each output of the current group
       auto val = IrBuilder::create<AggregateVal>(container, output_val, group);
+      // tag current group as producer of this val
       producer[output_val] = val;
+      // add the new IR to the outputs container
       outputs.push_back(val);
     }
 
     for (auto input_val : group->input_vals) {
+      // creates the AggregateVal corresponding to each input of the current group
       auto val = IrBuilder::create<AggregateVal>(container, input_val, group);
-      inputs.push_back(val);
+      // add current group as a consumer of this val
       consumers.insert({input_val, val});
+      // add the new IR to the inputs container
+      inputs.push_back(val);
       if (producer.find(input_val) != producer.end()){
-        //means that input_val is not a global input and 
-        // is produced by another group
+        // means that input_val is not a global input and 
+        // so is produced by another group
         auto src = producer[input_val];
+        // create and IR indicating the val needs to be sent between groups
         auto sendRecv = IrBuilder::create<SendRecv>(container, val, src);
+        // the received val is set as output of sendRecv
         val->setDefinition(sendRecv);
       } else {
         //add val as global input of the aggregate dag
@@ -115,18 +123,25 @@ void AggregateDag::build(MultiGroupFusion* fusion) {
       }
     }
 
+    // create IR representing the exprs contained in the current group
+    // This could be moved to AggregateExpr's initializer.
+    // Question: what does the following mean? "Constructors need to register with the Fusion after inputs/outputs are defined"
     auto expr = IrBuilder::create<AggregateExpr>(container, group);
     for (auto out: outputs){
+      // set each output as an output of the group
       expr->addOutput(out);
+      // set definition of the ouput
       out->setDefinition(expr);
     }
     for (auto in: inputs){
+      // set each input as an input of the group
       expr->addInput(in);
     }
   }
   for (auto it: producer){
     if (consumers.count(it.first)==0){
-      //add val as global output of the aggregate dag
+      // means that it is a global output.
+      // TODO: Im not sure it is exact, but it is not critical for now
         addOutput(it.second);
     }
   }

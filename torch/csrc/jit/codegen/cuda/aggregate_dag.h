@@ -15,7 +15,6 @@ class Group;
 class MultiGroupFusion;
 using GroupPtr = std::shared_ptr<Group>;
 
-
 //! Adding a Val:
 //! Right now adding a Val is quite involved. Val's can be defined in ir.h or in
 //! their own header file. The following is what is currently needed to add a
@@ -37,6 +36,36 @@ using GroupPtr = std::shared_ptr<Group>;
 //!
 // Must also declare IrCloner::handle and instantiate IrBuilder::clone
 // I also added this headerfile to ir_all_nodes.h
+// 
+//! 1) Definition inheriting from Expr.
+//!      - Members must be private or protected -- done, but why ?
+//!      - Accessor functions for members
+//!      - Constructors need to register with the Fusion after inputs/outputs
+//!         are defined
+//!      - Implementation of bool sameAs(...)
+//!  2) dispatch.h/.cpp must be updated to include dispatch of the new Val -- done
+//!  3) Default mutator function should be added to mutator.h/.cpp
+//!  4) Printing functions should be added to ir_iostream.h/.cpp --done
+//!  5) Lower case convenience functions should be added to arith.h/.cpp (If
+//!     user facing)
+//!  6) An enum value must be added to ExprType in type.h --done
+//!  7) A string entry must be added in expr_type_string_map
+//!  8) Entry added to ir_graphviz .cpp/.h
+// must also implement shallowCopy
+// must also update ir_cloner.h/.cpp with handle function
+
+
+
+
+// Implements the AggregateDag. It is build from a multigroup fusion.
+// Its traversal is what defines the runtime execution.
+// The nodes of the dag are the Vals AggregateVal
+// The edges are Expr of either type 1) AggregateExpr which represent the 
+// operations contained in a Group, or 2)SendRecv which represents the collective
+// operation between two processes that needs to be done at runtime.
+
+// An AggregateVal is basically a Val and a Group. At runtime, since a Group is typically
+// associated with a rank, AggregateVal represents a Val which is located at a rank.
 class TORCH_CUDA_CU_API AggregateVal : public Val {
 public:
 
@@ -60,23 +89,7 @@ private:
 };
 
 
-//! 1) Definition inheriting from Expr.
-//!      - Members must be private or protected -- done, but why ?
-//!      - Accessor functions for members
-//!      - Constructors need to register with the Fusion after inputs/outputs
-//!         are defined
-//!      - Implementation of bool sameAs(...)
-//!  2) dispatch.h/.cpp must be updated to include dispatch of the new Val -- done
-//!  3) Default mutator function should be added to mutator.h/.cpp
-//!  4) Printing functions should be added to ir_iostream.h/.cpp --done
-//!  5) Lower case convenience functions should be added to arith.h/.cpp (If
-//!     user facing)
-//!  6) An enum value must be added to ExprType in type.h --done
-//!  7) A string entry must be added in expr_type_string_map
-//!  8) Entry added to ir_graphviz .cpp/.h
-// must also implement shallowCopy
-// must also update ir_cloner.h/.cpp with handle function
-
+// An AggregateExpr represents the Exprs that are defined inside a Group.
 class TORCH_CUDA_CU_API AggregateExpr : public Expr {
 public:
 
@@ -105,6 +118,8 @@ private:
 };
 
 
+// SendRecv is an Expr that represents at runtime the send/receive
+// of a IValue between two processes.
 class TORCH_CUDA_CU_API SendRecv : public Expr {
 public:
 
@@ -129,13 +144,20 @@ public:
 };
 
 
+// AggregateDag is an IrContainer, built from a multigroup fusion.
+// Its traversal is what orders the runtime execution.
 class TORCH_CUDA_CU_API AggregateDag : public Fusion, IterVisitor {
 public:
 
   AggregateDag();
 
+// Build the AggregateDag from a MultiGroupFusion.
+// Maybe we should eventually build the Aggregate dag as we go along with the Fusion,
+// creating AggregateVal, AggregateExpr as soon as it is needed (e.g. when
+// we call newGroup)
   void build(MultiGroupFusion* fusion);
 
+// prints the traversal as well as I/O of the DAG
   void print(){
     std::cout << "AggregateDag's Statements, traversing from inputs to outputs {\n";
     traverseTo(this, outputs());
@@ -151,6 +173,7 @@ public:
     }
   }
 
+// utility function for print
   void handle(Statement* stmt) {
     std::cout << "  " << stmt << "\n";
   }
@@ -158,7 +181,9 @@ public:
 private:
   friend MultiGroupFusion;
 
+// Store the producer of each Val of the DAG
   std::unordered_map<Val*, AggregateVal*> producer;
+// Store the consumers of each Val of the DAG
   std::unordered_multimap<Val*, AggregateVal*> consumers;
 };
 

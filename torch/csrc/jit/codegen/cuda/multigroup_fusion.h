@@ -15,9 +15,10 @@ namespace cuda {
 using ProcessRankType = int;
 using GroupPtr = std::shared_ptr<Group>;
 
+// Class representing a segment in the fusion that will be compiled and executed
+// on one single rank and device. It is represented by an AggregateExpr in the AggregateDag
 class TORCH_CUDA_CU_API Group final : public SegmentedGroup {
 public:
-
   Group(
         MultiGroupFusion* multi_group_fusion,
         bool auto_sch,
@@ -41,19 +42,22 @@ public:
   int unique_id;
 
   // Copy the complete fusion and then change the inputs and outputs.
-  // TODO: can probably be optimized this to simplify
+  // TODO: can probably be optimized
   std::unique_ptr<Fusion> makeFusionCopy();
 
+  // interface to get the underlying fusion
   MultiGroupFusion* getMultiGroupFusion() {
     return multi_group_fusion_;
   }
 
+  // add group input
   void addInput(Val* input){
     TORCH_INTERNAL_ASSERT(!std::count (input_vals.begin(), input_vals.end(), input),
       "added twice the same val as input of the current group");
     input_vals.push_back(input);
   }
 
+  // add group output
   void addOutput(Val* output){
     output_vals.push_back(output);
   }
@@ -81,7 +85,9 @@ class TORCH_CUDA_CU_API MultiGroupFusion : public Fusion {
     return groups_;
   }
 
-  // Mark starting point of a new group, i.e kernel
+  // Creates a new Group. Marks starting point of the newly created group:
+  // Once this is called, all subsequent statement registered in the fusion
+  // will belong to this group, until newGroup is called again.
   void newGroup(
       bool auto_schedule = false,
       ProcessRankType process_rank = -1,
@@ -100,20 +106,25 @@ class TORCH_CUDA_CU_API MultiGroupFusion : public Fusion {
   // Interface that is called insided IrBuilder each time a new ir is created
   void newStmt(IrBuilderPasskey, Statement* stmt);
 
+  // return the current (which is basically last group created)
   auto getCurrentGroup() {
     TORCH_INTERNAL_ASSERT(
         !groups_.empty(), "call newGroup first.");
     return current_group_;
   }
 
+  // set a group as the "current group"
   void setCurrentGroup(GroupPtr group) {
     current_group_ = group;
   }
 
-  AggregateDag* aggregateDag(){
+  // interface to return the aggregateDag
+  AggregateDag* aggregateDag() {
     return &aggregate_dag_;
   }
 
+  // build the AggregateDag for the fusion.
+  // Needs to be called before anything else dealing with the dag
   void buildAggregateDag(){
     aggregate_dag_.build(this);
   }

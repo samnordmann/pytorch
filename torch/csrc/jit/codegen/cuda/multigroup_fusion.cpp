@@ -1,6 +1,5 @@
 #include <torch/csrc/jit/codegen/cuda/fusion_segmenter.h>
 #include <torch/csrc/jit/codegen/cuda/ir_utils.h>
-// #include <torch/csrc/jit/codegen/cuda/lower_utils.h>
 #include <torch/csrc/jit/codegen/cuda/multigroup_fusion.h>
 
 namespace torch {
@@ -27,7 +26,7 @@ Group::Group(MultiGroupFusion* multi_group_fusion, bool auto_sch,
 std::unique_ptr<Fusion> Group::makeFusionCopy() {
   std::unique_ptr<Fusion> fusion_copy = std::make_unique<Fusion>();
   // WAR: copy the complete fusion and then change the inputs and outputs.
-  //  to simplify the process of creating a sub-graph of original fusion.
+  // TODO: This could be implemented in a better way
   auto original_to_copy_map =
       Fusion::copy(multi_group_fusion_, fusion_copy.get());
 
@@ -51,43 +50,17 @@ std::unique_ptr<Fusion> Group::makeFusionCopy() {
 }
 
 
-  // auto original_to_copy_map =
-  //     Fusion::copy(group->completeFusion(), fusion_copy.get());
-
-  // // Remove original inputs
-  // std::vector<Val*> input_list(
-  //     fusion_copy->inputs().begin(), fusion_copy->inputs().end());
-  // for (auto inp : input_list) {
-  //   fusion_copy->removeInput(inp);
-  // }
-
-  // // Remove original outputs
-  // std::vector<Val*> output_list(
-  //     fusion_copy->outputs().begin(), fusion_copy->outputs().end());
-  // for (auto out : output_list) {
-  //   fusion_copy->removeOutput(out);
-  // }
-
-  // // Add group inputs
-  // for (auto input : group->input_vals) {
-  //   fusion_copy->addInput(original_to_copy_map.clone(input));
-  // }
-
-  // // Add group outputs
-  // for (auto output : group->output_vals) {
-  //   fusion_copy->addOutput(original_to_copy_map.clone(output));
-  // }
-
-
 MultiGroupFusion::MultiGroupFusion() {
   Fusion();
-  // Register owning builder to this fusion.
+  // tag the fusion to be a multigroup fusion
+  // TODO: can be avoided with using dynamic_cast
   setActiveMultiGroupFusionBuilder(this);
 }
 
 void MultiGroupFusion::newGroup(bool auto_schedule, ProcessRankType process_rank,
                                                             c10::Device device)
 {
+  //Stores the new group into the fusion's container
   groups_.push_back(std::make_shared<Group>(this, auto_schedule,
                                                     process_rank, device));
 
@@ -127,8 +100,7 @@ void MultiGroupFusion::newStmt(IrBuilderPasskey, Statement* stmt)
       current_group->internal_tensors.pushBack(output_tv);
     }
 
-    // Created this way, the expression list is
-    //  guaranteed to be in topological order.
+    // stores the current expr in the group's container.
     current_group->exprs_.push_back(expr);
   }
 }
