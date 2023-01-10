@@ -43,7 +43,8 @@ if RUN_NVFUSER and torch.version.cuda is not None:
 
 if 'PYTORCH_NVFUSER_ENABLE' not in os.environ:
     os.environ['PYTORCH_NVFUSER_ENABLE'] = ""
-os.environ['PYTORCH_NVFUSER_ENABLE'] = 'linear_decomposition,conv_decomposition,' + os.environ['PYTORCH_NVFUSER_ENABLE']
+os.environ['PYTORCH_NVFUSER_ENABLE'] = 'linear_decomposition,conv_decomposition,graph_op_fusion,' + \
+    os.environ['PYTORCH_NVFUSER_ENABLE']
 if 'PYTORCH_NVFUSER_DISABLE' not in os.environ:
     os.environ['PYTORCH_NVFUSER_DISABLE'] = ""
 os.environ['PYTORCH_NVFUSER_DISABLE'] = 'fallback,fma,' + os.environ['PYTORCH_NVFUSER_DISABLE']
@@ -143,7 +144,7 @@ class TestCudaFuser(JitTestCase):
         disabled_ops = ("aten::batch_norm",
                         "aten::_batch_norm_impl_index",
                         "aten::_batch_norm_impl_index_backward",
-                        "aten::native_batch_norm_backward")
+                        "aten::native_batch_norm_backward",)
         for op in disabled_ops:
             disabled_flag = torch._C._jit_set_nvfuser_skip_node_kind(op, False)
             if disabled_flag:
@@ -217,20 +218,32 @@ class TestCudaFuser(JitTestCase):
         self.assertGraphContainsExactly(jit_op.graph_for(*args), FUSION_GUARD, num_fusion, consider_subgraphs=True)
 
     def _run_training_helper(self, jit_op, op, grads, *args):
+        def has_grad(x):
+            if torch.is_tensor(x) and x.requires_grad:
+                if x.grad is not None:
+                    return True
+            return False
+        # save *args for the reference run and warm up
+        ref_args = [t.detach().clone().requires_grad_() if has_grad(t) else t for t in args]
+        for i in range(3):
+            torch.cuda.manual_seed_all(123)
+            jit_o = jit_op(*args)
+            jit_g = jit_o.backward(grads)
+        # zero grads for checking gradients
+        [t.grad.zero_() for t in args if has_grad(t)]
         torch.cuda.manual_seed_all(123)
         jit_o = jit_op(*args)
         jit_g = jit_o.backward(grads)
+
         torch.cuda.manual_seed_all(123)
-        jit_o = jit_op(*args)
-        jit_g = jit_o.backward(grads)
-        torch.cuda.manual_seed_all(123)
-        jit_o = jit_op(*args)
-        jit_g = jit_o.backward(grads)
-        torch.cuda.manual_seed_all(123)
-        o = op(*args)
+        o = op(*ref_args)
         g = o.backward(grads)
         self.assertEqual(o, jit_o)
         self.assertEqual(g, jit_g)
+        # check gradients
+        for (t, ref_t) in zip(args, ref_args):
+            if has_grad(t):
+                self.assertEqual(ref_t.grad, t.grad)
         self.assertGraphContainsExactly(jit_op.graph_for(*args), FUSION_GUARD, 1, consider_subgraphs=True)
         bwd_graph = list(
             list(jit_op.get_debug_state().execution_plans.values())[
@@ -4151,6 +4164,74 @@ class TestCudaFuser(JitTestCase):
 
         t_jit = torch.jit.script(t)
         self._run_helper(t_jit, t, x)
+
+    @unittest.skipIf(not RUN_NVFUSER, "requires CUDA")
+    @unittest.skipIf(GRAPH_EXECUTOR != ProfilingMode.PROFILING,
+                     "Requires fusion optimization pass to be effective")
+    def test_index_select_0_dim_inputs(self):
+        lookup_tv = torch.tensor(1.5, device="cuda", dtype=torch.float)
+        indices_tv = torch.tensor([0], device="cuda", dtype=torch.long)
+
+        with nvfuser_singleton_fusion(True):
+            def t(x_kj, idx_kj):
+                return torch.index_select(x_kj, 0, idx_kj).relu()
+
+            t_jit = torch.jit.script(t)
+            self._run_helper(t_jit, t, lookup_tv, indices_tv)
+
+    @unittest.skipIf(not RUN_NVFUSER, "requires CUDA")
+    @unittest.skipIf(GRAPH_EXECUTOR != ProfilingMode.PROFILING,
+                     "Requires fusion optimization pass to be effective")
+    def test_index_select_fusion(self):
+        lookup_size = 68
+        feat_dim = 128
+        num_elements = 355984
+        lookup_tv = torch.rand(lookup_size, feat_dim, dtype=torch.float, device="cuda")
+        indies_tv = torch.randint(0, lookup_size, (num_elements,), device="cuda").to(dtype=torch.int)
+        sbf = torch.rand(num_elements, feat_dim, dtype=torch.float, device="cuda")
+
+        def t(x_kj, idx_kj, sbf):
+            sbf_res = torch.index_select(x_kj, 0, idx_kj) * sbf
+            sbf_res = sbf_res + 17
+            return sbf_res
+        t_jit = torch.jit.script(t)
+        self._run_helper(t_jit, t, lookup_tv, indies_tv, sbf)
+
+    @unittest.skipIf(not RUN_NVFUSER, "requires CUDA")
+    @unittest.skipIf(GRAPH_EXECUTOR != ProfilingMode.PROFILING,
+                     "Requires fusion optimization pass to be effective")
+    def test_index_select_function(self):
+        def t(x: torch.Tensor, y: torch.Tensor, ind: torch.Tensor):
+            o = torch.mul(x, y)
+            o = torch.index_select(o, 0, ind)
+            return o
+
+        x = torch.randn([68, 128], dtype=torch.float, device="cuda").requires_grad_()
+        y = torch.randn_like(x).requires_grad_()
+        ind = torch.randint(0, 68, (130,), device="cuda").to(dtype=torch.int)
+        grad = torch.randn([130, 128], dtype=torch.float, device="cuda")
+
+        t_jit = torch.jit.script(t)
+        self._run_training_helper(t_jit, t, grad, x, y, ind)
+
+    @unittest.skipIf(not RUN_NVFUSER, "requires CUDA")
+    @unittest.skipIf(GRAPH_EXECUTOR != ProfilingMode.PROFILING,
+                     "Requires fusion optimization pass to be effective")
+    def test_index_select_runtime_dim(self):
+        lookup_size = 68
+        feat_dim = 128
+        num_elements = 355984
+        dim = torch.tensor(0, device='cuda').to(dtype=torch.int)
+        lookup_tv = torch.rand(lookup_size, feat_dim, dtype=torch.float, device="cuda")
+        indies_tv = torch.randint(0, lookup_size, (num_elements,), dtype=torch.float, device="cuda").to(dtype=torch.long)
+        sbf = torch.rand(num_elements, feat_dim, dtype=torch.float, device="cuda")
+
+        def t(x_kj: torch.Tensor, idx_kj: torch.Tensor, sbf: torch.Tensor, dim : int):
+            sbf_res = torch.index_select(x_kj, dim, idx_kj) * sbf
+            sbf_res = sbf_res + 17
+            return sbf_res
+        t_jit = torch.jit.script(t)
+        self._run_helper(t_jit, t, lookup_tv, indies_tv, sbf, dim)
 
     @unittest.skipIf(not RUN_NVFUSER, "requires CUDA")
     @unittest.skipIf(GRAPH_EXECUTOR != ProfilingMode.PROFILING,
