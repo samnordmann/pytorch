@@ -2,7 +2,7 @@
 #include <ir_builder.h>
 #include <ir_cloner.h>
 #include <kernel.h>
-#include <multidevice_runtime.h>
+#include <multigroup_fusion.h>
 
 #include <ir_all_nodes.h>
 #include <ir_container.h>

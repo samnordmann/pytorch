@@ -347,6 +347,8 @@ class TORCH_CUDA_CU_API OptOutMutator : public PolymorphicBase {
   virtual void mutate(kir::Predicate*);
   virtual void mutate(kir::TensorIndex*);
 
+  virtual void mutate(AggregateVal*);
+
  protected:
   virtual void removeExpr(IrContainer*, Expr*) const;
   virtual void registerNewExpr(Expr*) {}

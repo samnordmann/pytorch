@@ -273,6 +273,14 @@ void Expr::dispatch(T handler, Expr* expr) {
     ptr(handler)->handle(expr->as<kir::AllocateFusedReduction>());
     return;
   }
+  if (expr->isStrictlyA<AggregateExpr>()) {
+    ptr(handler)->handle(expr->as<AggregateExpr>());
+    return;
+  }
+  if (expr->isStrictlyA<SendRecv>()) {
+    ptr(handler)->handle(expr->as<SendRecv>());
+    return;
+  }
   TORCH_INTERNAL_ASSERT(false, "Unknown exprtype in dispatch!");
 }
 
@@ -330,6 +338,9 @@ void Val::constDispatch(T handler, const Val* val) {
       return;
     case ValType::TensorIndex:
       ptr(handler)->handle(val->as<kir::TensorIndex>());
+      return;
+    case ValType::AggregateVal:
+      ptr(handler)->handle(val->as<AggregateVal>());
       return;
     case ValType::Attribute:
       // Attribute Val is just a wrapper for non-IR data, so there is nothing to
@@ -520,6 +531,14 @@ void Expr::constDispatch(T handler, const Expr* expr) {
     ptr(handler)->handle(expr->as<kir::AllocateFusedReduction>());
     return;
   }
+  if (expr->isStrictlyA<AggregateExpr>()) {
+    ptr(handler)->handle(expr->as<AggregateExpr>());
+    return;
+  }
+  if (expr->isStrictlyA<SendRecv>()) {
+    ptr(handler)->handle(expr->as<SendRecv>());
+    return;
+  }
   TORCH_INTERNAL_ASSERT(false, "Unknown exprtype in dispatch!");
 }
 
@@ -589,6 +608,9 @@ void Val::mutatorDispatch(T mutator, Val* val) {
       return;
     case ValType::TensorIndex:
       ptr(mutator)->mutate(val->as<kir::TensorIndex>());
+      return;
+    case ValType::AggregateVal:
+      ptr(mutator)->mutate(val->as<AggregateVal>());
       return;
     case ValType::Attribute:
       TORCH_INTERNAL_ASSERT(

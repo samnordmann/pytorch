@@ -7,6 +7,7 @@
 #include <ir_utils.h>
 #include <kernel.h>
 #include <lower_utils.h>
+#include <multigroup_fusion.h>
 
 #include <c10/util/irange.h>
 
