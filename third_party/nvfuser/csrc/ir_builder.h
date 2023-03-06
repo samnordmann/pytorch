@@ -10,7 +10,6 @@ class Kernel;
 }
 
 class IrCloner;
-class IrContainer;
 
 //! IR builder interface
 class TORCH_CUDA_CU_API IrBuilder {

@@ -92,6 +92,10 @@ list(APPEND NVFUSER_SRCS
     ${NVFUSER_SRCS_DIR}/lower_bank_conflict.cpp
     ${NVFUSER_SRCS_DIR}/manager.cpp
     ${NVFUSER_SRCS_DIR}/maxinfo_propagator.cpp
+    ${NVFUSER_SRCS_DIR}/multidevice/aggregate_dag.cpp
+    ${NVFUSER_SRCS_DIR}/multidevice/multidevice_runtime.cpp
+    ${NVFUSER_SRCS_DIR}/multidevice/multicluster_fusion.cpp
+    ${NVFUSER_SRCS_DIR}/multidevice/ProcessGroupBuilder.cpp
     ${NVFUSER_SRCS_DIR}/mutator.cpp
     ${NVFUSER_SRCS_DIR}/non_divisible_split.cpp
     ${NVFUSER_SRCS_DIR}/ops/alias.cpp
@@ -354,6 +358,8 @@ if(BUILD_TEST)
   list(APPEND JIT_TEST_SRCS ${NVFUSER_ROOT}/test/test_gpu_indexing_ops.cpp)
   list(APPEND JIT_TEST_SRCS ${NVFUSER_ROOT}/test/test_gpu_indexing.cpp)
   list(APPEND JIT_TEST_SRCS ${NVFUSER_ROOT}/test/test_gpu_gather_ops.cpp)
+  list(APPEND JIT_TEST_SRCS ${NVFUSER_ROOT}/test/test_gpu_multidevice.cpp)
+  list(APPEND JIT_TEST_SRCS ${NVFUSER_ROOT}/test/test_multicluster_fusion.cpp)
 
   set(JIT_TEST_CU_SRCS)
   list(APPEND JIT_TEST_CU_SRCS ${NVFUSER_ROOT}/test/test_gpu_rng.cu)

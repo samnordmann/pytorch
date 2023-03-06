@@ -84,6 +84,9 @@ void Val::dispatch(T handler, Val* val) {
     case ValType::TensorIndex:
       ptr(handler)->handle(val->as<kir::TensorIndex>());
       return;
+    case ValType::AggregateVal:
+      ptr(handler)->handle(val->as<AggregateVal>());
+      return;
     default:
       break;
   }
@@ -277,6 +280,14 @@ void Expr::dispatch(T handler, Expr* expr) {
     ptr(handler)->handle(expr->as<kir::SMemAddress>());
     return;
   }
+  if (expr->isStrictlyA<AggregateExpr>()) {
+    ptr(handler)->handle(expr->as<AggregateExpr>());
+    return;
+  }
+  if (expr->isStrictlyA<SendRecv>()) {
+    ptr(handler)->handle(expr->as<SendRecv>());
+    return;
+  }
   TORCH_INTERNAL_ASSERT(false, "Unknown exprtype in dispatch!");
 }
 
@@ -336,6 +347,9 @@ void Val::constDispatch(T handler, const Val* val) {
       return;
     case ValType::TensorIndex:
       ptr(handler)->handle(val->as<kir::TensorIndex>());
+      return;
+    case ValType::AggregateVal:
+      ptr(handler)->handle(val->as<AggregateVal>());
       return;
     case ValType::Attribute:
       // Attribute Val is just a wrapper for non-IR data, so there is nothing to
@@ -534,6 +548,14 @@ void Expr::constDispatch(T handler, const Expr* expr) {
     ptr(handler)->handle(expr->as<kir::SMemAddress>());
     return;
   }
+  if (expr->isStrictlyA<AggregateExpr>()) {
+    ptr(handler)->handle(expr->as<AggregateExpr>());
+    return;
+  }
+  if (expr->isStrictlyA<SendRecv>()) {
+    ptr(handler)->handle(expr->as<SendRecv>());
+    return;
+  }
   TORCH_INTERNAL_ASSERT(false, "Unknown exprtype in dispatch!");
 }
 
@@ -604,6 +626,9 @@ void Val::mutatorDispatch(T mutator, Val* val) {
       return;
     case ValType::TensorIndex:
       ptr(mutator)->mutate(val->as<kir::TensorIndex>());
+      return;
+    case ValType::AggregateVal:
+      ptr(mutator)->mutate(val->as<AggregateVal>());
       return;
     case ValType::Attribute:
       TORCH_INTERNAL_ASSERT(
@@ -753,6 +778,10 @@ void OptOutConstDispatch::handle(const kir::TensorIndex* stmt) {
   unhandled(stmt);
 }
 
+void OptOutConstDispatch::handle(const AggregateVal* stmt) {
+  unhandled(stmt);
+}
+
 // Exprs
 void OptOutConstDispatch::handle(const FullOp* stmt) {
   unhandled(stmt);
@@ -892,6 +921,13 @@ void OptOutConstDispatch::handle(const kir::SMemAddress* stmt) {
   unhandled(stmt);
 }
 
+void OptOutConstDispatch::handle(const AggregateExpr* stmt) {
+  unhandled(stmt);
+}
+void OptOutConstDispatch::handle(const SendRecv* stmt) {
+  unhandled(stmt);
+}
+
 void OptOutDispatch::unhandled(Statement*) {}
 
 // Vals
@@ -924,6 +960,10 @@ void OptOutDispatch::handle(kir::Predicate* stmt) {
   unhandled(stmt);
 }
 void OptOutDispatch::handle(kir::TensorIndex* stmt) {
+  unhandled(stmt);
+}
+
+void OptOutDispatch::handle(AggregateVal* stmt) {
   unhandled(stmt);
 }
 
@@ -1063,6 +1103,12 @@ void OptOutDispatch::handle(kir::AllocateFusedReduction* stmt) {
   unhandled(stmt);
 }
 void OptOutDispatch::handle(kir::SMemAddress* stmt) {
+  unhandled(stmt);
+}
+void OptOutDispatch::handle(AggregateExpr* stmt) {
+  unhandled(stmt);
+}
+void OptOutDispatch::handle(SendRecv* stmt) {
   unhandled(stmt);
 }
 

@@ -193,6 +193,8 @@ static const char* val_type2string(ValType t) {
       return "Predicate";
     case ValType::TensorIndex:
       return "TensorIndex";
+    case ValType::AggregateVal:
+      return "AggregateVal";
     default:
       TORCH_INTERNAL_ASSERT(false, "No string found for val type.");
   }

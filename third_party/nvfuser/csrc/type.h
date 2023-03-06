@@ -33,6 +33,7 @@ enum class ValType {
   NamedScalar,
   Predicate,
   TensorIndex,
+  AggregateVal,
   Attribute
 };
 

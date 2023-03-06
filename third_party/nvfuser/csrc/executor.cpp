@@ -793,6 +793,15 @@ FusionExecutor::GlobalBuffers FusionExecutor::allocGlobalVals(
   return global_buffers;
 }
 
+std::vector<at::Tensor> FusionExecutor::allocOutputSpace(
+    const at::ArrayRef<c10::IValue>& inputs) {
+  auto kernel_inputs = KernelArgumentHolder::createKernelArgumentHolder(inputs);
+  auto expr_eval =
+      executor_utils::bindInputs(kernel_inputs, lowered_->kernel());
+  auto outputs = allocOutputs(kernel_inputs, expr_eval);
+  return outputs;
+}
+
 std::vector<at::Tensor> FusionExecutor::allocOutputs(
     const KernelArgumentHolder& args,
     ExpressionEvaluator& expr_eval,
