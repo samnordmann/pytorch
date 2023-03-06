@@ -14,7 +14,7 @@ on:
 # When any other step fails, it's job will be retried once by retryBot.
 jobs:
   lintrunner:
-    runs-on: ubuntu-18.04
+    runs-on: ubuntu-20.04
     steps:
       - name: Checkout PyTorch
         uses: csarofeen/pytorch/.github/actions/checkout-pytorch@master
