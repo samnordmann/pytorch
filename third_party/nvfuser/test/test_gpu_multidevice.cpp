@@ -55,7 +55,7 @@ using namespace at::indexing;
 // e.g.: mpirun -np 4 ./build/bin/nvfuser_tests
 // --gtest_filter=NVFuserTest.FusionMultiGPU_Reduce
 
-TEST_F(NVFuserTest, FusionMultiClusterProcessGroup) {
+TEST_F(NVFuserTest, FusionMultiClusterProcessGroup_CUDA) {
   int grank, gsize;
 
   if (parseEnv(grank, gsize)) {
@@ -71,7 +71,7 @@ TEST_F(NVFuserTest, FusionMultiClusterProcessGroup) {
   pg->barrier();
 }
 
-TEST_F(NVFuserTest, SendRecvTest) {
+TEST_F(NVFuserTest, SendRecvTest_CUDA) {
   // Using the new interface to build multi-cluster fusion
   MultiClusterFusion fusion;
   int grank, gsize;
@@ -119,7 +119,7 @@ TEST_F(NVFuserTest, SendRecvTest) {
   pg->barrier();
 }
 
-TEST_F(NVFuserTest, FusionMultiGPU) {
+TEST_F(NVFuserTest, FusionMultiGPU_CUDA) {
   // ===========================================================
   //        FUSION
   // ===========================================================
@@ -183,6 +183,7 @@ TEST_F(NVFuserTest, FusionMultiGPU) {
         << "this test must be run with at least 2 GPUs, however there are "
         << number_of_gpus << " GPUs available";
   }
+  auto device = at::Device("cuda:" + std::to_string(grank));
 
   // ===========================================================
   //        RUNTIME
@@ -194,9 +195,7 @@ TEST_F(NVFuserTest, FusionMultiGPU) {
 
   // Create input tensors. Each rank is binded to a different GPU
   c10::TensorOptions options;
-  options = at::TensorOptions()
-                .dtype(at::kFloat)
-                .device(at::Device("cuda:" + std::to_string(grank)));
+  options = at::TensorOptions().dtype(at::kFloat).device(device);
   at::Tensor input_tv = at::randn(
       {2, 8, 8}, options); // caveat: concrete values only used on rank 0
 
@@ -220,7 +219,7 @@ TEST_F(NVFuserTest, FusionMultiGPU) {
   pg->barrier();
 }
 
-TEST_F(NVFuserTest, FusionMultiGPU_Reduce) {
+TEST_F(NVFuserTest, FusionMultiGPU_Reduce_CUDA) {
   /*
   Test to be run on 4 ranks, each rank will be associated with a unique device
   and a unique cluster.
@@ -328,6 +327,7 @@ TEST_F(NVFuserTest, FusionMultiGPU_Reduce) {
         << "this test must be run with at least 4 GPUs, however there are "
         << number_of_gpus << " GPUs available";
   }
+  auto device = at::Device("cuda:" + std::to_string(grank));
 
   // ===========================================================
   //        RUNTIME
@@ -338,9 +338,7 @@ TEST_F(NVFuserTest, FusionMultiGPU_Reduce) {
 
   // Create input tensors. Each rank is binded to a different GPU
   c10::TensorOptions options;
-  options = at::TensorOptions()
-                .dtype(at::kFloat)
-                .device(at::Device("cuda:" + std::to_string(grank)));
+  options = at::TensorOptions().dtype(at::kFloat).device(device);
   at::Tensor input_tv = at::randn(
       {2, 8, 8}, options); // caveat: concrete values only used on rank 0
 

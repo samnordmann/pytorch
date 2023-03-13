@@ -15,7 +15,7 @@ namespace nvfuser {
 
 using namespace at::indexing;
 
-TEST_F(NVFuserTest, MultiClusterFusion) {
+TEST_F(NVFuserTest, MultiClusterFusion_CUDA) {
   MultiClusterFusion fusion;
   FusionGuard fg(&fusion);
 
@@ -105,30 +105,29 @@ TEST_F(NVFuserTest, MultiClusterFusion) {
 
   std::string obtained_string_aDag = fusion.aggregateDag()->toString();
   std::string ref_string_aDag{
-      "AggregateDag's inputs{:\n"
-      " AggregateVal representing Val T0_g[ iS0{i0}, iS1{i2}, iS2{i3} ] on cluster 0\n"
-      "}\n"
-      "AggregateDag's Traversal inputs --> outputs {\n"
-      "  AggregateExpr representing Cluster 0.Inputs={T0_g[ iS0{i0}, iS1{i2}, iS2{i3} ], }. Outputs={T1_l[ iS3{i0}, iS4{i2}, iS5{i3} ], }.\n"
-      "  AggregateVal representing Val T1_l[ iS3{i0}, iS4{i2}, iS5{i3} ] on cluster 0\n"
-      "  Send/Receive Val {T1_l[ iS3{i0}, iS4{i2}, iS5{i3} ]} from cluster 0 to cluster 2\n"
-      "  AggregateVal representing Val T1_l[ iS3{i0}, iS4{i2}, iS5{i3} ] on cluster 2\n"
-      "  AggregateExpr representing Cluster 2.Inputs={T1_l[ iS3{i0}, iS4{i2}, iS5{i3} ], }. Outputs={T5_l[ rS12{i2}, iS13{i3} ], }.\n"
-      "  AggregateVal representing Val T5_l[ rS12{i2}, iS13{i3} ] on cluster 2\n"
-      "  Send/Receive Val {T5_l[ rS12{i2}, iS13{i3} ]} from cluster 2 to cluster 3\n"
-      "  AggregateVal representing Val T5_l[ rS12{i2}, iS13{i3} ] on cluster 3\n"
-      "  Send/Receive Val {T1_l[ iS3{i0}, iS4{i2}, iS5{i3} ]} from cluster 0 to cluster 1\n"
-      "  AggregateVal representing Val T1_l[ iS3{i0}, iS4{i2}, iS5{i3} ] on cluster 1\n"
-      "  AggregateExpr representing Cluster 1.Inputs={T1_l[ iS3{i0}, iS4{i2}, iS5{i3} ], }. Outputs={T3_l[ rS8{i2}, iS9{i3} ], }.\n"
-      "  AggregateVal representing Val T3_l[ rS8{i2}, iS9{i3} ] on cluster 1\n"
-      "  Send/Receive Val {T3_l[ rS8{i2}, iS9{i3} ]} from cluster 1 to cluster 3\n"
-      "  AggregateVal representing Val T3_l[ rS8{i2}, iS9{i3} ] on cluster 3\n"
-      "  AggregateExpr representing Cluster 3.Inputs={T5_l[ rS12{i2}, iS13{i3} ], T3_l[ rS8{i2}, iS9{i3} ], }. Outputs={T6_g[ iS14{i3} ], }.\n"
-      "}\n"
-      "AggregateDag's outputs:{\n"
-      " AggregateVal representing Val T6_g[ iS14{i3} ] on cluster 3\n"
-      "}"};
-
+        "AggregateDag's inputs{:\n"
+        " AggregateVal representing Val T0_g[ iS0{i0}, iS1{i2}, iS2{i3} ] on cluster 0\n"
+        "}\n"
+        "AggregateDag's Traversal inputs --> outputs {\n"
+        "  AggregateExpr representing Cluster 0.Inputs={T0_g[ iS0{i0}, iS1{i2}, iS2{i3} ], }. Outputs={T1_l[ iS3{i0}, iS4{i2}, iS5{i3} ], }.\n"
+        "  AggregateVal representing Val T1_l[ iS3{i0}, iS4{i2}, iS5{i3} ] on cluster 0\n"
+        "  Send/Receive Val {T1_l[ iS3{i0}, iS4{i2}, iS5{i3} ]} from cluster 0 to cluster 1\n"
+        "  AggregateVal representing Val T1_l[ iS3{i0}, iS4{i2}, iS5{i3} ] on cluster 1\n"
+        "  AggregateExpr representing Cluster 1.Inputs={T1_l[ iS3{i0}, iS4{i2}, iS5{i3} ], }. Outputs={T3_l[ rS8{i2}, iS9{i3} ], }.\n"
+        "  AggregateVal representing Val T3_l[ rS8{i2}, iS9{i3} ] on cluster 1\n"
+        "  Send/Receive Val {T3_l[ rS8{i2}, iS9{i3} ]} from cluster 1 to cluster 3\n"
+        "  AggregateVal representing Val T3_l[ rS8{i2}, iS9{i3} ] on cluster 3\n"
+        "  Send/Receive Val {T1_l[ iS3{i0}, iS4{i2}, iS5{i3} ]} from cluster 0 to cluster 2\n"
+        "  AggregateVal representing Val T1_l[ iS3{i0}, iS4{i2}, iS5{i3} ] on cluster 2\n"
+        "  AggregateExpr representing Cluster 2.Inputs={T1_l[ iS3{i0}, iS4{i2}, iS5{i3} ], }. Outputs={T5_l[ rS12{i2}, iS13{i3} ], }.\n"
+        "  AggregateVal representing Val T5_l[ rS12{i2}, iS13{i3} ] on cluster 2\n"
+        "  Send/Receive Val {T5_l[ rS12{i2}, iS13{i3} ]} from cluster 2 to cluster 3\n"
+        "  AggregateVal representing Val T5_l[ rS12{i2}, iS13{i3} ] on cluster 3\n"
+        "  AggregateExpr representing Cluster 3.Inputs={T3_l[ rS8{i2}, iS9{i3} ], T5_l[ rS12{i2}, iS13{i3} ], }. Outputs={T6_g[ iS14{i3} ], }.\n"
+        "}\n"
+        "AggregateDag's outputs:{\n"
+        " AggregateVal representing Val T6_g[ iS14{i3} ] on cluster 3\n"
+        "}"};
   TORCH_INTERNAL_ASSERT(
       obtained_string_aDag == ref_string_aDag,
       "the obtained AggregateDag is not the one expected");
