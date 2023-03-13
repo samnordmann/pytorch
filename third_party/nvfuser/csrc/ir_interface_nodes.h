@@ -243,12 +243,13 @@ class TORCH_CUDA_CU_API TensorView : public Val {
   //! expressions that use this TensorView are also updated.
   void convertRfactorToRootDomain();
 
-  void setContiguity(const std::vector<bool>& contig) {
+  void setContiguity(const std::vector<c10::optional<bool>>& contig) {
     domain()->setContiguity(contig);
   }
 
   void setContiguity(bool contig) {
-    setContiguity(std::vector<bool>(domain()->contiguity().size(), contig));
+    setContiguity(
+        TensorDomain::getContiguityFilledWith(getMaybeRFactorDomain(), contig));
   }
 
   bool hasReduction() const;
@@ -640,7 +641,8 @@ class TORCH_CUDA_CU_API TensorViewBuilder {
   TensorViewBuilder& dtype(DataType dtype);
 
   //! Set the contiguity information (default non-contiguous)
-  TensorViewBuilder& contiguity(std::vector<bool> contiguity);
+  TensorViewBuilder& contiguity(std::vector<c10::optional<bool>> contiguity);
+  TensorViewBuilder& contiguity(bool contiguity);
 
   //! Set the shape (default 0 dimensional, ie. scalar)
   TensorViewBuilder& shape(std::vector<Val*> shape);
@@ -655,7 +657,19 @@ class TORCH_CUDA_CU_API TensorViewBuilder {
  private:
   size_t ndims_ = 0;
   DataType dtype_ = DataType::Float;
-  std::vector<bool> contiguity_;
+
+  // contiguity_ is the vector that you will pass to the constructor of
+  // TensorDomain. However, constructing this vector can be non-trivial, because
+  // it is required to be nullopt for broadcast dimensions. We often want to
+  // create contiguity vector that represents all contiguous or all
+  // discontiguous. uniform_contiguity_ is there to make this use case more
+  // convenient. If set, then TensorViewBuilder will automatically fill the
+  // contiguity with the value of uniform_contiguity_ where it is not required
+  // to be nullopt. Note that you can only set one of contiguity_ or
+  // uniform_contiguity_.
+  std::vector<c10::optional<bool>> contiguity_;
+  c10::optional<bool> uniform_contiguity_ = c10::nullopt;
+
   std::vector<Val*> shape_;
   std::vector<bool> expanded_;
 };

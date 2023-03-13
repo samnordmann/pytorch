@@ -93,7 +93,7 @@ static void Softmax_WarpReduceReference(benchmark::State& benchmark_state) {
   scheduler->schedule(fusion);
 
   FusionExecutor fe;
-  fe.compileFusion(fusion);
+  fe.compileFusion(fusion, aten_inputs);
   auto outputs = fe.runFusion(aten_inputs);
   fe.setMeasureKernelTimeFlag(true);
 
@@ -148,7 +148,7 @@ static void Softmax_WarpReduce(benchmark::State& benchmark_state) {
   }
 
   FusionExecutor fe;
-  fe.compileFusion(fusion);
+  fe.compileFusion(fusion, aten_inputs);
   auto outputs = fe.runFusion(aten_inputs);
   fe.setMeasureKernelTimeFlag(true);
 

@@ -1027,32 +1027,30 @@ std::vector<std::pair<ProjectedExtent&, IterDomain*>> getContigVectorSizesOf(
       : mapper.mappedRFactorIds(of_tv);
   auto of_tv_root_no_reductions = TensorDomain::noReductions(of_tv_root);
 
-  auto of_tv_root_nob = TensorDomain::noBroadcasts(of_tv_root);
-  auto of_tv_root_norb = TensorDomain::noBroadcasts(of_tv_root_no_reductions);
-
   auto contiguity = of_tv->domain()->contiguity();
   // Appears after reductions the reduction domain often has a contiguity entry.
   // This only matters if the result of the reduction is an output
-  if (contiguity.size() == of_tv_root_nob.size() &&
-      contiguity.size() != of_tv_root_norb.size()) {
-    std::vector<bool> new_contiguity;
-    for (auto i : c10::irange(of_tv_root_nob.size())) {
-      if (!of_tv_root_nob[i]->isReduction()) {
+  if (contiguity.size() == of_tv_root.size() &&
+      contiguity.size() != of_tv_root_no_reductions.size()) {
+    std::vector<c10::optional<bool>> new_contiguity;
+    for (auto i : c10::irange(of_tv_root.size())) {
+      if (!of_tv_root[i]->isReduction()) {
         new_contiguity.push_back(contiguity[i]);
       }
     }
     contiguity = new_contiguity;
   }
 
-  auto of_tv_root_norb_size = of_tv_root_norb.size();
+  auto of_tv_root_no_reductions_size = of_tv_root_no_reductions.size();
 
   // Filter out 0-dim tensors
-  if (of_tv_root_norb_size < 1) {
+  if (of_tv_root_no_reductions_size < 1) {
     return {};
   }
 
   TORCH_INTERNAL_ASSERT(
-      of_tv_root_norb_size == contiguity.size(), "Contiguity mismatch found.");
+      of_tv_root_no_reductions_size == contiguity.size(),
+      "Contiguity mismatch found.");
 
   std::vector<std::pair<ProjectedExtent&, IterDomain*>> vectorizable_dim_sizes;
 
@@ -1063,12 +1061,12 @@ std::vector<std::pair<ProjectedExtent&, IterDomain*>> getContigVectorSizesOf(
   // vectorize dimension.
   size_t projected_dims_i = projected_dims.size();
 
-  for (auto i : c10::irange(of_tv_root_norb_size)) {
+  for (auto i : c10::irange(of_tv_root_no_reductions_size)) {
     if (projected_dims_i == 0) {
       break;
     }
-    auto root_i = of_tv_root_norb_size - i - 1;
-    auto root_id = of_tv_root_norb.at(root_i);
+    auto root_i = of_tv_root_no_reductions_size - i - 1;
+    auto root_id = of_tv_root_no_reductions.at(root_i);
 
     if (root_id->extent()->isOneInt() || root_id->isBroadcast()) {
       if (projected_dims[projected_dims_i - 1]->sameAs(root_id)) {
@@ -1078,7 +1076,7 @@ std::vector<std::pair<ProjectedExtent&, IterDomain*>> getContigVectorSizesOf(
     }
 
     // Not contiguous
-    if (!contiguity[root_i]) {
+    if (!*contiguity[root_i]) {
       break;
     }
 

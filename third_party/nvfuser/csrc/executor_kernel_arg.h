@@ -6,6 +6,7 @@
 #include <torch/csrc/jit/ir/ir.h>
 #include <type.h>
 #include <array>
+#include <optional>
 
 namespace nvfuser {
 
@@ -278,14 +279,26 @@ class TORCH_CUDA_CU_API KernelArgumentHolder {
   //! the ownership of the memory from the original inputs, but just recording
   //! its meta data for kernel execution/compilation.
   static KernelArgumentHolder createKernelArgumentHolder(
-      const c10::ArrayRef<c10::IValue>& inputs);
+      const c10::ArrayRef<c10::IValue>& inputs,
+      const std::optional<KernelIndexMode>& index_mode = std::nullopt);
 
   KernelIndexMode getIndexMode() const {
     return index_mode_;
   }
 
+  void setIndexMode(KernelIndexMode mode) {
+    index_mode_ = mode;
+  }
+
+  PrimDataType getIndexType() const {
+    return indexModeToDtype(index_mode_);
+  }
+
   explicit KernelArgumentHolder(KernelIndexMode index_mode)
       : index_mode_(index_mode) {}
+
+  explicit KernelArgumentHolder(PrimDataType index_type)
+      : index_mode_(indexTypeToMode(index_type)) {}
 
   KernelArgumentHolder(const KernelArgumentHolder& self)
       : device_index_(self.getDeviceIndex()),

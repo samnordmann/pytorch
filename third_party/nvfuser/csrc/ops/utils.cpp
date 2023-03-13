@@ -274,7 +274,7 @@ TensorView* newOutputTV(const std::vector<Val*>& vals, DataType dtype) {
 
   return IrBuilder::create<TensorView>(
       IrBuilder::create<TensorDomain>(
-          out_domain, TensorDomain::getContiguousContiguity(out_domain)),
+          out_domain, TensorDomain::getContiguityFilledWith(out_domain, true)),
       dtype);
 }
 

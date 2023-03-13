@@ -252,36 +252,34 @@ Val* recurseDown(Val* value, std::function<Val*(Val*)> rule) {
   if (value->isOneOf<TensorView, kir::TensorIndex>()) {
     return value;
   }
-  auto def = value->definition();
-  if (def == nullptr) {
-    return value;
-  }
   auto transformed = rule(value);
   if (transformed != value) {
     return transformed;
   }
-  if (def != nullptr) {
-    bool changed = false;
-    std::vector<Val*> new_inputs;
-    new_inputs.reserve(def->inputs().size());
-    for (auto v : def->inputs()) {
-      new_inputs.emplace_back(recurseDown(v, rule));
-      if (new_inputs.back() != v) {
-        changed = true;
-      }
-    }
-
-    if (!changed) {
-      return value;
-    }
-
-    Val* output = IrBuilder::newScalar(*value->getDataType());
-    auto create_fn = def->newObjectFunc();
-    create_fn(
-        def->container(), std::move(new_inputs), {output}, def->attributes());
-    return output;
+  auto def = value->definition();
+  if (def == nullptr) {
+    return value;
   }
-  return value;
+
+  bool changed = false;
+  std::vector<Val*> new_inputs;
+  new_inputs.reserve(def->inputs().size());
+  for (auto v : def->inputs()) {
+    new_inputs.emplace_back(recurseDown(v, rule));
+    if (new_inputs.back() != v) {
+      changed = true;
+    }
+  }
+
+  if (!changed) {
+    return value;
+  }
+
+  Val* output = IrBuilder::newScalar(*value->getDataType());
+  auto create_fn = def->newObjectFunc();
+  create_fn(
+      def->container(), std::move(new_inputs), {output}, def->attributes());
+  return output;
 }
 
 inline RegisterType promoteRegisterType(RegisterType t1, RegisterType t2) {
@@ -1252,6 +1250,20 @@ bool isValidDenominator(Val* denominator, const Context& context) {
 
 namespace rules {
 
+// Sometimes we might have different pointers for the same variable, for
+// example, we might have multiple different pointers for threadIdx.x. This pass
+// convert all these different pointers into the pointer specified in the
+// context. This canonicalization is important, because some passes use set of
+// pointers to find variables, without canonicalization, this finding will fail.
+Val* canonicalizeVariables(Val* value, const Context& context) {
+  for (auto v : context.order()) {
+    if (v->sameAs(value)) {
+      return v;
+    }
+  }
+  return value;
+}
+
 // Do simplifications like:
 // 1 * a -> a
 // 0 * a -> 0
@@ -1928,6 +1940,7 @@ Val* simplifyExpr(
     simplified = assoc_comm::flatten(simplified);
     logger->record(debug_print::kFlattenName, simplified);
 
+    RUN_PASS(canonicalizeVariables);
     RUN_PASS(eliminateTrivialComputation);
     RUN_PASS(eliminateTrivialPredicate);
     RUN_PASS(simplifyDivisibleDivMod);

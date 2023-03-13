@@ -135,7 +135,8 @@ bool PointerOf::operator==(const PointerOf& other) const {
 
 enum class KernelIndexMode { INT32, INT64 };
 
-DataType indexModeToDtype(KernelIndexMode index_mode);
+PrimDataType indexModeToDtype(KernelIndexMode index_mode);
+KernelIndexMode indexTypeToMode(DataType index_type);
 
 // Returns if the datatype is a floating point type
 TORCH_CUDA_CU_API bool isFloatingPointType(DataType dtype);
@@ -435,6 +436,9 @@ TORCH_CUDA_CU_API std::ostream& operator<<(
     const DoubleBufferLoopStage);
 TORCH_CUDA_CU_API std::ostream& operator<<(std::ostream&, const Swizzle2DType&);
 TORCH_CUDA_CU_API std::ostream& operator<<(std::ostream&, const SwizzleMode&);
+TORCH_CUDA_CU_API std::ostream& operator<<(
+    std::ostream&,
+    const KernelIndexMode&);
 
 std::string stringifyBooleanOp(const UnaryOpType);
 std::string stringifyBooleanOp(const BinaryOpType);

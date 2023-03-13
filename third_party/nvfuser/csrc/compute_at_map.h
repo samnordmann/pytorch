@@ -91,8 +91,8 @@ class TORCH_CUDA_CU_API IterDomainGraph {
     return all_ids_;
   }
 
-  const std::unordered_set<IterDomain*>& viewRfactorIds() const {
-    return view_rfactor_ids_;
+  const std::unordered_set<IterDomain*>& rfactorIds() const {
+    return rfactor_ids_;
   }
 
   // Returns if first and second are expressions through which the provided
@@ -115,7 +115,7 @@ class TORCH_CUDA_CU_API IterDomainGraph {
  private:
   void build(Fusion* fusion);
 
-  void initializeId(IterDomain* id, bool is_view_rfactor_id, bool is_leaf_id);
+  void initializeId(IterDomain* id, bool is_rfactor_id, bool is_leaf_id);
 
   // Checks if exprsMap then if forward will map outputs else inputs in exact
   // and permissive map.
@@ -136,7 +136,9 @@ class TORCH_CUDA_CU_API IterDomainGraph {
 
   VectorOfUniqueEntries<IterDomain*> all_ids_;
 
-  std::unordered_set<IterDomain*> view_rfactor_ids_;
+  // This used to only have non-reduction rfactor IDs. Changed to
+  // include reduction rfactor IDs as well at PR #2562
+  std::unordered_set<IterDomain*> rfactor_ids_;
 
   c10::optional<std::tuple<TensorView*, IterDomain*, IterDomain*, std::string>>
       self_mapping_info_ = c10::nullopt;
@@ -214,13 +216,13 @@ class TORCH_CUDA_CU_API ComputeAtMap {
   // Prints mapping information, forwards to an internal IterDomainGraph
   std::string toString() const;
 
-  // Returns if the provided ID is a view like rfactor id
-  bool isViewRfactor(IterDomain* ref_id) const;
+  // Returns if the provided ID is an rfactor id
+  bool isRfactor(IterDomain* ref_id) const;
 
   // Returns all rfactor domains in rfactor_concrete_count_reset_domains_ that
-  // are in the disjoint set of the provided IterDomain. This will be every view
-  // like rfactor ID the provided ID "depends" on in the map.
-  std::vector<IterDomain*> getViewRfactorDomainsOfIdGroup(
+  // are in the disjoint set of the provided IterDomain. This will be every
+  // rfactor ID the provided ID "depends" on in the map.
+  std::vector<IterDomain*> getRfactorDomainsOfIdGroup(
       IterDomain* ref_id,
       IdMappingMode mode) const;
 

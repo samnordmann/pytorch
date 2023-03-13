@@ -1,6 +1,6 @@
 #ifdef USE_DISTRIBUTED
 
-#include <third_party/nvfuser/csrc/multidevice/ProcessGroupBuilder.hpp>
+#include <multidevice/ProcessGroupBuilder.hpp>
 #include <torch/csrc/distributed/c10d/ProcessGroupGloo.hpp>
 #include <torch/csrc/distributed/c10d/ProcessGroupNCCL.hpp>
 

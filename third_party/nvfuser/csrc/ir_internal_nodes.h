@@ -1725,20 +1725,20 @@ class TORCH_CUDA_CU_API TensorDomain : public Val {
   explicit TensorDomain(
       IrBuilderPasskey,
       std::vector<IterDomain*> root_domain,
-      std::vector<bool> contiguity = std::vector<bool>());
+      std::vector<c10::optional<bool>> contiguity = {});
 
   TensorDomain(
       IrBuilderPasskey,
       std::vector<IterDomain*> root_domain,
       std::vector<IterDomain*> domain,
-      std::vector<bool> contiguity = std::vector<bool>());
+      std::vector<c10::optional<bool>> contiguity = {});
 
   TensorDomain(
       IrBuilderPasskey,
       std::vector<IterDomain*> root_domain,
       std::vector<IterDomain*> rfactor_domain,
       std::vector<IterDomain*> domain,
-      std::vector<bool> contiguity = std::vector<bool>());
+      std::vector<c10::optional<bool>> contiguity = {});
 
   TensorDomain(const TensorDomain* src, IrCloner* ir_cloner);
 
@@ -1768,22 +1768,29 @@ class TORCH_CUDA_CU_API TensorDomain : public Val {
   }
 
   // Note: [Contiguity]
-  // Contiguity is a bool vector which has the same number of elements as
-  // noBroadcasts(rfactor_domain_). The contiguity of a broadcast dimension is
-  // not defined. The contiguity of a non-broadcasting dimension is true if and
-  // only if it is memory dense with the next non-broadcasting dimension.
+  // Contiguity is a vector of optional<bool> which has the same number of
+  // elements as rfactor_domain_. The contiguity of a broadcast dimension is
+  // meaningless, so it has to be nullopt. The contiguity of a non-broadcasting
+  // dimension is true if and only if it is memory dense with the next
+  // non-broadcasting dimension.
   // For example, if I have a tensor torch.zeros(4, 1, 3).expand(-1, 10, -1),
-  // the contiguity will be (true, true), which means 4 is memory dense with 3.
-  const std::vector<bool>& contiguity() const {
+  // the contiguity will be (true, nullopt, true), which means 4 is memory dense
+  // with 3.
+  const std::vector<c10::optional<bool>>& contiguity() const {
     return contiguity_;
   }
 
-  void setContiguity(const std::vector<bool>& contig);
+  void setContiguity(const std::vector<c10::optional<bool>>& contig);
 
   std::string getContiguityString() const {
     std::stringstream ss;
+    bool first = true;
     for (auto b : contiguity()) {
-      ss << (b ? "t" : "f");
+      if (!first) {
+        ss << " ";
+      }
+      first = false;
+      ss << (b.has_value() ? (*b ? "t" : "f") : "n");
     }
     return ss.str();
   }
@@ -1884,10 +1891,12 @@ class TORCH_CUDA_CU_API TensorDomain : public Val {
   static bool hasBroadcast(const std::vector<IterDomain*>&);
   static bool hasReduction(const std::vector<IterDomain*>&);
 
-  // Get a vector whose size is the number of non-broadcast IDs in the given
-  // rfactor_domain filled with true.
-  static std::vector<bool> getContiguousContiguity(
-      const std::vector<IterDomain*>& rfactor_domain);
+  // Get a vector whose size is the number of IDs in the given rfactor_domain
+  // filled with fill_value or nullopt depending on whether its corresponding ID
+  // is broadcast.
+  static std::vector<c10::optional<bool>> getContiguityFilledWith(
+      const std::vector<IterDomain*>& rfactor_domain,
+      bool fill_value);
 
   // pair is in order where second is the consumer of first
   std::pair<TensorDomain*, TensorDomain*> rFactor(const std::vector<int>& axes);
@@ -1898,7 +1907,7 @@ class TORCH_CUDA_CU_API TensorDomain : public Val {
   std::vector<IterDomain*> no_bcast_domain_;
   std::vector<IterDomain*> no_reduction_domain_;
   const std::vector<IterDomain*> rfactor_domain_;
-  std::vector<bool> contiguity_;
+  std::vector<c10::optional<bool>> contiguity_;
   bool has_reduction_;
 };
 

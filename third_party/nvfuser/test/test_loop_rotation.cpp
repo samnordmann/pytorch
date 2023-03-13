@@ -583,6 +583,10 @@ __global__ void CUDAGeneratedKernel(Tensor<float, 2> T0, Tensor<float, 2> T4) {
 // tv1 = set(tv4) // ld.matrix for matmul
 // and both are double buffered
 TEST_F(LoopRotationTest, MultipleDoubleBuffer_CUDA) {
+  if (!deviceMajorMinorCheck(8)) {
+    GTEST_SKIP() << "skipping tests on pre-Ampere GPUs";
+    return;
+  }
   Fusion fusion;
   FusionGuard fg(&fusion);
 

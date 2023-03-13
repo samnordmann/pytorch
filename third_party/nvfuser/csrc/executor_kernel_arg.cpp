@@ -133,15 +133,34 @@ std::unique_ptr<TensorArgAbstract> getTensorArg(
 } // namespace
 
 KernelArgumentHolder KernelArgumentHolder::createKernelArgumentHolder(
-    const c10::ArrayRef<c10::IValue>& inputs) {
+    const c10::ArrayRef<c10::IValue>& inputs,
+    const std::optional<KernelIndexMode>& opt_index_mode) {
   if (inputs.empty()) {
     // default to int32 on device 0
-    KernelArgumentHolder args(KernelIndexMode::INT32);
+    KernelArgumentHolder args(
+        opt_index_mode.has_value() ? opt_index_mode.value()
+                                   : KernelIndexMode::INT32);
     args.setDeviceIndex(0);
     return args;
   }
   auto device_index = getCommonDeviceCUDA(inputs);
-  auto index_mode = collectIndexMode(inputs);
+  auto input_index_mode = collectIndexMode(inputs);
+
+  auto index_mode = input_index_mode;
+
+  // Use index_mode if given. Make sure it is as large as the index
+  // mode required for the inputs
+  if (opt_index_mode.has_value()) {
+    TORCH_INTERNAL_ASSERT(
+        (opt_index_mode == input_index_mode) ||
+            opt_index_mode == KernelIndexMode::INT64,
+        "Given index mode and argument index mode don't match.",
+        "Index mode: ",
+        opt_index_mode.value(),
+        ", argument index mode: ",
+        input_index_mode);
+    index_mode = opt_index_mode.value();
+  }
 
   KernelArgumentHolder args(index_mode);
   args.setDeviceIndex(device_index);

@@ -134,13 +134,13 @@ static void MagicScheduler_DivMaxSoftDropFwd(
   schedulePersistentKernel(&fusion, *norm_params);
 
   FusionExecutor fe;
-  fe.compileFusion(&fusion);
+  fe.compileFusion(&fusion, at_inputs);
   fe.setMeasureKernelTimeFlag(true);
   // Sync everything up before we start
   C10_CUDA_CHECK(cudaDeviceSynchronize());
   for (auto _ : benchmark_state) {
     CudaKernelTimer timer;
-    cg_outputs = fe.runFusion({t0, t1}, norm_params->lparams);
+    cg_outputs = fe.runFusion(at_inputs, norm_params->lparams);
     benchmark_state.SetIterationTime(fe.kernelTimeMs() / 1000.0);
   }
   // Sync everything up before we're finished, don't want to run ahead on the
@@ -194,13 +194,13 @@ static void MagicScheduler_DivMaxSoftDropBwd(
   schedulePersistentKernel(&fusion, *norm_params);
 
   FusionExecutor fe;
-  fe.compileFusion(&fusion);
+  fe.compileFusion(&fusion, at_inputs);
   fe.setMeasureKernelTimeFlag(true);
   // Sync everything up before we start
   C10_CUDA_CHECK(cudaDeviceSynchronize());
   for (auto _ : benchmark_state) {
     CudaKernelTimer timer;
-    cg_outputs = fe.runFusion({t0, t1, t2, t3}, norm_params->lparams);
+    cg_outputs = fe.runFusion(at_inputs, norm_params->lparams);
     benchmark_state.SetIterationTime(fe.kernelTimeMs() / 1000.0);
   }
   // Sync everything up before we're finished, don't want to run ahead on the
@@ -309,7 +309,7 @@ static void MagicScheduler_BiasDropoutAddLayernormFwd(
   schedulePersistentKernel(&fusion, *norm_params);
 
   FusionExecutor fe;
-  fe.compileFusion(&fusion);
+  fe.compileFusion(&fusion, at_inputs);
   fe.setMeasureKernelTimeFlag(true);
   // Sync everything up before we start
 
@@ -349,13 +349,13 @@ static void setupBiasDropoutAddLayernormBwd1(Fusion* fusion, DataType dtype) {
   TensorView* tv3 = TensorViewBuilder()
                         .ndims(3)
                         .dtype(dtype)
-                        .contiguity({true, true})
+                        .contiguity({true, true, c10::nullopt})
                         .shape({-1, -1, 1})
                         .build();
   TensorView* tv4 = TensorViewBuilder()
                         .ndims(3)
                         .dtype(dtype)
-                        .contiguity({true, true})
+                        .contiguity({true, true, c10::nullopt})
                         .shape({-1, -1, 1})
                         .build();
 
@@ -419,7 +419,7 @@ static void MagicScheduler_BiasDropoutAddLayernormBwd1(
   scheduleReduction(&fusion, *norm_params);
 
   FusionExecutor fe;
-  fe.compileFusion(&fusion);
+  fe.compileFusion(&fusion, at_inputs);
   fe.setMeasureKernelTimeFlag(true);
   // Sync everything up before we start
 
@@ -457,7 +457,7 @@ static void setupBiasDropoutAddLayernormBwd2(Fusion* fusion, DataType dtype) {
   TensorView* tv4 = TensorViewBuilder()
                         .ndims(3)
                         .dtype(dtype)
-                        .contiguity({true, true})
+                        .contiguity({true, true, c10::nullopt})
                         .shape({-1, -1, 1})
                         .build();
   TensorView* tv5 = makeContigTensor(1, dtype);
@@ -530,7 +530,7 @@ static void MagicScheduler_BiasDropoutAddLayernormBwd2(
   schedulePersistentKernel(&fusion, *norm_params);
 
   FusionExecutor fe;
-  fe.compileFusion(&fusion);
+  fe.compileFusion(&fusion, at_inputs);
   fe.setMeasureKernelTimeFlag(true);
   // Sync everything up before we start
 
@@ -621,7 +621,7 @@ static void MagicScheduler_BiasDropoutAddLayernormBwd3(
   scheduleReduction(&fusion, *norm_params);
 
   FusionExecutor fe;
-  fe.compileFusion(&fusion);
+  fe.compileFusion(&fusion, at_inputs);
   fe.setMeasureKernelTimeFlag(true);
   // Sync everything up before we start
 

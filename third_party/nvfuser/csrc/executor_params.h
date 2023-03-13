@@ -1,17 +1,30 @@
 #pragma once
 #include <type.h>
 
+#include <optional>
+
 namespace nvfuser {
 
 struct TORCH_CUDA_CU_API CompileParams {
-  PrimDataType index_type = DataType::Int;
+  std::optional<PrimDataType> index_type = std::nullopt;
   int maxrregcount = 255;
   bool enable_magic_zero = true;
 
   bool operator==(const CompileParams& other) const {
+    // Disallow comparison if the index type is nullopt
+    TORCH_INTERNAL_ASSERT(
+        index_type.has_value(),
+        "cannot compare as the index type is not defined");
+    TORCH_INTERNAL_ASSERT(
+        other.index_type.has_value(),
+        "cannot compare as the other index type is not defined");
     return index_type == other.index_type &&
         maxrregcount == other.maxrregcount &&
         enable_magic_zero == other.enable_magic_zero;
+  }
+
+  bool operator!=(const CompileParams& other) const {
+    return !(*this == other);
   }
 };
 

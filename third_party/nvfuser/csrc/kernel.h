@@ -168,8 +168,14 @@ class TORCH_CUDA_CU_API Kernel final : public Fusion {
   // TV, we may want to continue to do fusion like analysis on the original
   // expression.
   // TODO: Assert index type is int or int32
-  Kernel(Fusion* fusion, DataType index_type = DataType::Int)
-      : Fusion(*fusion), index_type_(index_type) {}
+  Kernel(Fusion* fusion, PrimDataType index_type = PrimDataType::Int)
+      : Fusion(*fusion), index_type_(index_type) {
+    // Index type must be resolved to either int32 or int64
+    TORCH_INTERNAL_ASSERT(
+        index_type_ == PrimDataType::Int ||
+            index_type_ == PrimDataType::Int32 || "Invalid index type: ",
+        index_type_);
+  }
 
   Kernel() = delete;
 
@@ -191,7 +197,7 @@ class TORCH_CUDA_CU_API Kernel final : public Fusion {
     return summary_;
   }
 
-  DataType indexType() const {
+  PrimDataType indexType() const {
     return index_type_;
   }
 
@@ -236,7 +242,7 @@ class TORCH_CUDA_CU_API Kernel final : public Fusion {
 
   // Is this kernel being compiled with int32 or int64 indexing. This
   // information is required to resolve DataType::Index
-  DataType index_type_ = DataType::Int;
+  PrimDataType index_type_ = PrimDataType::Int;
 
   WarpPaddedParallelInfo warp_padded_parallel_info_;
 

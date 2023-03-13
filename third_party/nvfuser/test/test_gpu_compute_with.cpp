@@ -453,9 +453,6 @@ TEST_F(NVFuserTest, FusionComputeWith6_CUDA) {
   const std::vector<int64_t> input_shape{N, H, W, C};
   auto t0 = at::randn(input_shape, options_half);
 
-  CompileOptions co;
-  co.index_mode = KernelIndexMode::INT32;
-
   FusionExecutor fe;
   fe.compileFusion(&fusion, {t0}, LaunchParams());
   auto cg_outputs = fe.runFusion({t0});

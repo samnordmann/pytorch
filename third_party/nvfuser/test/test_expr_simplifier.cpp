@@ -5,6 +5,13 @@
 #include <test/test_gpu_validator.h>
 #include <test/test_utils.h>
 
+#include <cctype>
+#include <memory>
+#include <string>
+#include <string_view>
+#include <variant>
+#include <vector>
+
 namespace nvfuser {
 namespace {
 
@@ -47,69 +54,338 @@ void assertSimplifiedMod(Val* x, Val* y, Val* z) {
 
 } // namespace
 
+// A stupid and simple compiler that compiles a string into fusion IR. It is
+// stupid because of the following limitations:
+// - only support named scalars as variables
+// - tokens must be separated by one and only one space, for example, i1+i2 and
+//   i1  + i2 are all illegal, you have to write i1 + i2. Also note -5 is a
+//   single negative integer constant, but - 5 is an expression neg(5)
+// - poor error message
+namespace stupid_simple_compiler {
+
+using fun1_t = Val* (*)(Val*);
+using fun2_t = Val* (*)(Val*, Val*);
+struct LeftParenthesis {};
+
+using token_t = std::variant<
+    Val*, // variable or constant
+    fun1_t, // unary op
+    fun2_t, // binary op
+    LeftParenthesis>;
+
+Val* parseIdentifier(std::string_view token_str) {
+  if (token_str == "true") {
+    return IrBuilder::newConstant(true, DataType::Bool);
+  } else if (token_str == "false") {
+    return IrBuilder::newConstant(false, DataType::Bool);
+  } else if (
+      token_str.at(0) == 'i' || token_str.at(0) == 'T' ||
+      token_str == "threadIdx.x" || token_str == "threadIdx.y" ||
+      token_str == "threadIdx.z" || token_str == "blockIdx.x" ||
+      token_str == "blockIdx.y" || token_str == "blockIdx.z" ||
+      token_str == "blockDim.x" || token_str == "blockDim.y" ||
+      token_str == "blockDim.z" || token_str == "gridDim.x" ||
+      token_str == "gridDim.y" || token_str == "gridDim.z") {
+    return IrBuilder::create<NamedScalar>(
+        std::string(token_str), DataType::Int);
+  } else if (token_str.at(0) == 'b') {
+    return IrBuilder::create<NamedScalar>(
+        std::string(token_str), DataType::Bool);
+  } else if (token_str.at(0) == 'd') {
+    return IrBuilder::create<NamedScalar>(
+        std::string(token_str), DataType::Double);
+  } else {
+    TORCH_INTERNAL_ASSERT(false, "Identifier with unknown type: ", token_str);
+  }
+}
+
+Val* parseNumber(std::string_view token_str) {
+  auto s = token_str;
+  bool neg = (s.at(0) == '-');
+  if (neg) {
+    s = s.substr(1);
+  }
+  TORCH_CHECK(!s.empty(), "Invalid number: ", token_str);
+  int64_t i = 0;
+  while (!s.empty()) {
+    auto ch = s.at(0);
+    if (ch == '.') {
+      break;
+    }
+    TORCH_CHECK(std::isdigit(ch), "Invalid number: ", token_str)
+    i = i * 10 + (ch - '0');
+    s = s.substr(1);
+  }
+  if (s.empty()) {
+    if (neg) {
+      i = -i;
+    }
+    return IrBuilder::newConstant(i, DataType::Int);
+  } else {
+    s = s.substr(1);
+    double d = i;
+    double factor = 0.1;
+    while (!s.empty()) {
+      auto ch = s.at(0);
+      TORCH_CHECK(std::isdigit(ch), "Invalid number: ", token_str)
+      d += factor * (ch - '0');
+      factor /= 10;
+      s = s.substr(1);
+    }
+    if (neg) {
+      d = -d;
+    }
+    return IrBuilder::newConstant(d, DataType::Double);
+  }
+}
+
+token_t parseToken(std::string_view token_str, bool& expect_val) {
+  if (std::isalpha(token_str.at(0))) {
+    TORCH_CHECK(
+        expect_val,
+        "Syntax error: not expecting identifier but get ",
+        token_str);
+    expect_val = false;
+    return parseIdentifier(token_str);
+  } else if (token_str == "-") {
+    if (expect_val) {
+      return fun1_t(&neg);
+    } else {
+      expect_val = true;
+      return fun2_t(&sub);
+    }
+  }
+  if (token_str.at(0) == '!' || token_str.at(0) == '~') {
+    TORCH_CHECK(
+        expect_val, "Syntax error: not expecting unary op but get ", token_str);
+    return fun1_t(&notOp);
+  } else if (token_str.at(0) == '-' || std::isdigit(token_str.at(0))) {
+    TORCH_CHECK(
+        expect_val, "Syntax error: not expecting number but get ", token_str);
+    expect_val = false;
+    return parseNumber(token_str);
+  } else {
+    TORCH_CHECK(
+        !expect_val,
+        "Syntax error: not expecting operator but get ",
+        token_str);
+    expect_val = true;
+    if (token_str.size() == 1) {
+      switch (token_str.at(0)) {
+        case '+':
+          return fun2_t(&add);
+        case '*':
+          return fun2_t(&mul);
+        case '/':
+          return fun2_t(&cpp_div);
+        case '%':
+          return fun2_t(&mod);
+        case '>':
+          return fun2_t(&gt);
+        case '<':
+          return fun2_t(&lt);
+      }
+    } else if (token_str == "==") {
+      return fun2_t(&eq);
+    } else if (token_str == "!=") {
+      return fun2_t(&eq);
+    } else if (token_str == ">=") {
+      return fun2_t(&ge);
+    } else if (token_str == "<=") {
+      return fun2_t(&le);
+    } else if (token_str == "&&") {
+      return fun2_t(&bitwise_and);
+    } else if (token_str == "||") {
+      return fun2_t(&bitwise_or);
+    }
+    TORCH_CHECK(false, "Unrecognized token: ", token_str);
+  }
+}
+
+// https://en.cppreference.com/w/cpp/language/operator_precedence
+int getOpPrecedence(token_t op) {
+  if (std::holds_alternative<fun1_t>(op)) {
+    auto uop = std::get<fun1_t>(op);
+    if (uop == fun1_t(neg) || uop == fun1_t(notOp)) {
+      return 3;
+    }
+    TORCH_CHECK(false, "Unexpected unary op");
+  }
+
+  if (std::holds_alternative<fun2_t>(op)) {
+    auto bop = std::get<fun2_t>(op);
+    if (bop == fun2_t(&mul) || bop == fun2_t(&cpp_div) || bop == fun2_t(&mod)) {
+      return 5;
+    }
+    if (bop == fun2_t(&add) || bop == fun2_t(&sub)) {
+      return 6;
+    }
+    if (bop == fun2_t(&lt) || bop == fun2_t(&le) || bop == fun2_t(&gt) ||
+        bop == fun2_t(&ge)) {
+      return 9;
+    }
+    if (bop == fun2_t(&eq) || bop == fun2_t(&ne)) {
+      return 10;
+    }
+    if (bop == fun2_t(&bitwise_and)) {
+      return 14;
+    }
+    if (bop == fun2_t(&bitwise_or)) {
+      return 15;
+    }
+    TORCH_CHECK(false, "Unexpected binary op");
+  }
+  TORCH_CHECK(false, "Unexpected token");
+}
+
+Val* parse(const char* str) {
+  std::string_view remaining(str);
+  std::vector<token_t> op_stack;
+  std::vector<Val*> value_stack;
+
+  Val* current = nullptr;
+
+  auto eval_top = [&]() {
+    token_t op = op_stack.back();
+    op_stack.pop_back();
+    std::visit(
+        [&](auto&& op) {
+          using T = std::decay_t<decltype(op)>;
+          if constexpr (std::is_same_v<T, fun1_t>) {
+            current = op(current);
+          } else if constexpr (std::is_same_v<T, fun2_t>) {
+            TORCH_CHECK(!value_stack.empty(), "Missing operand for binary op");
+            current = op(value_stack.back(), current);
+            value_stack.pop_back();
+          } else {
+            TORCH_CHECK(false, "Unexpected token");
+          }
+        },
+        op);
+  };
+
+  bool expect_val = true;
+  while (!remaining.empty()) {
+    const auto end_pos = remaining.find_first_of(' ');
+    const auto token_str = remaining.substr(0, end_pos);
+
+    if (token_str == "(") {
+      TORCH_CHECK(
+          expect_val, "Syntax error: not expecting ( but get ", token_str);
+      op_stack.push_back(LeftParenthesis{});
+    } else if (token_str == ")") {
+      TORCH_CHECK(
+          !expect_val, "Syntax error: not expecting ) but get ", token_str);
+      // pop stack until meets matching (
+      TORCH_CHECK(current != nullptr, "Expect value before )");
+      while (true) {
+        TORCH_CHECK(!op_stack.empty(), "Unmatched )");
+        if (std::holds_alternative<LeftParenthesis>(op_stack.back())) {
+          op_stack.pop_back();
+          break;
+        }
+        eval_top();
+      }
+    } else {
+      token_t token = parseToken(token_str, expect_val);
+      if (std::holds_alternative<Val*>(token)) {
+        TORCH_CHECK(current == nullptr, "Don't expect value");
+        current = std::get<Val*>(token);
+      } else if (std::holds_alternative<fun1_t>(token)) {
+        TORCH_CHECK(current == nullptr, "Don't expect value");
+        op_stack.push_back(token);
+      } else if (std::holds_alternative<fun2_t>(token)) {
+        TORCH_CHECK(current != nullptr, "Expect value before binary op");
+        while (!op_stack.empty() &&
+               !std::holds_alternative<LeftParenthesis>(op_stack.back()) &&
+               getOpPrecedence(op_stack.back()) <= getOpPrecedence(token)) {
+          eval_top();
+        }
+        value_stack.push_back(current);
+        op_stack.push_back(token);
+        current = nullptr;
+      } else {
+        TORCH_CHECK(false, "Unexpected token");
+      }
+    }
+
+    remaining = (end_pos != std::string_view::npos)
+        ? remaining.substr(end_pos + 1)
+        : "";
+  }
+
+  while (!op_stack.empty()) {
+    eval_top();
+  }
+
+  return current;
+}
+
+// syntatic sugar to conveniently compile string into Val*
+namespace ops {
+
+Val* operator""_(const char* str, size_t) {
+  return parse(str);
+}
+
+} // namespace ops
+
+} // namespace stupid_simple_compiler
+
+using namespace stupid_simple_compiler::ops;
+
 class ExprSimplifierTest : public NVFuserTest {};
+
+TEST_F(ExprSimplifierTest, StupidSimpleCompiler_CUDA) {
+  auto fusion_ptr = std::make_unique<Fusion>();
+  Fusion& fusion = *fusion_ptr.get();
+  FusionGuard fg(&fusion);
+
+  ASSERT_EQ(
+      "( ( ( ( ( i2 * i3 ) + ( ( i4 + i5 ) + 3 ) ) + 3 ) * ( ( ( ( i0 + i1 ) + 3 ) + 5 ) + i2 ) ) * i0 )"_
+          ->toInlineString(),
+      "( ( ( ( ( i2 * i3 ) + ( ( i4 + i5 ) + 3 ) ) + 3 ) * ( ( ( ( i0 + i1 ) + 3 ) + 5 ) + i2 ) ) * i0 )");
+  ASSERT_EQ(
+      "( ( i1 * i2 ) - ( i2 * i1 ) )"_->toInlineString(),
+      "( ( i1 * i2 ) - ( i2 * i1 ) )");
+}
 
 TEST_F(ExprSimplifierTest, AssociativeAndCommutativeReordering_CUDA) {
   auto fusion_ptr = std::make_unique<Fusion>();
   Fusion& fusion = *fusion_ptr.get();
   FusionGuard fg(&fusion);
 
-  auto a = IrBuilder::create<NamedScalar>("a", DataType::Int);
-  auto b = IrBuilder::create<NamedScalar>("b", DataType::Int);
-  auto c = IrBuilder::create<NamedScalar>("c", DataType::Int);
-  auto d = IrBuilder::create<NamedScalar>("d", DataType::Int);
-  auto e = IrBuilder::create<NamedScalar>("e", DataType::Int);
-  auto f = IrBuilder::create<NamedScalar>("f", DataType::Int);
-  auto three = IrBuilder::create<Int>(3);
-  auto five = IrBuilder::create<Int>(5);
-  auto six = IrBuilder::create<Int>(6);
-  auto eight = IrBuilder::create<Int>(8);
+  std::vector<VarInfo> variables(6);
+  variables[0].variable = "i0"_;
+  variables[1].variable = "i1"_;
+  variables[2].variable = "i2"_;
+  variables[3].variable = "i3"_;
+  variables[4].variable = "i4"_;
+  variables[5].variable = "i5"_;
 
   {
-    // ((c * b) + d) + (a + 3)
-    auto val = add(add(mul(c, b), d), add(a, three));
-    std::vector<VarInfo> variables(4);
-    variables[0].variable = a;
-    variables[1].variable = b;
-    variables[2].variable = c;
-    variables[3].variable = d;
+    auto val = "( ( i3 * i2 ) + i4 ) + ( i1 + 3 )"_;
     auto simplified = simplifyExpr(val, {variables.begin(), variables.end()});
-    // simplify it, expecting to get
-    // (((3 + a) + (b * c)) + d)
-    auto expect = add(add(add(three, a), mul(b, c)), d);
+    auto expect = "( ( ( 3 + i1 ) + ( i2 * i3 ) ) + i4 )"_;
     TORCH_CHECK(
         expect->sameAs(simplified) && simplified->sameAs(expect),
-        "Expect the simplified expression",
+        "Expect the simplified expression ",
         simplified->toInlineString(),
         " to be the same as ",
         expect->toInlineString());
   }
 
   {
-    // ((((c * d) + ((e + f) + 3)) + 3) * ((((a + b) + 3) + 5) + c)) * a
     auto val =
-        mul(mul(add(add(mul(c, d), add(add(e, f), three)), three),
-                add(add(add(add(a, b), three), five), c)),
-            a);
-    std::vector<VarInfo> variables(6);
-    variables[0].variable = a;
-    variables[1].variable = b;
-    variables[2].variable = c;
-    variables[3].variable = d;
-    variables[4].variable = e;
-    variables[5].variable = f;
+        "( ( ( ( i2 * i3 ) + ( ( i4 + i5 ) + 3 ) ) + 3 ) * ( ( ( ( i0 + i1 ) + 3 ) + 5 ) + i2 ) ) * i0"_;
     auto simplified = simplifyExpr(val, {variables.begin(), variables.end()});
-
-    // simplify it, expecting to get
-    // (a * (((8 + a) + b) + c)) * (((6 + (c * d)) + e) + f)
     auto expect =
-        mul(mul(a, add(add(add(eight, a), b), c)),
-            add(add(add(six, mul(c, d)), e), f));
+        "( i0 * ( ( ( 8 + i0 ) + i1 ) + i2 ) ) * ( ( ( 6 + ( i2 * i3 ) ) + i4 ) + i5 )"_;
     TORCH_CHECK(
         // Use isEquivalent to check equivalence because distributeMul will
         // expand the expression.
         isEquivalent(simplified, expect),
-        "Expect the simplified expression",
+        "Expect the simplified expression ",
         simplified->toInlineString(),
         " to be the same as ",
         expect->toInlineString());
@@ -121,96 +397,54 @@ TEST_F(ExprSimplifierTest, EliminateTrivialComputation_CUDA) {
   Fusion& fusion = *fusion_ptr.get();
   FusionGuard fg(&fusion);
 
-  auto i = IrBuilder::create<NamedScalar>("i", DataType::Int);
-  auto d = IrBuilder::create<NamedScalar>("d", DataType::Double);
-  auto b = IrBuilder::create<NamedScalar>("b", DataType::Bool);
-  auto i0 = IrBuilder::create<Int>(0);
-  auto i1 = IrBuilder::create<Int>(1);
-  auto i2 = IrBuilder::create<Int>(2);
-  auto d0 = IrBuilder::create<Double>(0);
-  auto d1 = IrBuilder::create<Double>(1);
-  auto d2 = IrBuilder::create<Double>(2);
-  auto t = IrBuilder::create<Bool>(true);
-  auto f = IrBuilder::create<Bool>(false);
+  TORCH_CHECK(simplifyExpr("1 * i"_)->sameAs("i"_));
+  TORCH_CHECK(simplifyExpr("1.0 * d"_)->sameAs("d"_));
+  TORCH_CHECK(simplifyExpr("i * 1"_)->sameAs("i"_));
+  TORCH_CHECK(simplifyExpr("d * 1.0"_)->sameAs("d"_));
+  ASSERT_EQ(simplifyExpr("0 * i"_)->getInt(), 0);
+  ASSERT_EQ(simplifyExpr("i * 0"_)->getInt(), 0);
 
-  // 1 * a -> a
-  TORCH_CHECK(simplifyExpr(mul(i1, i))->sameAs(i));
-  TORCH_CHECK(simplifyExpr(mul(d1, d))->sameAs(d));
-  // a * 1 -> a
-  TORCH_CHECK(simplifyExpr(mul(i, i1))->sameAs(i));
-  TORCH_CHECK(simplifyExpr(mul(d, d1))->sameAs(d));
-  // 0 * a -> 0
-  TORCH_CHECK(simplifyExpr(mul(i0, i))->sameAs(i0));
-  // a * 0 -> 0
-  TORCH_CHECK(simplifyExpr(mul(i, i0))->sameAs(i0));
+  TORCH_CHECK(simplifyExpr("0 + i"_)->sameAs("i"_));
+  TORCH_CHECK(simplifyExpr("0.0 + d"_)->sameAs("d"_));
+  TORCH_CHECK(simplifyExpr("i + 0"_)->sameAs("i"_));
+  TORCH_CHECK(simplifyExpr("d + 0.0"_)->sameAs("d"_));
 
-  // 0 + a -> a
-  TORCH_CHECK(simplifyExpr(add(i0, i))->sameAs(i));
-  TORCH_CHECK(simplifyExpr(add(d0, d))->sameAs(d));
-  // a + 0 -> a
-  TORCH_CHECK(simplifyExpr(add(i, i0))->sameAs(i));
-  TORCH_CHECK(simplifyExpr(add(d, d0))->sameAs(d));
+  TORCH_CHECK(simplifyExpr("true && b"_)->sameAs("b"_));
+  TORCH_CHECK(simplifyExpr("b && true"_)->sameAs("b"_));
+  ASSERT_EQ(simplifyExpr("false && b"_)->getBool(), false);
+  ASSERT_EQ(simplifyExpr("b && false"_)->getBool(), false);
 
-  // true && a -> a
-  TORCH_CHECK(simplifyExpr(IrBuilder::andExpr(t, b))->sameAs(b));
-  // a && true -> a
-  TORCH_CHECK(simplifyExpr(IrBuilder::andExpr(b, t))->sameAs(b));
-  // false && a -> false
-  TORCH_CHECK(simplifyExpr(IrBuilder::andExpr(f, b))->sameAs(f));
-  // a && false -> false
-  TORCH_CHECK(simplifyExpr(IrBuilder::andExpr(b, f))->sameAs(f));
+  ASSERT_EQ(simplifyExpr("true || b"_)->getBool(), true);
+  ASSERT_EQ(simplifyExpr("b || true"_)->getBool(), true);
+  TORCH_CHECK(simplifyExpr("false || b"_)->sameAs("b"_));
+  TORCH_CHECK(simplifyExpr("b || false"_)->sameAs("b"_));
 
-  // a && a -> a
-  TORCH_CHECK(simplifyExpr(IrBuilder::andExpr(b, b))->sameAs(b));
-  // a || a -> a
-  TORCH_CHECK(simplifyExpr(IrBuilder::orExpr(b, b))->sameAs(b));
+  TORCH_CHECK(simplifyExpr("b && b"_)->sameAs("b"_));
+  TORCH_CHECK(simplifyExpr("b || b"_)->sameAs("b"_));
 
-  // true || a -> true
-  TORCH_CHECK(simplifyExpr(IrBuilder::orExpr(t, b))->sameAs(t));
-  // a || true -> true
-  TORCH_CHECK(simplifyExpr(IrBuilder::orExpr(b, t))->sameAs(t));
-  // false || a -> a
-  TORCH_CHECK(simplifyExpr(IrBuilder::orExpr(f, b))->sameAs(b));
-  // a || false -> a
-  TORCH_CHECK(simplifyExpr(IrBuilder::orExpr(b, f))->sameAs(b));
+  TORCH_CHECK(simplifyExpr("i / 1"_)->sameAs("i"_));
+  TORCH_CHECK(simplifyExpr("d / 1.0"_)->sameAs("d"_));
 
-  // a / 1 -> a
-  TORCH_CHECK(simplifyExpr(cpp_div(i, i1))->sameAs(i));
-  TORCH_CHECK(simplifyExpr(cpp_div(d, d1))->sameAs(d));
-  // 0 / a -> 0
-  auto tdimx = NamedScalar::getParallelDim(ParallelType::TIDx);
-  TORCH_CHECK(simplifyExpr(cpp_div(i0, tdimx))->sameAs(i0));
-  // a % 1 -> 0
-  TORCH_CHECK(simplifyExpr(mod(i, i1))->sameAs(i0));
+  ASSERT_EQ(simplifyExpr("0 / i"_)->getInt(), 0);
+  ASSERT_EQ(simplifyExpr("i % 1"_)->getInt(), 0);
 
   // -(-a) -> a
-  TORCH_CHECK(simplifyExpr(neg(neg(i)))->sameAs(i));
-  TORCH_CHECK(simplifyExpr(notOp(notOp(i)))->sameAs(i));
-  TORCH_CHECK(simplifyExpr(notOp(notOp(b)))->sameAs(b));
+  TORCH_CHECK(simplifyExpr("- - i"_)->sameAs("i"_));
+  TORCH_CHECK(simplifyExpr("~ ~ i"_)->sameAs("i"_));
+  TORCH_CHECK(simplifyExpr("! ! b"_)->sameAs("b"_));
 
   // Test constant folding
-  TORCH_CHECK(simplifyExpr(add(add(i1, i), i1))->sameAs(add(i, i2)));
-  TORCH_CHECK(simplifyExpr(add(add(d1, d), d1))->sameAs(add(d, d2)));
+  TORCH_CHECK(simplifyExpr("1 + i + 1"_)->sameAs("i + 2"_));
+  TORCH_CHECK(simplifyExpr("1.0 + d + 1.0"_)->sameAs("d + 2.0"_));
 
   // Test that FlattenedAssocCommOp::sameAs ignores order
-  auto x = IrBuilder::create<NamedScalar>("x", DataType::Int);
-  auto y = IrBuilder::create<NamedScalar>("y", DataType::Int);
-  TORCH_CHECK(simplifyExpr(sub(mul(x, y), mul(y, x)))->isZeroInt());
+  TORCH_CHECK(simplifyExpr("( i1 * i2 ) - ( i2 * i1 )"_)->isZeroInt());
 }
 
 TEST_F(ExprSimplifierTest, SimplifyDivisibleDivMod_CUDA) {
   auto fusion_ptr = std::make_unique<Fusion>();
   Fusion& fusion = *fusion_ptr.get();
   FusionGuard fg(&fusion);
-
-  auto one = IrBuilder::create<Int>(1);
-  auto two = IrBuilder::create<Int>(2);
-  auto three = IrBuilder::create<Int>(3);
-  auto six = IrBuilder::create<Int>(6);
-  auto a = NamedScalar::getParallelDim(ParallelType::TIDx);
-  auto b = NamedScalar::getParallelDim(ParallelType::TIDy);
-  auto c = NamedScalar::getParallelDim(ParallelType::TIDz);
-  auto d = add(NamedScalar::getParallelIndex(ParallelType::TIDx), one);
 
   // assert that our system can correctly find that x is a multiple of y and z,
   // and simplify:
@@ -226,51 +460,49 @@ TEST_F(ExprSimplifierTest, SimplifyDivisibleDivMod_CUDA) {
     assertSimplifiedDiv(x, z, y);
   };
 
-  assertSimplifiedDivMod(six, three, two);
-  assertSimplifiedDivMod(mul(a, b), a, b);
-  assertSimplifiedDivMod(mul(a, b), mul(a, b), one);
-  assertSimplifiedDivMod(mul(mul(a, b), c), a, mul(b, c));
-  assertSimplifiedDivMod(mul(mul(a, b), c), b, mul(a, c));
-  assertSimplifiedDivMod(mul(mul(a, b), c), c, mul(a, b));
-  assertSimplifiedDivMod(mul(mul(a, b), c), mul(a, mul(b, c)), one);
+  assertSimplifiedDivMod("6"_, "3"_, "2"_);
+  assertSimplifiedDivMod("i1 * i2"_, "i1"_, "i2"_);
+  assertSimplifiedDivMod("i1 * i2"_, "i1 * i2"_, "1"_);
+  assertSimplifiedDivMod("i1 * i2 * i3"_, "i1"_, "i2 * i3"_);
+  assertSimplifiedDivMod("i1 * i2 * i3"_, "i2"_, "i1 * i3"_);
+  assertSimplifiedDivMod("i1 * i2 * i3"_, "i3"_, "i1 * i2"_);
+  assertSimplifiedDivMod("i1 * i2 * i3"_, "i1 * ( i2 * i3 )"_, "1"_);
   assertSimplifiedDivMod(
-      add(mul(mul(a, b), c), mul(mul(a, b), d)), a, add(mul(b, c), mul(b, d)));
+      "i1 * i2 * i3 + i1 * i2 * i4"_, "i1"_, "i2 * i3 + i2 * i4"_);
   assertSimplifiedDivMod(
-      add(mul(mul(a, b), c), mul(mul(a, b), d)), b, add(mul(a, c), mul(a, d)));
+      "i1 * i2 * i3 + i1 * i2 * i4"_, "i2"_, "i1 * i3 + i1 * i4"_);
   assertSimplifiedDivMod(
-      add(mul(mul(a, b), c), mul(mul(a, b), d)), mul(a, b), add(c, d));
+      "i1 * i2 * i3 + i1 * i2 * i4"_, "i1 * i2"_, "i3 + i4"_);
   assertSimplifiedDivMod(
-      add(mul(add(a, b), c), mul(add(a, b), d)), add(a, b), add(c, d));
+      "( i1 + i2 ) * i3 + ( i1 + i2 ) * i4"_, "i1 + i2"_, "i3 + i4"_);
   assertSimplifiedDivMod(
-      mul(mul(a, b), mul(c, six)), mul(mul(a, b), mul(c, six)), one);
-  assertSimplifiedDivMod(mul(mul(a, b), mul(c, six)), mul(a, mul(b, c)), six);
+      "( i1 * i2 ) * ( i3 * 6 )"_, "( i1 * i2 ) * ( i3 * 6 )"_, "1"_);
   assertSimplifiedDivMod(
-      mul(mul(a, b), mul(c, six)), three, mul(mul(a, b), mul(c, two)));
+      "( i1 * i2 ) * ( i3 * 6 )"_, "i1 * ( i2 * i3 )"_, "6"_);
   assertSimplifiedDivMod(
-      mul(mul(a, b), mul(c, six)), mul(mul(a, b), mul(c, three)), two);
+      "( i1 * i2 ) * ( i3 * 6 )"_, "3"_, "( i1 * i2 ) * ( i3 * 2 )"_);
   assertSimplifiedDivMod(
-      mul(mul(a, b), mul(c, six)), mul(a, mul(c, three)), mul(b, two));
-  assertSimplifiedDivMod(mul(add(a, mul(a, c)), b), mul(a, b), add(one, c));
+      "( i1 * i2 ) * ( i3 * 6 )"_, "( i1 * i2 ) * ( i3 * 3 )"_, "2"_);
   assertSimplifiedDivMod(
-      mul(add(mul(a, b), mul(a, c)), add(mul(b, a), mul(b, d))),
-      mul(a, b),
-      mul(add(b, c), add(a, d)));
+      "( i1 * i2 ) * ( i3 * 6 )"_, "i1 * ( i3 * 3 )"_, "i2 * 2"_);
+  assertSimplifiedDivMod("( i1 + ( i1 * i3 ) ) * i2"_, "i1 * i2"_, "1 + i3"_);
   assertSimplifiedDivMod(
-      mul(add(mul(three, b), mul(six, c)), add(mul(b, a), mul(b, d))),
-      mul(three, b),
-      mul(add(b, mul(two, c)), add(a, d)));
+      "( ( i1 * i2 ) + ( i1 * i3 ) ) * ( ( i2 * i1 ) + ( i2 * i4 ) )"_,
+      "i1 * i2"_,
+      "( i2 + i3 ) * ( i1 + i4 )"_);
   assertSimplifiedDivMod(
-      mul(add(mul(three, b), six), add(mul(b, a), mul(b, d))),
-      mul(three, b),
-      mul(add(b, two), add(a, d)));
+      "( 3 * i2 + 6 * i3 ) * ( i2 * i1 + i2 * i4 )"_,
+      "3 * i2"_,
+      "( i2 + 2 * i3 ) * ( i1 + i4 )"_);
   assertSimplifiedDivMod(
-      mul(add(mul(six, b), three), add(mul(b, a), mul(b, d))),
-      mul(three, b),
-      mul(add(mul(two, b), one), add(a, d)));
+      "( 3 * i2 + 6 ) * ( i2 * i1 + i2 * i4 )"_,
+      "3 * i2"_,
+      "( i2 + 2 ) * ( i1 + i4 )"_);
   assertSimplifiedDivMod(
-      add(mul(mul(a, b), three), mul(mul(b, a), six)),
-      mul(mul(three, b), a),
-      three);
+      "( 6 * i2 + 3 ) * ( i2 * i1 + i2 * i4 )"_,
+      "3 * i2"_,
+      "( 2 * i2 + 1 ) * ( i1 + i4 )"_);
+  assertSimplifiedDivMod("i1 * i2 * 3 + i2 * i1 * 6"_, "3 * i2 * i1"_, "3"_);
 }
 
 TEST_F(ExprSimplifierTest, SignProve_CUDA) {
@@ -339,48 +571,38 @@ TEST_F(ExprSimplifierTest, SignProve_CUDA) {
   assertProvedNonNegative(NamedScalar::getParallelIndex(ParallelType::TIDy));
   assertProvedNonNegative(NamedScalar::getParallelIndex(ParallelType::TIDz));
 
-  auto zero = fusion.zeroVal();
-  auto one = fusion.oneVal();
-  auto two = IrBuilder::newConstant(2, DataType::Int);
+  assertProvedPositive("1"_);
+  assertProvedPositive("2"_);
+  assertProvedNonNegative("1"_);
+  assertProvedNonNegative("2"_);
+  assertProvedNonZero("1"_);
+  assertProvedNonZero("2"_);
 
-  assertProvedPositive(one);
-  assertProvedPositive(two);
-  assertProvedNonNegative(one);
-  assertProvedNonNegative(two);
-  assertProvedNonZero(one);
-  assertProvedNonZero(two);
+  assertProvedNonNegative("T123.size[3]"_);
+  assertProvedNonNegative("T123.stride[3]"_);
 
-  assertProvedNonNegative(
-      IrBuilder::create<NamedScalar>("T123.size[3]", DataType::Int));
-  assertProvedNonNegative(
-      IrBuilder::create<NamedScalar>("T123.stride[3]", DataType::Int));
-
-  auto a = IrBuilder::newScalar(DataType::Int);
-  VarInfo ainfo{a, zero, two, one};
-  auto b = IrBuilder::newScalar(DataType::Int);
-  VarInfo binfo{b, zero, two, one};
-  auto c = IrBuilder::newScalar(DataType::Int);
-  VarInfo cinfo{c, zero, two, one};
-  auto d = IrBuilder::newScalar(DataType::Int);
-  VarInfo dinfo{d, zero, two, one};
+  VarInfo ainfo{"i1"_, "0"_, "2"_, "1"_};
+  VarInfo binfo{"i2"_, "0"_, "2"_, "1"_};
+  VarInfo cinfo{"i3"_, "0"_, "2"_, "1"_};
+  VarInfo dinfo{"i4"_, "0"_, "2"_, "1"_};
   auto variables = {ainfo, binfo, cinfo, dinfo};
 
-  assertProvedNonNegative(a, variables);
-  assertProvedNonNegative(b, variables);
-  assertProvedNonNegative(c, variables);
-  assertProvedNonNegative(d, variables);
-  assertProvedNonNegative(add(a, b), variables);
-  assertProvedNonNegative(add(a, add(b, c)), variables);
-  assertProvedNonNegative(mul(add(a, d), add(b, c)), variables);
-  assertProvedNonNegative(mul(add(a, two), add(b, c)), variables);
+  assertProvedNonNegative("i1"_, variables);
+  assertProvedNonNegative("i2"_, variables);
+  assertProvedNonNegative("i3"_, variables);
+  assertProvedNonNegative("i4"_, variables);
+  assertProvedNonNegative("i1 + i2"_, variables);
+  assertProvedNonNegative("i1 + ( i2 + i3 )"_, variables);
+  assertProvedNonNegative("( i1 + i4 ) * ( i2 + i3 )"_, variables);
+  assertProvedNonNegative("( i1 + 2 ) * ( i2 + i3 )"_, variables);
 
-  assertProvedPositive(add(add(a, two), add(b, c)), variables);
-  assertProvedNonZero(add(add(a, two), add(b, c)), variables);
+  assertProvedPositive("( i1 + 2 ) + ( i2 + i3 )"_, variables);
+  assertProvedNonZero("( i1 + 2 ) + ( i2 + i3 )"_, variables);
 
   assertProvedNonNegative(
-      cpp_div(add(d, one), add(add(a, two), add(b, c))), variables);
+      "( i4 + 1 ) / ( ( i1 + 2 ) + ( i2 + i3 ) )"_, variables);
   assertProvedNonNegative(
-      mod(add(d, one), add(add(a, two), add(b, c))), variables);
+      "( i4 + 1 ) % ( ( i1 + 2 ) + ( i2 + i3 ) )"_, variables);
 }
 
 TEST_F(ExprSimplifierTest, EquivalenceSimplification_CUDA) {
@@ -399,13 +621,9 @@ TEST_F(ExprSimplifierTest, EquivalenceSimplification_CUDA) {
         y->toInlineString());
   };
 
-  auto a = IrBuilder::create<NamedScalar>("a", DataType::Int);
-  auto b = IrBuilder::create<NamedScalar>("b", DataType::Int);
-  auto c = IrBuilder::create<NamedScalar>("c", DataType::Int);
-
-  assertProvedEquiv(a, a);
-  assertProvedEquiv(mul(a, b), mul(b, a));
-  assertProvedEquiv(mod(mul(a, c), b), mod(mul(c, a), b));
+  assertProvedEquiv("i"_, "i"_);
+  assertProvedEquiv("i1 * i2"_, "i2 * i1"_);
+  assertProvedEquiv("( i1 * i3 ) % i2"_, "( i3 * i1 ) % i2"_);
 }
 
 TEST_F(ExprSimplifierTest, CancelDivMod_CUDA) {
@@ -413,29 +631,15 @@ TEST_F(ExprSimplifierTest, CancelDivMod_CUDA) {
   Fusion& fusion = *fusion_ptr.get();
   FusionGuard fg(&fusion);
 
-  auto one = IrBuilder::create<Int>(1);
-  auto two = IrBuilder::create<Int>(2);
-  auto three = IrBuilder::create<Int>(3);
-  auto five = IrBuilder::create<Int>(5);
-  auto six = IrBuilder::create<Int>(6);
-  auto fifteen = IrBuilder::create<Int>(15);
-  auto a = NamedScalar::getParallelDim(ParallelType::TIDx);
-  auto b = NamedScalar::getParallelDim(ParallelType::TIDy);
-  auto c = NamedScalar::getParallelDim(ParallelType::TIDz);
   assertSimplifiedDiv(
-      mul(six, mul(a, c)),
-      mul(fifteen, mul(a, b)),
-      cpp_div(mul(two, c), mul(five, b)));
+      "6 * ( i1 * i3 )"_, "15 * ( i1 * i2 )"_, "( 2 * i3 ) / ( 5 * i2 )"_);
   assertSimplifiedMod(
-      mul(six, mul(a, c)),
-      mul(fifteen, mul(a, b)),
-      mul(mod(mul(two, c), mul(five, b)), mul(three, a)));
-  assertSimplifiedDiv(
-      mul(three, a), mul(fifteen, mul(a, b)), cpp_div(one, mul(five, b)));
+      "6 * ( i1 * i3 )"_,
+      "15 * ( i1 * i2 )"_,
+      "( ( 2 * i3 ) % ( 5 * i2 ) ) * ( 3 * i1 )"_);
+  assertSimplifiedDiv("( 3 * i1 )"_, "15 * ( i1 * i2 )"_, "1 / ( 5 * i2 )"_);
   assertSimplifiedMod(
-      mul(three, a),
-      mul(fifteen, mul(a, b)),
-      mul(mod(one, mul(five, b)), mul(three, a)));
+      "( 3 * i1 )"_, "15 * ( i1 * i2 )"_, "( 1 % ( 5 * i2 ) ) * ( 3 * i1 )"_);
 }
 
 TEST_F(ExprSimplifierTest, DistributeDivisibleDivMod_CUDA) {
@@ -447,6 +651,8 @@ TEST_F(ExprSimplifierTest, DistributeDivisibleDivMod_CUDA) {
   auto b = NamedScalar::getParallelDim(ParallelType::TIDy);
   auto c = NamedScalar::getParallelDim(ParallelType::TIDz);
 
+  // TODO: replace threadIdx.{x,y,z} with i1, i2, i3 and migrate to string
+  // compiler when we have https://github.com/csarofeen/pytorch/pull/2541
   assertSimplifiedDiv(add(mul(a, b), c), a, add(b, cpp_div(c, a)));
   assertSimplifiedMod(add(mul(a, b), c), a, mod(c, a));
 }
@@ -456,14 +662,9 @@ TEST_F(ExprSimplifierTest, DistributeMul_CUDA) {
   Fusion& fusion = *fusion_ptr.get();
   FusionGuard fg(&fusion);
 
-  auto a = IrBuilder::create<NamedScalar>("a", DataType::Int);
-  auto b = IrBuilder::create<NamedScalar>("b", DataType::Int);
-  auto c = IrBuilder::create<NamedScalar>("c", DataType::Int);
-  auto d = IrBuilder::create<NamedScalar>("d", DataType::Int);
-
-  TORCH_CHECK(isEquivalent(mul(a, add(b, c)), add(mul(a, b), mul(a, c))));
+  TORCH_CHECK(isEquivalent("i1 * ( i2 + i3 )"_, "( i1 * i2 ) + ( i1 * i3 )"_));
   TORCH_CHECK(isEquivalent(
-      mul(a, add(add(b, c), d)), add(add(mul(a, b), mul(a, c)), mul(a, d))));
+      "i1 * ( i2 + i3 + i4 )"_, "( i1 * i2 ) + ( i1 * i3 ) + ( i1 * i4 )"_));
 }
 
 TEST_F(ExprSimplifierTest, FundamentalDivisionWithRemainderProperty_CUDA) {
@@ -471,19 +672,16 @@ TEST_F(ExprSimplifierTest, FundamentalDivisionWithRemainderProperty_CUDA) {
   Fusion& fusion = *fusion_ptr.get();
   FusionGuard fg(&fusion);
 
-  auto a = IrBuilder::create<NamedScalar>("a", DataType::Int);
-  auto b = IrBuilder::create<NamedScalar>("b", DataType::Int);
-  auto c = IrBuilder::create<NamedScalar>("T1.size[0]", DataType::Int);
-  auto d = IrBuilder::create<NamedScalar>("T1.size[1]", DataType::Int);
-
-  TORCH_CHECK(isEquivalent(add(mul(cpp_div(a, c), c), mod(a, c)), a));
   TORCH_CHECK(
-      isEquivalent(add(add(b, mul(cpp_div(a, c), c)), mod(a, c)), add(a, b)));
+      isEquivalent("i1 / T1.size[0] * T1.size[0] + i1 % T1.size[0]"_, "i1"_));
   TORCH_CHECK(isEquivalent(
-      add(mul(cpp_div(a, c), mul(c, d)), mul(d, mod(a, c))), mul(a, d)));
+      "( i2 + i1 / T1.size[0] * T1.size[0] ) + i1 % T1.size[0]"_, "i1 + i2"_));
   TORCH_CHECK(isEquivalent(
-      add(add(b, mul(cpp_div(a, c), mul(c, d))), mul(d, mod(a, c))),
-      add(mul(a, d), b)));
+      "( i1 / T1.size[0] ) * ( T1.size[0] * T1.size[1] ) + T1.size[1] * ( i1 % T1.size[0] )"_,
+      "i1 * T1.size[1]"_));
+  TORCH_CHECK(isEquivalent(
+      "i2 + ( i1 / T1.size[0] ) * ( T1.size[0] * T1.size[1] ) + T1.size[1] * ( i1 % T1.size[0] )"_,
+      "i1 * T1.size[1] + i2"_));
 }
 
 TEST_F(ExprSimplifierTest, ReducePredicateRegisterUsage_CUDA) {

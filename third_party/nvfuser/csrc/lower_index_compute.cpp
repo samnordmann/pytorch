@@ -1381,7 +1381,7 @@ IterDomain* getRfactorIDToTraverse(
     IterDomain* id,
     const std::vector<Val*>& consumer_all_ids) {
   const auto& rfactor_ids =
-      GpuLower::current()->caMap()->getViewRfactorDomainsOfIdGroup(
+      GpuLower::current()->caMap()->getRfactorDomainsOfIdGroup(
           id, IdMappingMode::PERMISSIVE);
 
   if (rfactor_ids.empty()) {

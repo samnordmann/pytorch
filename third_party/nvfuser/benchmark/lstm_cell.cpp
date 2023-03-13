@@ -139,7 +139,7 @@ static void LstmCell_Compile(benchmark::State& benchmark_state) {
 
   for (auto _ : benchmark_state) {
     FusionExecutor executor;
-    executor.compileFusion(&fusion);
+    executor.compileFusion(&fusion, inputs);
   }
 }
 
@@ -165,7 +165,7 @@ static void LstmCell_RunFusion(
   auto lparams = schedulePointwise(&fusion, c10::ArrayRef<c10::IValue>(inputs));
 
   FusionExecutor executor;
-  executor.compileFusion(&fusion);
+  executor.compileFusion(&fusion, inputs);
 
   C10_CUDA_CHECK(cudaDeviceSynchronize());
 
@@ -202,7 +202,7 @@ static void LstmCell_RunFusion_GpuOnly(
 
   FusionExecutor executor;
   executor.setMeasureKernelTimeFlag(true);
-  executor.compileFusion(&fusion);
+  executor.compileFusion(&fusion, inputs);
 
   for (auto _ : benchmark_state) {
     clearL2Cache();
@@ -240,7 +240,7 @@ static void LstmCell_RunFusion_CpuOnly(
 
   FusionExecutor executor;
   executor.setExecuteKernelFlag(false);
-  executor.compileFusion(&fusion);
+  executor.compileFusion(&fusion, inputs);
 
   for (auto _ : benchmark_state) {
     outputs = executor.runFusion(c10::ArrayRef<c10::IValue>(inputs), lparams);

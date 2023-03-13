@@ -77,7 +77,7 @@ std::shared_ptr<PointwiseParams> getPointwiseHeuristics(
   FusionGuard fg(fusion);
 
   // Incase any buffer is of type DataType::Index
-  DataType index_type = indexModeToDtype(runtime_info.getIndexMode());
+  const auto index_type = indexModeToDtype(runtime_info.getIndexMode());
 
   auto in_tvs = ir_utils::filterByType<TensorView>(fusion->inputs());
 
@@ -155,7 +155,8 @@ std::shared_ptr<PointwiseParams> getPointwiseHeuristics(
     // All cache entries that are expected to be generated in the pointwise
     // scheduler by registry.cpp::HeuristicSummary::validate() must be created
     // before hitting this return.
-    return std::make_shared<PointwiseParams>("Pointwise heuristics");
+    return std::make_shared<PointwiseParams>(
+        "Pointwise heuristics", index_type);
   }
 
   // Find all vectorizable inputs/outputs
@@ -188,7 +189,8 @@ std::shared_ptr<PointwiseParams> getPointwiseHeuristics(
         ceilDiv(n_elems, device_multiprocessor_count * kThreadX));
   }
 
-  auto params = std::make_shared<PointwiseParams>("Pointwise heuristics");
+  auto params =
+      std::make_shared<PointwiseParams>("Pointwise heuristics", index_type);
 
   // See pointwise.h to understand what we're doing for this 2D analysis.
   // Ideal break point location

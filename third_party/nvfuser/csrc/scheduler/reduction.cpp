@@ -959,7 +959,7 @@ std::shared_ptr<ReductionParams> getReductionHeuristics(
   // Protect heuristics div by 0:
   n_tensor_inputs = std::max(n_tensor_inputs, (size_t)1);
 
-  return reductionHeuristic(
+  auto heuristic = reductionHeuristic(
       properties.total_reduction_numel,
       properties.total_iteration_numel,
       properties.inner_most_dimension_numel,
@@ -967,6 +967,8 @@ std::shared_ptr<ReductionParams> getReductionHeuristics(
       n_tensor_inputs,
       max_dtype_size,
       vectorize_factor);
+  heuristic->cparams.index_type = indexModeToDtype(runtime_info.getIndexMode());
+  return heuristic;
 }
 
 // fusion is the input IR that will be modified by this function

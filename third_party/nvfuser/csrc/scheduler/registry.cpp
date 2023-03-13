@@ -859,13 +859,11 @@ size_t SchedulerRuntimeInfo::getMaxVectorizableWidth(TensorView* tv) {
   auto contiguity = tv->domain()->contiguity();
   // Appears after reductions the reduction domain often has a contiguity entry.
   // This only matters if the result of the reduction is an output
-  auto tv_root_nob = TensorDomain::noBroadcasts(tv_root);
-  auto tv_root_norb = TensorDomain::noBroadcasts(tv_root_no_reductions);
-  if (contiguity.size() == tv_root_nob.size() &&
-      contiguity.size() != tv_root_norb.size()) {
-    std::vector<bool> new_contiguity;
-    for (auto i : c10::irange(tv_root_nob.size())) {
-      if (!tv_root_nob[i]->isReduction()) {
+  if (contiguity.size() == tv_root.size() &&
+      contiguity.size() != tv_root_no_reductions.size()) {
+    std::vector<c10::optional<bool>> new_contiguity;
+    for (auto i : c10::irange(tv_root.size())) {
+      if (!tv_root[i]->isReduction()) {
         new_contiguity.push_back(contiguity[i]);
       }
     }
@@ -873,15 +871,15 @@ size_t SchedulerRuntimeInfo::getMaxVectorizableWidth(TensorView* tv) {
   }
   tv_root = tv_root_no_reductions;
 
-  auto tv_root_nob_size = tv_root_nob.size();
+  auto tv_root_size = tv_root.size();
 
   // Filter out 0-dim tensors
-  if (tv_root_nob_size < 1) {
+  if (tv_root_size < 1) {
     return 1;
   }
 
   // Filter out mismatched contiguity info
-  if (tv_root_nob_size != contiguity.size()) {
+  if (tv_root_size != contiguity.size()) {
     return 1;
   }
 
@@ -897,16 +895,16 @@ size_t SchedulerRuntimeInfo::getMaxVectorizableWidth(TensorView* tv) {
   }
 
   size_t numel = 1;
-  for (auto i : c10::irange(tv_root_nob_size)) {
-    auto root_i = tv_root_nob_size - i - 1;
-    auto root_id = tv_root_nob[root_i];
+  for (auto i : c10::irange(tv_root_size)) {
+    auto root_i = tv_root_size - i - 1;
+    auto root_id = tv_root[root_i];
 
     if (root_id->extent()->isOneInt() || root_id->isBroadcast()) {
       continue;
     }
 
     // Not contiguous
-    if (!contiguity[root_i]) {
+    if (!*contiguity[root_i]) {
       break;
     }
 
@@ -953,17 +951,15 @@ size_t SchedulerRuntimeInfo::getInnerDimVectorizableWidth(TensorView* tv) {
       : tv->getMaybeRFactorDomain();
 
   auto tv_root_no_reductions = TensorDomain::noReductions(tv_root);
-  auto tv_root_nob = TensorDomain::noBroadcasts(tv_root);
-  auto tv_root_norb = TensorDomain::noBroadcasts(tv_root_no_reductions);
 
   auto contiguity = tv->domain()->contiguity();
   // Appears after reductions the reduction domain often has a contiguity entry.
   // This only matters if the result of the reduction is an output
-  if (contiguity.size() == tv_root_nob.size() &&
-      contiguity.size() != tv_root_norb.size()) {
-    std::vector<bool> new_contiguity;
-    for (auto i : c10::irange(tv_root_nob.size())) {
-      if (!tv_root_nob[i]->isReduction()) {
+  if (contiguity.size() == tv_root.size() &&
+      contiguity.size() != tv_root_no_reductions.size()) {
+    std::vector<c10::optional<bool>> new_contiguity;
+    for (auto i : c10::irange(tv_root.size())) {
+      if (!tv_root[i]->isReduction()) {
         new_contiguity.push_back(contiguity[i]);
       }
     }
@@ -971,23 +967,23 @@ size_t SchedulerRuntimeInfo::getInnerDimVectorizableWidth(TensorView* tv) {
   }
   tv_root = tv_root_no_reductions;
 
-  auto tv_root_norb_size = tv_root_norb.size();
+  auto tv_root_no_reductions_size = tv_root_no_reductions.size();
 
   // Filter out 0-dim tensors
-  if (tv_root_norb_size < 1) {
+  if (tv_root_no_reductions_size < 1) {
     return 1;
   }
 
   // Filter out mismatched contiguity info
-  if (tv_root_norb_size != contiguity.size()) {
+  if (tv_root_no_reductions_size != contiguity.size()) {
     return 1;
   }
 
   auto inner_most_dim = scheduler_utils::innerMostRootDim(tv);
 
   int id_pos = -1;
-  for (auto root_i : c10::irange(tv_root_norb_size)) {
-    if (tv_root_norb[root_i] == inner_most_dim) {
+  for (auto root_i : c10::irange(tv_root_no_reductions_size)) {
+    if (tv_root_no_reductions[root_i] == inner_most_dim) {
       id_pos = root_i;
       break;
     }
@@ -1000,7 +996,7 @@ size_t SchedulerRuntimeInfo::getInnerDimVectorizableWidth(TensorView* tv) {
   }
 
   // If the inner most dimension is not contiguous return 1
-  if (!contiguity[id_pos]) {
+  if (!*contiguity[id_pos]) {
     return 1;
   }
 
@@ -1035,13 +1031,7 @@ size_t SchedulerRuntimeInfo::getInnerDimVectorizableWidth(TensorView* tv) {
 }
 
 bool SchedulerEntry::sameAs(const SchedulerEntry* other) {
-  if (heuristc_ != other->heuristc_) {
-    return false;
-  }
-  if (index_mode_ != other->index_mode_) {
-    return false;
-  }
-  return params_->sameAs(other->params_);
+  return heuristic_ == other->heuristic_ && params_->sameAs(other->params_);
 }
 
 namespace {
@@ -1147,6 +1137,8 @@ class NoOpScheduler : public SchedulerEntry {
   //!  unified interface on NoOp scheduler.
   class NoOpHeuristic : public HeuristicParams {
    public:
+    using HeuristicParams::HeuristicParams;
+
     size_t hash() const override {
       return 0;
     }
@@ -1155,7 +1147,7 @@ class NoOpScheduler : public SchedulerEntry {
     }
     bool sameAs(const std::shared_ptr<HeuristicParams>& other) const override {
       auto other_casted = std::dynamic_pointer_cast<ReductionParams>(other);
-      return other_casted != nullptr;
+      return other_casted != nullptr && other_casted->cparams == cparams;
     };
   };
 
@@ -1165,7 +1157,7 @@ class NoOpScheduler : public SchedulerEntry {
       SchedulerRuntimeInfo& runtime_info,
       HeuristicSummary* data_cache = nullptr)
       : SchedulerEntry(ScheduleHeuristic::NoOp) {
-    params_ = std::make_shared<NoOpHeuristic>();
+    params_ = std::make_shared<NoOpHeuristic>("", runtime_info.getIndexMode());
   }
 
   //! Check if the no-op heuristics apply in given fusion
@@ -2140,7 +2132,6 @@ std::unique_ptr<SchedulerEntry> SchedulerEntry::makeEntry(
       TORCH_INTERNAL_ASSERT(false, "unreachable");
   }
 
-  scheduler_entry->index_mode_ = runtime_info.getIndexMode();
   return scheduler_entry;
 }
 

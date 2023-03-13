@@ -358,6 +358,8 @@ std::vector<at::Tensor> FusionKernelRuntime::runKernelWithInput(
     scheduler_entry->schedule(fusion_to_run.get());
     launch_params = scheduler_entry->params()->lparams;
     compile_params = scheduler_entry->params()->cparams;
+    TORCH_INTERNAL_ASSERT(
+        compile_params.index_type.has_value(), "Kernel index type not defined");
     executors_[group_id].compileFusion(
         fusion_to_run.get(), args, launch_params, compile_params);
   } else {
@@ -558,9 +560,11 @@ KernelArgumentHolder FusionKernelRuntime::compileKernel(
     FusionGuard fg(fusion_to_run.get());
     scheduler_entry->schedule(fusion_to_run.get());
     launch_params = scheduler_entry->params()->lparams;
-
+    auto compile_params = scheduler_entry->params()->cparams;
+    TORCH_INTERNAL_ASSERT(
+        compile_params.index_type.has_value(), "Kernel index type not defined");
     executors_[group_id].compileFusion(
-        fusion_to_run.get(), args, launch_params);
+        fusion_to_run.get(), args, launch_params, compile_params);
   } else {
     // TODO: this is a false negative assert, since we could be compiling
     // something for elevated high water mark on block size.

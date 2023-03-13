@@ -42,7 +42,7 @@ class TORCH_CUDA_CU_API FusionState {
   //! Get fusion object
   Fusion* fusion();
   //! Prints the Fusion IR representation
-  void printIr();
+  void printIr() const;
 
   //! Gets a Fusion IR Tensor/Scalar object
   Val* getFusionState(size_t index) const;
@@ -53,6 +53,8 @@ class TORCH_CUDA_CU_API FusionState {
   void addInput(Val* input);
   //! Adds a Tensor/Scalar output to the Fusion object
   void addOutput(Val* output);
+  //! Adds a Tensor/Scalar output to the Fusion object
+  void addOutput(Val* output, const std::vector<int64_t>& permutation);
   //! Alias an Output to Input in the Fusion object
   void aliasOutputToInput(Val* output, Val* input);
 

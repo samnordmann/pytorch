@@ -2142,7 +2142,7 @@ TEST_F(NVFuserTest, FusionIssue2076_CUDA) {
   auto tv0 = TensorViewBuilder()
                  .shape({-1, 1, -1, -1})
                  .dtype(DataType::Bool)
-                 .contiguity({true, true, true})
+                 .contiguity({true, c10::nullopt, true, true})
                  .build();
   fusion.addInput(tv0);
 
@@ -2247,8 +2247,10 @@ TEST_F(NVFuserTest, FusionIssue2076_v2_CUDA) {
   // torch.randn(4, 128, 1, device='cuda').transpose(1,2)
   // sizes[4, 128, 1] strides[128, 1, 1]
   // sizes[4, 1, 128] strides[128, 128, 1]
-  auto tv0 =
-      TensorViewBuilder().shape({-1, 1, -1}).contiguity({true, true}).build();
+  auto tv0 = TensorViewBuilder()
+                 .shape({-1, 1, -1})
+                 .contiguity({true, c10::nullopt, true})
+                 .build();
   fusion.addInput(tv0);
 
   // torch.randn(48, 128, device='cuda')

@@ -49,7 +49,7 @@ Fusion* FusionState::fusion() {
   return fusion_;
 }
 
-void FusionState::printIr() {
+void FusionState::printIr() const {
   TORCH_CHECK(fusion_ != nullptr, "Fusion is undefined.");
   fusion_->printMath();
 }
@@ -77,6 +77,14 @@ void FusionState::addInput(Val* input) {
 void FusionState::addOutput(Val* output) {
   TORCH_CHECK(fusion_ != nullptr, "Fusion is undefined.");
   fusion_->addOutput(output);
+}
+
+void FusionState::addOutput(
+    Val* output,
+    const std::vector<int64_t>& permutation) {
+  TORCH_CHECK(fusion_ != nullptr, "Fusion is undefined.");
+  fusion_->addOutput(output);
+  fusion_->setPermutationOnOutput(fusion_->outputs().size() - 1, permutation);
 }
 
 void FusionState::aliasOutputToInput(Val* output, Val* input) {

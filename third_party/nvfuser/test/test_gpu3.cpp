@@ -1291,7 +1291,7 @@ TEST_F(NVFuserTest, FusionIssue1430_CUDA) {
   auto tv0 = TensorViewBuilder()
                  .ndims(5)
                  .dtype(DataType::Half)
-                 .contiguity(std::vector<bool>(5, true))
+                 .contiguity(true)
                  .shape({V, W, X, Y, Z})
                  .build();
 
@@ -1748,21 +1748,21 @@ TEST_F(NVFuserTest, FusionIndexHoist3_CUDA) {
 
   const std::string expected_kernel = R"(
 __global__ void CUDAGeneratedKernel(Tensor<float, 2> T0, Tensor<float, 2> T2) {
-  int64_t i37;
-  i37 = (((nvfuser_index_t)blockIdx.x) * 256) + ((nvfuser_index_t)threadIdx.x);
+  int64_t i39;
+  i39 = ((nvfuser_index_t)threadIdx.x) + (256 * ((nvfuser_index_t)blockIdx.x));
   int64_t i7;
   i7 = T0.size[0] * T0.size[1];
-  bool b68;
-  b68 = i37 < i7;
+  bool b75;
+  b75 = i39 < i7;
   float f8;
   f8 = (float)(i7);
   float T1[1];
-  if (b68) {
+  if (b75) {
     T1[0]
-       = sinf(T0[i37]);
+       = sinf(T0[i39]);
   }
-  if (b68) {
-    T2[i37]
+  if (b75) {
+    T2[i39]
       = T1[0]
       + f8;
   }
@@ -4089,7 +4089,7 @@ TEST_F(NVFuserTest, FusionReproNoncontigBroadcast_CUDA) {
                  .build();
   auto tv1 = TensorViewBuilder()
                  .ndims(4)
-                 .contiguity({true, true})
+                 .contiguity({true, c10::nullopt, c10::nullopt, true})
                  .shape({-1, 1, 1, -1})
                  .dtype(DataType::Half)
                  .build();
@@ -4702,7 +4702,7 @@ TEST_F(NVFuserTest, FusionExpandRepro1860_CUDA) {
   auto fusion_ptr = std::make_unique<Fusion>();
   Fusion& fusion = *fusion_ptr;
   FusionGuard fg(&fusion);
-  std::vector<bool> contiguity{};
+  std::vector<c10::optional<bool>> contiguity(3, c10::nullopt);
 
   std::vector<int64_t> shape{1, -1, -1};
   TensorView* tv0 = makeContigConcreteTensor(shape);
@@ -4861,7 +4861,7 @@ TEST_F(NVFuserTest, FusionExpandBadShapeTest_CUDA) {
   auto fusion_ptr = std::make_unique<Fusion>();
   Fusion& fusion = *fusion_ptr;
   FusionGuard fg(&fusion);
-  std::vector<bool> contiguity{false};
+  std::vector<c10::optional<bool>> contiguity{false, c10::nullopt};
 
   auto tv0 = makeSymbolicTensor(2);
   fusion.addInput(tv0);
@@ -5998,7 +5998,7 @@ TEST_F(NVFuserTest, FusionExpandedInput_CUDA) {
   TensorView* tv0 = TensorViewBuilder()
                         .ndims(3)
                         .shape({-1, -1, -1})
-                        .contiguity({false, true})
+                        .contiguity({false, c10::nullopt, true})
                         .expanded({false, true, false})
                         .build();
   fusion->addInput(tv0);
@@ -6089,14 +6089,14 @@ TEST_F(NVFuserTest, FusionRepro2094_CUDA) {
     auto tv0 = TensorViewBuilder()
                    .ndims(1)
                    .shape(neg_one_vec)
-                   .contiguity({true})
+                   .contiguity(true)
                    .dtype(DataType::Float)
                    .build();
     fusion->addInput(tv0);
     auto tv1 = TensorViewBuilder()
                    .ndims(1)
                    .shape(neg_one_vec)
-                   .contiguity({true})
+                   .contiguity(true)
                    .dtype(DataType::Float)
                    .build();
     fusion->addInput(tv1);
@@ -6862,7 +6862,8 @@ TEST_F(NVFuserTest, FusionSqueezeOnlyWelford_CUDA) {
     auto dim0 = IterDomainBuilder(w1.avg->axis(0)).build();
     auto dim1 = IterDomainBuilder(w1.avg->axis(1)).build();
     auto td = IrBuilder::create<TensorDomain>(
-        std::vector<IterDomain*>{dim0, dim1}, std::vector<bool>{true, true});
+        std::vector<IterDomain*>{dim0, dim1},
+        std::vector<c10::optional<bool>>{true, true});
     auto tv = IrBuilder::create<TensorView>(td, dtype);
     return tv;
   };
@@ -7748,6 +7749,134 @@ TEST_F(NVFuserTest, FusionPredicateReductionInitGlobal_CUDA) {
 
   testValidate(
       fe.kernel(), cg_outputs, inputs, {ref_t1, ref_t3}, __LINE__, __FILE__);
+}
+
+// Make sure invalid usage of index type is detected
+TEST_F(NVFuserTest, FusionCompileIndexType_CUDA) {
+  Fusion fusion;
+  FusionGuard fg(&fusion);
+
+  auto tv0 = makeSymbolicTensor(1, DataType::Bool);
+  fusion.addInput(tv0);
+
+  auto tv2 = neg(tv0);
+  fusion.addOutput(tv2);
+
+  tv2->split(0, 256);
+  tv2->split(0, 1024);
+
+  MaxRootDomainInfoSpanningTree tree(tv2);
+  TransformPropagator tp(tv2);
+  tree.traverse(&tp);
+
+  inlineMost();
+
+  tv2->axis(1)->parallelize(ParallelType::BIDx);
+  tv2->axis(2)->parallelize(ParallelType::TIDx);
+
+  auto options = at::TensorOptions().dtype(at::kHalf).device(at::kCUDA, 0);
+  at::manual_seed(0);
+  at::Tensor t0 = at::randn({999}, options).ge(0);
+  std::vector<c10::IValue> small_inputs = {t0};
+
+  at::Tensor t0_large =
+      at::randn({std::numeric_limits<int>::max()}, options).ge(0);
+  std::vector<c10::IValue> large_inputs = {t0_large};
+
+  TORCH_CHECK(
+      KernelArgumentHolder::createKernelArgumentHolder(large_inputs)
+          .getIndexMode() == KernelIndexMode::INT64);
+  TORCH_CHECK(
+      KernelArgumentHolder::createKernelArgumentHolder(small_inputs)
+          .getIndexMode() == KernelIndexMode::INT32);
+
+  {
+    FusionExecutor fe;
+    // Lower the kernel with large inputs and int64 index type.
+    CompileParams compile_opts = {.index_type = PrimDataType::Int};
+    fe.compileFusion(&fusion, large_inputs, LaunchParams(), compile_opts);
+
+    TORCH_CHECK(
+        fe.kernel()->indexType() == PrimDataType::Int,
+        "Unexpected kernel index type: ",
+        fe.kernel()->indexType());
+
+    // Since the index type is int64, both small and large inputs
+    // should work fine
+    fe.runFusion(small_inputs);
+    fe.runFusion(large_inputs);
+  }
+
+  {
+    FusionExecutor fe;
+    // Lower the kernel with small inputs and int64 index type.
+    CompileParams compile_opts = {.index_type = PrimDataType::Int};
+    fe.compileFusion(&fusion, small_inputs, LaunchParams(), compile_opts);
+
+    TORCH_CHECK(
+        fe.kernel()->indexType() == PrimDataType::Int,
+        "Unexpected kernel index type: ",
+        fe.kernel()->indexType());
+
+    // Since the index type is int64, both small and large inputs
+    // should work fine
+    fe.runFusion(small_inputs);
+    fe.runFusion(large_inputs);
+  }
+
+  {
+    FusionExecutor fe;
+    fe.compileFusion(&fusion, small_inputs);
+    TORCH_CHECK(
+        fe.kernel()->indexType() == PrimDataType::Int32,
+        "Unexpected kernel index type: ",
+        fe.kernel()->indexType());
+
+    // This should complete successfully as the arguments are small
+    // enough to use the int32 index type
+    fe.runFusion(small_inputs);
+
+    // This should fail as the Kernel is already compiled for Int32, but
+    // the arguments are too large
+    EXPECT_THAT(
+        [&]() { fe.runFusion(large_inputs); },
+        testing::ThrowsMessage<c10::Error>(testing::HasSubstr(
+            "Given index mode and argument index mode don't match")));
+  }
+
+  {
+    FusionExecutor fe;
+    // Lower the kernel with int32 index type.
+    CompileParams compile_opts = {.index_type = PrimDataType::Int32};
+
+    fe.compileFusion(&fusion, {}, LaunchParams(), compile_opts);
+    TORCH_CHECK(
+        fe.kernel()->indexType() == PrimDataType::Int32,
+        "Unexpected kernel index type: ",
+        fe.kernel()->indexType());
+
+    fe.runFusion(small_inputs);
+
+    // This should fail as the Kernel is already compiled for Int32, but
+    // the arguments are too large
+    EXPECT_THAT(
+        [&]() { fe.runFusion(large_inputs); },
+        testing::ThrowsMessage<c10::Error>(testing::HasSubstr(
+            "Given index mode and argument index mode don't match")));
+  }
+
+  {
+    FusionExecutor fe;
+    // Lower the kernel with large inputs and int32 index type.
+    CompileParams compile_opts = {.index_type = PrimDataType::Int32};
+    // This should fail due to the conflict
+    EXPECT_THAT(
+        [&]() {
+          fe.compileFusion(&fusion, large_inputs, LaunchParams(), compile_opts);
+        },
+        testing::ThrowsMessage<c10::Error>(testing::HasSubstr(
+            "Compilation with int32 is requested but int64 is required for the arguments")));
+  }
 }
 
 // Test file size should be up to 10K LoC. Create a new file for more tests.

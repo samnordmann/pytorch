@@ -671,7 +671,7 @@ TensorDomain* createViewDomain(
       new_root_domain,
       new_rfactor_domain,
       new_rfactor_domain,
-      TensorDomain::getContiguousContiguity(new_rfactor_domain));
+      TensorDomain::getContiguityFilledWith(new_rfactor_domain, true));
 }
 
 } // namespace

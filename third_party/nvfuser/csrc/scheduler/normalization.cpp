@@ -1092,7 +1092,7 @@ std::shared_ptr<ReductionParams> getPersistentHeuristics(
   // Protect heuristics div by 0:
   n_tensor_inputs = std::max(n_tensor_inputs, (size_t)1);
 
-  return persistentHeuristic(
+  auto heuristic = persistentHeuristic(
       properties.total_reduction_numel,
       properties.total_iteration_numel,
       properties.inner_most_dimension_numel,
@@ -1102,6 +1102,8 @@ std::shared_ptr<ReductionParams> getPersistentHeuristics(
       max_persistent_size,
       vectorize_factor,
       project_persistent_buffers);
+  heuristic->cparams.index_type = indexModeToDtype(runtime_info.getIndexMode());
+  return heuristic;
 }
 
 std::shared_ptr<ReductionParams> getPersistentHeuristics(

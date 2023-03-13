@@ -27,7 +27,7 @@ static void setupRMSNorm_BWD(Fusion* fusion, DataType dtype) {
   auto input = makeContigTensor(3, dtype);
   auto weight = makeContigTensor(1, dtype);
   auto rstd = TensorViewBuilder()
-                  .contiguity({false, false})
+                  .contiguity({false, false, c10::nullopt})
                   .shape({-1, -1, 1})
                   .dtype(dtype)
                   .build();

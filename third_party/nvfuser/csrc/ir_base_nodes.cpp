@@ -126,7 +126,12 @@ void Val::resolveIndexDtype() {
   TORCH_INTERNAL_ASSERT(
       container()->isA<kir::Kernel>(),
       "Index type can only be resolved at compile time.");
-  dtype_ = container()->as<kir::Kernel>()->indexType();
+  auto index_dtype = container()->as<kir::Kernel>()->indexType();
+  TORCH_INTERNAL_ASSERT(
+      index_dtype == DataType::Int || index_dtype == DataType::Int32,
+      "Invalid index data type: ",
+      index_dtype);
+  dtype_ = index_dtype;
 }
 
 namespace {

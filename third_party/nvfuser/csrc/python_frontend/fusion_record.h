@@ -1027,7 +1027,7 @@ struct TensorRecord : RecordFunctor {
   TensorRecord(
       std::vector<State> _outputs,
       std::vector<int64_t> _symbolic_sizes,
-      std::vector<bool> _contiguous_info,
+      std::vector<c10::optional<bool>> _contiguous_info,
       PrimDataType _dtype,
       bool _is_cpu = false)
       : RecordFunctor(
@@ -1038,7 +1038,11 @@ struct TensorRecord : RecordFunctor {
         symbolic_sizes_(std::move(_symbolic_sizes)),
         contiguous_info_(std::move(_contiguous_info)),
         dtype_(_dtype),
-        is_cpu_(_is_cpu) {}
+        is_cpu_(_is_cpu) {
+    TORCH_CHECK(
+        symbolic_sizes_.size() == contiguous_info_.size(),
+        "symbolic_sizes needs to has the same length as contiguous_info");
+  }
   virtual ~TensorRecord() = default;
   virtual RecordFunctor* clone() final {
     return new TensorRecord(*this);
@@ -1059,7 +1063,9 @@ struct TensorRecord : RecordFunctor {
     }
     size_t contig_hash = 0;
     for (size_t i = 0; i < contiguous_info_.size(); ++i) {
-      contig_hash |= (contiguous_info_[i] << (contiguous_info_.size() - 1 - i));
+      contig_hash |=
+          ((contiguous_info_[i].has_value() && contiguous_info_[i].value())
+           << (contiguous_info_.size() - 1 - i));
     }
 
     result |= ((static_cast<size_t>(is_cpu_) & 0x1) << 31);
@@ -1099,11 +1105,21 @@ struct TensorRecord : RecordFunctor {
   }
 
   virtual void operator()(FusionState& fd) final {
+    int rank = symbolic_sizes_.size();
+    std::vector<bool> is_expand(rank);
+
+    for (const auto index : c10::irange(rank)) {
+      bool is_broadcast = !contiguous_info_[index].has_value();
+      bool has_symbolic_size = (symbolic_sizes_[index] == -1);
+      is_expand[index] = is_broadcast && has_symbolic_size;
+    }
+
     auto tv = TensorViewBuilder()
                   .ndims(symbolic_sizes_.size())
                   .contiguity(contiguous_info_)
                   .shape(symbolic_sizes_)
                   .dtype(dtype_)
+                  .expanded(std::move(is_expand))
                   .build();
 
     if (symbolic_sizes_.empty() && is_cpu_) {
@@ -1136,10 +1152,14 @@ struct TensorRecord : RecordFunctor {
       } else {
         os << ", ";
       }
-      if (ci) {
-        os << "True";
+      if (!ci.has_value()) {
+        os << "None";
       } else {
-        os << "False";
+        if (*ci) {
+          os << "True";
+        } else {
+          os << "False";
+        }
       }
     }
     os << "], dtype=" << dtypeToPyString(dtype_);
@@ -1156,7 +1176,7 @@ struct TensorRecord : RecordFunctor {
   std::vector<int64_t> symbolic_sizes_;
   //! A vector to indicate whether the a tensor dimension is contiguous
   //! with the dimension just to its right.
-  std::vector<bool> contiguous_info_;
+  std::vector<c10::optional<bool>> contiguous_info_;
   //! Tensor data type.
   PrimDataType dtype_;
   //! Notes a scalar CPU Tensor
@@ -1167,8 +1187,21 @@ struct TensorRecord : RecordFunctor {
 
 template <class OutputType>
 struct OutputRecord : RecordFunctor {
-  OutputRecord(std::vector<State> _args)
-      : RecordFunctor(std::move(_args), {}, "add_output", RecordType::Output) {}
+  OutputRecord(std::vector<State> _args, std::vector<int64_t> stride_order = {})
+      : RecordFunctor(std::move(_args), {}, "add_output", RecordType::Output) {
+    if (!stride_order.empty()) {
+      bool requires_permutation = false;
+      for (const auto i : c10::irange(stride_order.size())) {
+        if (stride_order[i] != i) {
+          requires_permutation = true;
+          break;
+        }
+      }
+      if (requires_permutation) {
+        stride_order_ = stride_order;
+      }
+    }
+  }
   virtual ~OutputRecord() = default;
   virtual RecordFunctor* clone() final {
     return new OutputRecord(*this);
@@ -1176,17 +1209,31 @@ struct OutputRecord : RecordFunctor {
 
   //! Nothing extra necessary in hash
   //! Child specific hash function in lower 32 bits.
-  //! | 31 ---------------------------------------  0 |
-  //! | None                                          |
+  //! | 31 ----------------------------------------  0 |
+  //! | stride_order hash                              |
   virtual size_t hash() const final {
-    auto result = RecordFunctor::hash();
-    return result;
+    size_t stride_order_hash = 0;
+    for (size_t i = 0; i < stride_order_.size(); ++i) {
+      stride_order_hash = (stride_order_hash << 4) | stride_order_[i];
+    }
+    return RecordFunctor::hash() | (stride_order_hash & 0xffffffff);
   }
 
   virtual bool operator==(const RecordFunctor& other) const final {
     auto result = false;
     if (auto child_ptr = dynamic_cast<const OutputRecord*>(&other)) {
       result = RecordFunctor::operator==(other);
+      if (result) {
+        result = (stride_order_.size() == child_ptr->stride_order_.size());
+        if (result) {
+          for (size_t i = 0; i < stride_order_.size(); ++i) {
+            if (stride_order_[i] != child_ptr->stride_order_[i]) {
+              result = false;
+              break;
+            }
+          }
+        }
+      }
     }
     return result;
   }
@@ -1199,6 +1246,9 @@ struct OutputRecord : RecordFunctor {
     }
 
     if (alias_input) {
+      TORCH_CHECK(
+          stride_order_.empty(),
+          "stride_order can't be dictated for aliased outputs.");
       if (std::is_same<OutputType, TensorView>::value) {
         fd.aliasOutputToInput(output, alias_input);
       } else {
@@ -1207,12 +1257,59 @@ struct OutputRecord : RecordFunctor {
     } else {
       // With C++17, this statement should be "if constexpr"
       if (std::is_same<OutputType, TensorView>::value) {
-        fd.addOutput(output->template as<TensorView>());
+        auto tv_output = output->template as<TensorView>();
+
+        if (!stride_order_.empty()) {
+          std::vector<int64_t> reverse_perm(stride_order_.size());
+          size_t duplicate_check = 0;
+          for (const auto i : c10::irange(stride_order_.size())) {
+            TORCH_CHECK(
+                stride_order_[i] >= 0 &&
+                    stride_order_[i] < (int64_t)reverse_perm.size(),
+                "stride_order elements need to be within [0, stride_order.size())!");
+            reverse_perm[stride_order_[i]] = i;
+            duplicate_check |= 1 << stride_order_[i];
+          }
+          TORCH_CHECK(
+              duplicate_check == (1 << reverse_perm.size()) - 1,
+              "duplicated elements in stride_order detected!");
+          tv_output = permute(tv_output, reverse_perm);
+          fd.addOutput(tv_output, stride_order_);
+        } else {
+          fd.addOutput(tv_output);
+        }
       } else {
+        TORCH_CHECK(
+            stride_order_.empty(),
+            "stride_order can't be dictated for scalar outputs.");
         fd.addOutput(output);
       }
     }
   }
+
+  void print(std::ostream& os, bool close_function = true) const final {
+    RecordFunctor::print(os, false);
+    if (!stride_order_.empty()) {
+      os << ", stride_order=[";
+      bool first_arg = true;
+      for (auto item : stride_order_) {
+        if (first_arg) {
+          first_arg = false;
+        } else {
+          os << ", ";
+        }
+        os << item;
+      }
+      os << "]";
+    }
+    if (close_function) {
+      os << ")";
+    }
+  }
+
+ private:
+  //! The tensor dimensions to reduce
+  std::vector<int64_t> stride_order_;
 };
 
 //! Specialized Record Functor for the FusionDefinition's sum/min/max ops.

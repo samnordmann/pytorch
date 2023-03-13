@@ -28,11 +28,7 @@ namespace nvfuser {
 inline TensorView* makeContigTensor(
     size_t ndims,
     DataType dtype = DataType::Float) {
-  return TensorViewBuilder()
-      .ndims(ndims)
-      .dtype(dtype)
-      .contiguity(std::vector<bool>(ndims, true))
-      .build();
+  return TensorViewBuilder().ndims(ndims).dtype(dtype).contiguity(true).build();
 }
 
 // Make a tensor that is known to be non-contiguous of dimensionality=ndims,
@@ -53,18 +49,7 @@ inline TensorView* makeConcreteTensor(
 inline TensorView* makeContigConcreteTensor(
     std::vector<int64_t> shape,
     DataType dtype = DataType::Float) {
-  std::vector<bool> contiguity;
-  for (auto s : shape) {
-    if (s == 1) {
-      continue;
-    }
-    contiguity.push_back(true);
-  }
-  return TensorViewBuilder()
-      .shape(shape)
-      .dtype(dtype)
-      .contiguity(contiguity)
-      .build();
+  return TensorViewBuilder().shape(shape).dtype(dtype).contiguity(true).build();
 }
 
 inline void checkIntValue(

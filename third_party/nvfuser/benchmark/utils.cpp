@@ -145,11 +145,7 @@ TensorView* makeSymbolicTensor(size_t ndims, DataType dtype) {
 }
 
 TensorView* makeContigTensor(size_t ndims, DataType dtype) {
-  return TensorViewBuilder()
-      .ndims(ndims)
-      .dtype(dtype)
-      .contiguity(std::vector<bool>(ndims, true))
-      .build();
+  return TensorViewBuilder().ndims(ndims).dtype(dtype).contiguity(true).build();
 }
 
 TensorView* makeConcreteTensor(std::vector<int64_t> shape, DataType dtype) {
@@ -159,18 +155,7 @@ TensorView* makeConcreteTensor(std::vector<int64_t> shape, DataType dtype) {
 TensorView* makeContigConcreteTensor(
     std::vector<int64_t> shape,
     DataType dtype) {
-  std::vector<bool> contiguity;
-  for (auto s : shape) {
-    if (s == 1) {
-      continue;
-    }
-    contiguity.push_back(true);
-  }
-  return TensorViewBuilder()
-      .shape(shape)
-      .dtype(dtype)
-      .contiguity(contiguity)
-      .build();
+  return TensorViewBuilder().shape(shape).dtype(dtype).contiguity(true).build();
 }
 
 void runBenchmarkIterations(

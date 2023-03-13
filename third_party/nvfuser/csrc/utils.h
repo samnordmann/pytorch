@@ -367,4 +367,62 @@ std::string toDelimitedString(
   return toDelimitedString(vec.begin(), vec.end(), delim);
 }
 
+template <int64_t index, int64_t stop, int64_t step, typename func_t>
+void unrolled_for(func_t fun) {
+  if constexpr (index < stop) {
+    fun(std::integral_constant<int64_t, index>());
+    unrolled_for<index + step, stop>(fun);
+  }
+}
+
+template <int64_t index, int64_t stop, typename func_t>
+void unrolled_for(func_t fun) {
+  unrolled_for<index, stop, 1>(fun);
+}
+
+template <int64_t stop, typename func_t>
+void unrolled_for(func_t fun) {
+  unrolled_for<0, stop>(fun);
+}
+
+template <typename... Args>
+std::string toDelimitedString(
+    const std::tuple<Args...>& args,
+    std::string delim = ", ") {
+  std::stringstream ss;
+  bool first_val = true;
+  unrolled_for<sizeof...(Args)>([&](auto i) {
+    if (!first_val) {
+      ss << delim;
+    }
+    auto item = std::get<decltype(i)::value>(args);
+    ss << Printer<decltype(item)>::toString(item);
+    first_val = false;
+  });
+  return ss.str();
+}
+
+template <typename... Args>
+class DebugPrintScope {
+ public:
+  DebugPrintScope(std::string name, Args... args) : name_(std::move(name)) {
+    std::cout << "Entering " << name_ << "("
+              << toDelimitedString(std::forward_as_tuple(args...)) << ")"
+              << std::endl;
+  }
+  ~DebugPrintScope() {
+    std::cout << "Leaving " << name_ << std::endl;
+  }
+
+ private:
+  std::string name_;
+};
+
+// Note: ##__VA_ARGS__ is not C++ stardard, but it should work on gcc and clang.
+// Compared to __VA_ARGS__, ##__VA_ARGS__ automatically remove the preceding
+// comma when empty, allowing empty variadic parameters. If using other
+// compiler, please use DebugPrintScope directly without this macro.
+#define DEBUG_PRINT_SCOPE(...) \
+  DebugPrintScope _debug_print_scope(__func__, ##__VA_ARGS__)
+
 } // namespace nvfuser

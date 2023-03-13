@@ -170,11 +170,7 @@ class TORCH_CUDA_CU_API SchedulerEntry {
   bool sameAs(const SchedulerEntry* other);
 
   ScheduleHeuristic heuristic() const {
-    return heuristc_;
-  }
-
-  KernelIndexMode indexMode() const {
-    return index_mode_;
+    return heuristic_;
   }
 
   const std::shared_ptr<HeuristicParams>& params() const {
@@ -207,17 +203,15 @@ class TORCH_CUDA_CU_API SchedulerEntry {
   }
 
  protected:
-  explicit SchedulerEntry(ScheduleHeuristic heuristic) : heuristc_(heuristic) {}
+  explicit SchedulerEntry(ScheduleHeuristic heuristic)
+      : heuristic_(heuristic) {}
 
   //! Heuristic parameters if applicable
   std::shared_ptr<HeuristicParams> params_ = nullptr;
 
  private:
   //! What kind of heuristics does this entry have?
-  const ScheduleHeuristic heuristc_;
-
-  //! Kernel Index Mode
-  KernelIndexMode index_mode_ = KernelIndexMode::INT64;
+  const ScheduleHeuristic heuristic_;
 };
 
 //! Hash function for a scheduler entry

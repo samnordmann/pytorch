@@ -277,8 +277,14 @@ void GpuLower::lower(Fusion* fusion) {
       active_gpu_lower = nullptr;
     }
   } lower_guard(this);
+
+  // Use int64 by default as the kernel index type
+  auto kernel_index_type = cparams_.index_type.has_value()
+      ? cparams_.index_type.value()
+      : PrimDataType::Int;
+
   // Copy fusion into a new kernel for processing
-  kernel_ = std::make_unique<kir::Kernel>(fusion, cparams_.index_type);
+  kernel_ = std::make_unique<kir::Kernel>(fusion, kernel_index_type);
   // Alias the fusion kernel caries around as a view of itself.
   fusion_ = kernel_.get();
 

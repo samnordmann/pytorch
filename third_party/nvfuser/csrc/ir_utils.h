@@ -364,11 +364,5 @@ TORCH_CUDA_CU_API bool isTorchGatherLookupTv(const Val* tv);
 
 TORCH_CUDA_CU_API std::string varName(const Val* val);
 
-// Given ids that may or may not contain broadcast IDs, find the mapping of
-// indices between ids and TensorDomain::noBroadcasts(ids). For example, if ids
-// is [I, I, b, b, I], then the result should be [0, 1, undefined, undefined, 2]
-//
-std::vector<size_t> fullToNoBroadcastMap(const std::vector<IterDomain*> ids);
-
 } // namespace ir_utils
 } // namespace nvfuser

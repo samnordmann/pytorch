@@ -339,6 +339,10 @@ class TORCH_CUDA_CU_API FusionExecutorCache {
     return fusion_.get();
   }
 
+  const Fusion* fusion() const {
+    return fusion_.get();
+  }
+
   void printFusion() {
     fusion_->printMath();
   }

@@ -167,7 +167,7 @@ TensorView* squeeze(TensorView* x, const std::vector<bool>& to_squeeze) {
 
   auto out = IrBuilder::create<TensorView>(
       IrBuilder::create<TensorDomain>(
-          out_domain, TensorDomain::getContiguousContiguity(out_domain)),
+          out_domain, TensorDomain::getContiguityFilledWith(out_domain, true)),
       *x->getDataType());
 
   IrBuilder::create<SqueezeOp>(x->container(), out, x, to_squeeze);
@@ -316,7 +316,7 @@ TensorView* permute(TensorView* x, const std::vector<int64_t>& new2old) {
 
   TensorView* out_tensor = IrBuilder::create<TensorView>(
       IrBuilder::create<TensorDomain>(
-          out_domain, TensorDomain::getContiguousContiguity(out_domain)),
+          out_domain, TensorDomain::getContiguityFilledWith(out_domain, true)),
       x->getDataType().value());
   IrBuilder::create<TransposeOp>(out_tensor, x, normalized_new2old);
   return out_tensor;

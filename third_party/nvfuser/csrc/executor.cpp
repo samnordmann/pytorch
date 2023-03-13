@@ -52,18 +52,14 @@ void setAssertOutOfBound(bool value) {
 
 namespace {
 
-static const char* defineIndexMode(KernelIndexMode index_mode) {
-  switch (index_mode) {
-    case KernelIndexMode::INT32:
-      return "typedef int nvfuser_index_t;\n";
-    case KernelIndexMode::INT64:
-      return "typedef int64_t nvfuser_index_t;\n";
-    default:
-      break;
+static const char* defineIndexType(PrimDataType index_type) {
+  if (index_type == DataType::Int32) {
+    return "typedef int nvfuser_index_t;\n";
+  } else if (index_type == DataType::Int) {
+    return "typedef int64_t nvfuser_index_t;\n";
+  } else {
+    TORCH_INTERNAL_ASSERT(false, "invalid indexing type: ", index_type);
   }
-
-  TORCH_INTERNAL_ASSERT(false, "unknow indexing mode");
-  return "";
 }
 
 static const char* defineIntegerTypes() {
@@ -90,7 +86,9 @@ static const std::string& includeStdComplex() {
 
 } // namespace
 
-std::string FusionExecutor::getStructuredCode(const std::string& kernel) {
+std::string FusionExecutor::getStructuredCode(
+    const std::string& kernel_str,
+    PrimDataType index_type) {
   // generating cuda code;
   std::string code = "";
   if (shouldAssertOutOfBound()) {
@@ -98,13 +96,13 @@ std::string FusionExecutor::getStructuredCode(const std::string& kernel) {
   }
   code += includeStdComplex();
   code += std::string("namespace ") + FusionExecutor::kernelNamespace() +
-      " {\n" + defineIntegerTypes() + defineIndexMode(options_.index_mode) +
-      executor_utils::kernelPreamble() + kernel + "}\n";
+      " {\n" + defineIntegerTypes() + defineIndexType(index_type) +
+      executor_utils::kernelPreamble() + kernel_str + "}\n";
 
   if (isDebugDumpEnabled(DebugDumpOption::CudaKernel)) {
     std::cout << "\n======= Codegen output for kernel: " << kernelName()
               << " =======\n\n"
-              << kernel << "\n======================================\n\n";
+              << kernel_str << "\n======================================\n\n";
   } else if (isDebugDumpEnabled(DebugDumpOption::CudaFull)) {
     std::cout << "\n======= Codegen output for kernel: " << kernelName()
               << " =======\n\n"
@@ -228,10 +226,24 @@ void FusionExecutor::compileFusion(
 
   // TODO: refactor the options_ passed through
   options_.device = c10::Device(c10::DeviceType::CUDA, args.getDeviceIndex());
-  options_.index_mode = args.getIndexMode();
-  compile_params.index_type =
-      (options_.index_mode == KernelIndexMode::INT64 ? DataType::Int
-                                                     : DataType::Int32);
+
+  // Set the index type of compile params if not already set. If set,
+  // make sure the compile param type is valid with the given kernel
+  // arguments.
+  auto arg_index_type = args.getIndexType();
+  if (compile_params.index_type.has_value()) {
+    // If the int32 compilation is requested, but the arguments demand
+    // int64, that's an error
+    TORCH_INTERNAL_ASSERT(
+        !(compile_params.index_type.value() == DataType::Int32 &&
+          arg_index_type == DataType::Int),
+        "Compilation with int32 is requested but int64 is required for the arguments");
+  } else {
+    // If the given compile option doesn't specify the index type, use
+    // the type determined by the arguments
+    compile_params.index_type = arg_index_type;
+  }
+
   c10::DeviceGuard dg(options_.device);
 
   TORCH_INTERNAL_ASSERT(
@@ -287,7 +299,7 @@ void FusionExecutor::compileFusion(
   auto external_code_path = std::getenv("PYTORCH_NVFUSER_EXTERNAL_SRC");
   const auto structured_code = external_code_path
       ? load_external_code(external_code_path)
-      : getStructuredCode(kernel_code_);
+      : getStructuredCode(kernel_code_, kernel->indexType());
 
   const auto& kernel_summary = kernel->summary();
 
@@ -971,6 +983,38 @@ KernelArgumentHolder FusionExecutor::inferOutputSizes(
   return ret;
 }
 
+namespace {
+
+// Make sure the index type of Kernel is valid
+// TODO: Check the size of all tensors, not just inputs.
+void validateIndexType(
+    kir::Kernel* kernel,
+    KernelArgumentHolder& args,
+    const CompileParams& compile_params) {
+  // Currently, once a Fusion is lowered to a Kernel, the index type
+  // has to be resolved completely. This means that
+  // args.getIndexType() must be equal to the index type of the
+  // compiled kernel.
+  TORCH_INTERNAL_ASSERT(
+      kernel->indexType() == args.getIndexType(),
+      "Invalid pair of kernel index type and argument index type. Kernel type: ",
+      kernel->indexType(),
+      ". Argument index type: ",
+      args.getIndexType());
+
+  // Similarly, if the type of the index type in the given compile
+  // parameters doesn't match, that's also an error.
+  TORCH_INTERNAL_ASSERT(
+      !compile_params.index_type.has_value() ||
+          kernel->indexType() == compile_params.index_type.value(),
+      "Kernel index type and compilation index type don't match. Kernel type: ",
+      kernel->indexType(),
+      ". Compilation index type: ",
+      compile_params.index_type.value());
+}
+
+} // namespace
+
 std::vector<at::Tensor> FusionExecutor::runFusion(
     KernelArgumentHolder& args,
     const LaunchParams& launch_constraints,
@@ -983,6 +1027,8 @@ std::vector<at::Tensor> FusionExecutor::runFusion(
   TORCH_INTERNAL_ASSERT(
       !args.getCacheId().has_value() || outputs.empty(),
       "short cut input cache is not compatible with pre-allocated output");
+
+  validateIndexType(kernel(), args, compile_params);
 
   size_t num_inputs = args.size();
 
@@ -1110,7 +1156,8 @@ std::vector<at::Tensor> FusionExecutor::runFusion(
         compile_params.maxrregcount != maxrregcount_high_water_mark) {
       const auto kernel = lowered_->kernel();
       kernel_code_ = codegen::generateCudaKernel(kernel, kernelName());
-      const auto structured_code = getStructuredCode(kernel_code_);
+      const auto structured_code =
+          getStructuredCode(kernel_code_, kernel->indexType());
       block_size_high_water_mark = launch_params_.nThreads();
       maxrregcount_high_water_mark = compile_params.maxrregcount;
 
@@ -1293,16 +1340,11 @@ std::vector<at::Tensor> FusionExecutor::runFusion(
   if (execute_kernel_) {
     if (maybe_available_dynamic_smem_.has_value() &&
         size_t(launch_params_.smem()) > maybe_available_dynamic_smem_.value()) {
-#ifndef USE_ROCM
       // Increase limit of dynamic shared memory if needed.
       AT_CUDA_DRIVER_CHECK(at::globalContext().getNVRTC().cuFuncSetAttribute(
           compiled_kernel_.function,
           CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES,
           launch_params_.smem()));
-#else
-      TORCH_INTERNAL_ASSERT(
-          false, "cuFuncSetAttribute not supported with HIP.");
-#endif
     }
     if (!kernel()->summary().has_cooperative_grid_reduction) {
       FUSER_PERF_SCOPE("ExecutorRunFusion::cuLaunchKernel");
@@ -1319,7 +1361,6 @@ std::vector<at::Tensor> FusionExecutor::runFusion(
           args.getBuffer(),
           nullptr));
     } else {
-#ifndef USE_ROCM
       FUSER_PERF_SCOPE("ExecutorRunFusion::cuLaunchCooperativeKernel");
       AT_CUDA_DRIVER_CHECK(
           at::globalContext().getNVRTC().cuLaunchCooperativeKernel(
@@ -1333,10 +1374,6 @@ std::vector<at::Tensor> FusionExecutor::runFusion(
               launch_params_.smem(),
               stream,
               args.getBuffer()));
-#else
-      TORCH_INTERNAL_ASSERT(
-          false, "Cross grid communication not supported with HIP.");
-#endif
     }
   }
 
@@ -1385,16 +1422,19 @@ void FusionExecutor::compileRtc(
     const std::string& code,
     const std::string& name,
     bool structured,
-    CompileOptions options) {
+    PrimDataType index_type) {
   FUSER_PERF_SCOPE("ExecutorRunFusion::compileRtc");
+  TORCH_INTERNAL_ASSERT(
+      index_type == PrimDataType::Int || index_type == PrimDataType::Int32 ||
+          "Invalid index type: ",
+      index_type);
   std::string scode;
   if (!structured) {
-    scode = getStructuredCode(code);
+    scode = getStructuredCode(code, index_type);
   } else {
     scode = code;
   }
   fusion_id_ = 1;
-  options_ = options;
 
   std::tie(compiled_kernel_, last_compiler_log_, last_compiled_binary_) =
       executor_utils::nvrtcCompile(c10::nullopt, scode, name, fusion_id_);
@@ -1403,7 +1443,7 @@ void FusionExecutor::compileRtc(
 float FusionExecutor::runRtc(
     const LaunchParams& launch_params,
     const std::vector<at::Tensor>& args,
-    KernelIndexMode index_mode) {
+    PrimDataType index_type) {
   FUSER_PERF_SCOPE("runFusion");
 
   c10::DeviceGuard dg(options_.device);
@@ -1415,7 +1455,7 @@ float FusionExecutor::runRtc(
   cudaEventCreate(&start_event);
   cudaEventCreate(&finish_event);
 
-  KernelArgumentHolder kernel_arguments(index_mode);
+  KernelArgumentHolder kernel_arguments(index_type);
   kernel_arguments.push(args);
 
   cudaEventRecord(start_event, stream);

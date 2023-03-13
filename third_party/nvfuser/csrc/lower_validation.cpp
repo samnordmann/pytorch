@@ -189,7 +189,6 @@ void checkContiguity(
     TensorView* tv) {
   TORCH_INTERNAL_ASSERT(tv->getMemoryType() == MemoryType::Global);
 
-  int no_broadcast_i = 0;
   for (const auto idx : c10::irange(tv->getRootDomain().size())) {
     auto root = tv->getRootDomain()[idx];
     if (domains.find(root) != domains.end()) {
@@ -199,13 +198,10 @@ void checkContiguity(
           "Issue found in, ",
           tv);
       TORCH_INTERNAL_ASSERT(
-          tv->domain()->contiguity().at(no_broadcast_i),
+          *tv->domain()->contiguity().at(idx),
           "Cannot merge non-contiguous root domains with misaligned vectorization.",
           "Issue found in, ",
           tv);
-    }
-    if (!root->isBroadcast()) {
-      no_broadcast_i++;
     }
   }
 }
@@ -226,20 +222,17 @@ void checkContiguity(
       PairwiseRootDomainMap(producer, consumer)
           .mapConsumerToProducer(consumer->domain(), producer->domain());
 
-  std::unordered_map<IterDomain*, bool> producer_domain_contiguity;
-  int no_broadcast_i = 0;
+  std::unordered_map<IterDomain*, c10::optional<bool>>
+      producer_domain_contiguity;
   for (const auto idx : c10::irange(producer->getMaybeRFactorDomain().size())) {
-    auto root = producer->getMaybeRFactorDomain()[idx];
-    auto contiguity = producer->domain()->contiguity().at(no_broadcast_i);
+    auto root = producer->getMaybeRFactorDomain().at(idx);
+    auto contiguity = producer->domain()->contiguity().at(idx);
     producer_domain_contiguity.insert({root, contiguity});
-    if (!root->isBroadcast()) {
-      no_broadcast_i++;
-    }
   }
 
   for (auto consumer_root : consumer->getMaybeRFactorDomain()) {
     if (domains.find(consumer_root) != domains.end()) {
-      auto producer_root = root_c2p[consumer_root];
+      auto producer_root = root_c2p.at(consumer_root);
       TORCH_INTERNAL_ASSERT(
           producer_domain_contiguity.find(producer_root) !=
           producer_domain_contiguity.end());
@@ -253,7 +246,7 @@ void checkContiguity(
       TORCH_INTERNAL_ASSERT(root_c2p.find(consumer_root) != root_c2p.end());
 
       TORCH_INTERNAL_ASSERT(
-          producer_domain_contiguity[producer_root],
+          *producer_domain_contiguity.at(producer_root),
           "Cannot merge non-contiguous root domains with misaligned vectorization.",
           "Issue found in, ",
           consumer);
@@ -304,21 +297,19 @@ class VectorizeValidator : public OptInDispatch {
   // For the producer tensor, it's indexed first by transformed like
   // the consumer. So, to find its contig merged domain, use the
   // consumer TensorDomain with the producer contiguity info.
-  static std::vector<bool> mapProducerContiguity(
+  static std::vector<c10::optional<bool>> mapProducerContiguity(
       TensorView* producer_tv,
       TensorView* consumer_tv) {
     const auto c2p = PairwiseRootDomainMap(producer_tv, consumer_tv)
                          .mapConsumerToProducer(
                              consumer_tv->domain(), producer_tv->domain());
 
-    std::vector<bool> producer_contiguity;
-
-    auto producer_full2nob =
-        ir_utils::fullToNoBroadcastMap(producer_tv->getMaybeRFactorDomain());
+    std::vector<c10::optional<bool>> producer_contiguity;
 
     for (auto consumer_root_id : consumer_tv->getRootDomain()) {
       auto producer_root_id = c2p.at(consumer_root_id);
       if (producer_root_id->isBroadcast()) {
+        producer_contiguity.push_back(c10::nullopt);
         continue;
       }
       auto producer_root_it = std::find(
@@ -329,8 +320,8 @@ class VectorizeValidator : public OptInDispatch {
           producer_root_it != producer_tv->getMaybeRFactorDomain().end());
       auto producer_root_id_offset = std::distance(
           producer_tv->getMaybeRFactorDomain().begin(), producer_root_it);
-      producer_contiguity.push_back(producer_tv->domain()->contiguity().at(
-          producer_full2nob.at(producer_root_id_offset)));
+      producer_contiguity.push_back(
+          producer_tv->domain()->contiguity().at(producer_root_id_offset));
     }
 
     return producer_contiguity;
@@ -425,12 +416,14 @@ class VectorizeValidator : public OptInDispatch {
 
     // Contiguity is based on rfactor domain.
     IterDomain* last_root_dim = nullptr;
+    size_t last_root_dim_pos;
     for (size_t i = tv->getMaybeRFactorDomain().size(); i > 0; i--) {
       auto r_id = tv->getMaybeRFactorDomain()[i - 1];
       if (r_id->isReduction() || r_id->isBroadcast()) {
         continue;
       }
       last_root_dim = r_id;
+      last_root_dim_pos = i - 1;
       break;
     }
 
@@ -442,7 +435,7 @@ class VectorizeValidator : public OptInDispatch {
 
     TORCH_CHECK(
         last_root_dim == validator.vectorized_id_ &&
-            tv->domain()->contiguity().back(),
+            *tv->domain()->contiguity().at(last_root_dim_pos),
         "Vectorized dim has to be from a contiguous inner most position: ",
         tv,
         "\n");

@@ -19,27 +19,24 @@
 
 namespace nvfuser::python_frontend {
 
-std::vector<bool> computeContiguity(
+std::vector<c10::optional<bool>> computeContiguity(
     const std::vector<int64_t>& sizes,
     const std::vector<int64_t>& strides) {
   TORCH_CHECK(
       sizes.size() == strides.size(),
       "compute_contiguity: Sizes and strides must have the same number of dimensions");
   auto not_broadcast = [&](auto i) { return strides[i] != 0 && sizes[i] != 1; };
-  auto irange = c10::irange(sizes.size());
-  auto no_b_size = std::count_if(irange.begin(), irange.end(), not_broadcast);
-  std::vector<bool> contiguity(no_b_size);
+  std::vector<c10::optional<bool>> contiguity(sizes.size(), c10::nullopt);
   if (contiguity.size() == 0) {
     return contiguity;
   }
   int64_t last = sizes.size() - 1;
   for (; last >= 0; --last) {
     if (not_broadcast(last)) {
+      contiguity[last] = (strides.at(last) == 1);
       break;
     }
   }
-  contiguity[no_b_size - 1] = (strides.at(last) == 1);
-  int64_t no_broadcast_i = 0;
   for (int64_t i = 0; i < last;) {
     if (not_broadcast(i)) {
       auto l = i++;
@@ -48,8 +45,7 @@ std::vector<bool> computeContiguity(
           break;
         }
       }
-      contiguity[no_broadcast_i] = (strides[l] == strides[i] * sizes[i]);
-      no_broadcast_i++;
+      contiguity[l] = (strides[l] == strides[i] * sizes[i]);
     } else {
       i++;
     }
@@ -206,7 +202,7 @@ void initNvFuserPythonBindings(PyObject* module) {
           [](FusionDefinition& self, Scalar output) {
             FUSER_PERF_SCOPE("FusionDefinition.add_output (scalar)");
             TORCH_CHECK(
-                !self.id().has_value(),
+                !self.completed(),
                 "Attempting to add to a completed definition!");
             self.defineRecord(
                 new OutputRecord<Val>({self.recordingState(output())}));
@@ -219,7 +215,7 @@ void initNvFuserPythonBindings(PyObject* module) {
              c10::optional<Tensor> alias_input = c10::nullopt) {
             FUSER_PERF_SCOPE("FusionDefinition.add_output (tensor)");
             TORCH_CHECK(
-                !self.id().has_value(),
+                !self.completed(),
                 "Attempting to add to a completed definition!");
             if (alias_input.has_value()) {
               self.defineRecord(new OutputRecord<TensorView>(
@@ -233,15 +229,42 @@ void initNvFuserPythonBindings(PyObject* module) {
           py::arg("output"),
           py::arg("alias_input") = py::none())
       .def(
+          "add_output",
+          [](FusionDefinition& self,
+             Tensor output,
+             std::vector<int64_t> stride_order) {
+            FUSER_PERF_SCOPE("FusionDefinition.add_output (tensor)");
+            TORCH_CHECK(
+                !self.completed(),
+                "Attempting to add to a completed definition!");
+            TORCH_CHECK(
+                stride_order.empty() || output.dims == stride_order.size(),
+                "stride_order needs to be either empty or the same length of Tensor `output`");
+            size_t duplicate_check = 0;
+            for (const auto& v : stride_order) {
+              TORCH_CHECK(
+                  v >= 0 && v < (int64_t)stride_order.size(),
+                  "stride_order elements need to be within [0, stride_order.size())");
+              duplicate_check |= 1 << v;
+            }
+            TORCH_CHECK(
+                duplicate_check == (1 << stride_order.size()) - 1,
+                "duplicated elements in stride_order detected!");
+            self.defineRecord(new OutputRecord<TensorView>(
+                {self.recordingState(output())}, stride_order));
+          },
+          py::arg("output"),
+          py::arg("stride_order"))
+      .def(
           "define_tensor",
           [](FusionDefinition& self,
              std::vector<int64_t>& symbolic_sizes,
-             std::vector<bool>& contiguous,
+             std::vector<c10::optional<bool>>& contiguous,
              PrimDataType dtype = DataType::Float,
              bool is_cpu = false) -> Tensor {
             FUSER_PERF_SCOPE("FusionDefinition.define_tensor (default)");
             TORCH_CHECK(
-                !self.id().has_value(),
+                !self.completed(),
                 "Attempting to add to a completed definition!");
 
             for (size_t i = 0; i < symbolic_sizes.size(); ++i) {
@@ -278,7 +301,7 @@ void initNvFuserPythonBindings(PyObject* module) {
              bool is_cpu = false) -> Tensor {
             FUSER_PERF_SCOPE("FusionDefinition.define_tensor (integration)");
             TORCH_CHECK(
-                !self.id().has_value(),
+                !self.completed(),
                 "Attempting to add to a completed definition!");
             TORCH_CHECK(
                 sizes.size() == strides.size(),
@@ -295,10 +318,10 @@ void initNvFuserPythonBindings(PyObject* module) {
             maybe_symbolic_sizes.reserve(sizes.size());
             for (const auto i : c10::irange(sizes.size())) {
               TORCH_INTERNAL_ASSERT(
-                  sizes[i] > 0,
+                  sizes[i] >= 0,
                   "Size of ",
                   sizes[i],
-                  " is not supported in nvFuser. Expected size > 0.");
+                  " is not supported in nvFuser. Expected size >= 0.");
               if (sizes[i] == 1) {
                 maybe_symbolic_sizes.push_back(1);
               } else {
@@ -328,7 +351,7 @@ void initNvFuserPythonBindings(PyObject* module) {
              PrimDataType dtype = DataType::Double) -> Scalar {
             FUSER_PERF_SCOPE("FusionDefinition.define_constant (double)");
             TORCH_CHECK(
-                !self.id().has_value(),
+                !self.completed(),
                 "Attempting to add to a completed definition!");
             Scalar out = self.defineScalar();
             self.defineRecord(new ConstantRecord<Double, double>(
@@ -345,7 +368,7 @@ void initNvFuserPythonBindings(PyObject* module) {
              PrimDataType dtype = DataType::ComplexDouble) -> Scalar {
             FUSER_PERF_SCOPE("FusionDefinition.define_constant (complex)");
             TORCH_CHECK(
-                !self.id().has_value(),
+                !self.completed(),
                 "Attempting to add to a completed definition!");
             Scalar out = self.defineScalar();
             self.defineRecord(
@@ -363,7 +386,7 @@ void initNvFuserPythonBindings(PyObject* module) {
              PrimDataType dtype = DataType::Bool) -> Scalar {
             FUSER_PERF_SCOPE("FusionDefinition.define_constant (bool)");
             TORCH_CHECK(
-                !self.id().has_value(),
+                !self.completed(),
                 "Attempting to add to a completed definition!");
             Scalar out = self.defineScalar();
             self.defineRecord(new ConstantRecord<Bool, bool>(
@@ -380,7 +403,7 @@ void initNvFuserPythonBindings(PyObject* module) {
              PrimDataType dtype = DataType::Int) -> Scalar {
             FUSER_PERF_SCOPE("FusionDefinition.define_constant (int)");
             TORCH_CHECK(
-                !self.id().has_value(),
+                !self.completed(),
                 "Attempting to add to a completed definition!");
             Scalar out = self.defineScalar();
             self.defineRecord(new ConstantRecord<Int, int64_t>(
@@ -396,7 +419,7 @@ void initNvFuserPythonBindings(PyObject* module) {
              PrimDataType dtype = DataType::Double) -> Scalar {
             FUSER_PERF_SCOPE("FusionDefinition.define_scalar");
             TORCH_CHECK(
-                !self.id().has_value(),
+                !self.completed(),
                 "Attempting to add to a completed definition!");
             Scalar out = self.defineScalar();
             self.defineRecord(

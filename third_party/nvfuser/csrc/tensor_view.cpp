@@ -110,8 +110,8 @@ TensorView::TensorView(
   }
 
   // default to non_contiguous;
-  std::vector<bool> contig_info(
-      TensorDomain::noBroadcasts(sizes).size(), false);
+  std::vector<c10::optional<bool>> contig_info =
+      TensorDomain::getContiguityFilledWith(sizes, false);
 
   int64_t inner_most_non_broadcast = tensor_type->dim().value() - 1;
   while (inner_most_non_broadcast >= 0) {
@@ -122,8 +122,6 @@ TensorView::TensorView(
     }
   }
   // if all broadcast, then inner_most_non_broadcast == -1
-
-  auto full2nob = ir_utils::fullToNoBroadcastMap(sizes);
 
   // we iterate through stride_index_, which goes from fastest changing
   // dimension to slowest, instead of iterating through sizes. This allows
@@ -148,8 +146,7 @@ TensorView::TensorView(
       if (!found_innermost_non_broadcast) {
         // mark fastest changing dimension collapsible only when it's
         // "innermost"
-        contig_info.at(full2nob.at(index)) =
-            ((int64_t)index == inner_most_non_broadcast);
+        contig_info.at(index) = ((int64_t)index == inner_most_non_broadcast);
       } else {
         // check the neighboring faster dimension, collapse if it is considered
         // as inner dimension per stride_index
@@ -159,8 +156,7 @@ TensorView::TensorView(
         if (inner_index_opt.has_value() &&
             inner_index_opt.value() == (index + 1)) {
           // collapse if inner dimension has non-broadcasted strides
-          contig_info.at(full2nob.at(index)) =
-              !sizes.at(index + 1)->isBroadcast();
+          contig_info.at(index) = !sizes.at(index + 1)->isBroadcast();
         }
       }
     }
@@ -274,8 +270,7 @@ void TensorView::convertRfactorToRootDomain() {
         }
 
         TORCH_INTERNAL_ASSERT(
-            TensorDomain::noBroadcasts(new_root_domain).size() ==
-            domain()->contiguity().size());
+            new_root_domain.size() == domain()->contiguity().size());
         setDomain(IrBuilder::create<TensorDomain>(
             container(), new_root_domain, domain()->contiguity()));
       };
@@ -1076,8 +1071,7 @@ TensorView* TensorView::multiOutputRfactorHelper(
       new_id.push_back(replay.getReplay().at(id));
     }
 
-    std::vector<bool> new_contig(
-        tv->domain()->contiguity().begin(), tv->domain()->contiguity().end());
+    std::vector<c10::optional<bool>> new_contig(tv->domain()->contiguity());
     // replace tensor domain of target tv
     tv->setDomain(IrBuilder::create<TensorDomain>(
         tv->getRootDomain(), new_id, new_contig));
@@ -1259,7 +1253,7 @@ TensorView* TensorView::cacheBefore(c10::optional<LoadStoreOpType> cache_op) {
   consumer->setDomain(IrBuilder::create<TensorDomain>(
       container(),
       new_root_domain,
-      TensorDomain::getContiguousContiguity(new_root_domain)));
+      TensorDomain::getContiguityFilledWith(new_root_domain, true)));
 
   // Insert producer - Cache_Before (CB) - before this TV.
   // Before: Prev TV -> [Definition Op] -> This TV
@@ -1319,7 +1313,7 @@ TensorView* TensorView::cacheFork() {
       IrBuilder::create<TensorDomain>(
           container(),
           IterDomain::clone(root_domain),
-          TensorDomain::getContiguousContiguity(root_domain)),
+          TensorDomain::getContiguityFilledWith(root_domain, true)),
       getDataType().value());
 
   // Create write operation from this TV to new output
@@ -1391,7 +1385,7 @@ TensorView* TensorView::cacheAfter(c10::optional<LoadStoreOpType> cache_op) {
       IrBuilder::create<TensorDomain>(
           container(),
           new_root_domain,
-          TensorDomain::getContiguousContiguity(new_root_domain)),
+          TensorDomain::getContiguityFilledWith(new_root_domain, true)),
       getDataType().value());
 
   // Set domain of producer - No Change
@@ -1437,18 +1431,12 @@ void TensorView::clearReductionIterDomains() {
       "should not call clearReductionIterDomains on already transformed TensorDomains");
 
   std::vector<IterDomain*> new_root;
-  std::vector<bool> new_contig;
-  int64_t no_broadcast_i = 0;
+  std::vector<c10::optional<bool>> new_contig;
   for (const auto i : c10::irange(getRootDomain().size())) {
     auto root_i = getRootDomain().at(i);
     if (!root_i->isReduction()) {
       new_root.push_back(root_i);
-      if (!root_i->isBroadcast()) {
-        new_contig.push_back(domain()->contiguity().at(no_broadcast_i));
-      }
-    }
-    if (!root_i->isBroadcast()) {
-      no_broadcast_i++;
+      new_contig.push_back(domain()->contiguity().at(i));
     }
   }
 
@@ -1513,9 +1501,20 @@ TensorViewBuilder& TensorViewBuilder::dtype(DataType dtype) {
   return *this;
 }
 
-TensorViewBuilder& TensorViewBuilder::contiguity(std::vector<bool> contiguity) {
-  TORCH_CHECK(contiguity_.empty(), "Attempting to reset contiguity");
+TensorViewBuilder& TensorViewBuilder::contiguity(
+    std::vector<c10::optional<bool>> contiguity) {
+  TORCH_CHECK(
+      contiguity_.empty() && !uniform_contiguity_.has_value(),
+      "Attempting to reset contiguity");
   contiguity_ = std::move(contiguity);
+  return *this;
+}
+
+TensorViewBuilder& TensorViewBuilder::contiguity(bool contiguity) {
+  TORCH_CHECK(
+      contiguity_.empty() && !uniform_contiguity_.has_value(),
+      "Attempting to reset contiguity");
+  uniform_contiguity_ = contiguity;
   return *this;
 }
 
@@ -1568,7 +1567,6 @@ TensorViewBuilder& TensorViewBuilder::expanded(std::vector<bool> expanded) {
 TensorView* TensorViewBuilder::build() const {
   // Build the domain
   std::vector<IterDomain*> domain(ndims_, nullptr);
-  size_t non_broadcasting_dims = 0;
   for (const auto i : c10::irange(ndims_)) {
     bool is_expanded = false;
     Val* extent = nullptr;
@@ -1597,8 +1595,6 @@ TensorView* TensorViewBuilder::build() const {
     IterDomainBuilder builder(FusionGuard::getCurFusion()->zeroVal(), extent);
     if (extent->isOneInt()) {
       builder.iter_type(IterType::Broadcast);
-    } else {
-      non_broadcasting_dims++;
     }
     if (expanded_extent != nullptr) {
       builder.expanded_extent(expanded_extent);
@@ -1607,12 +1603,32 @@ TensorView* TensorViewBuilder::build() const {
   }
 
   TORCH_CHECK(
-      contiguity_.empty() || contiguity_.size() == non_broadcasting_dims,
+      contiguity_.empty() || contiguity_.size() == domain.size(),
       "The size of contiguity must equal to the number of non-broadcasting IterDomains");
 
-  // Create the final TensorView
-  return IrBuilder::create<TensorView>(
-      IrBuilder::create<TensorDomain>(domain, contiguity_), dtype_);
+  for (auto i : c10::irange(contiguity_.size())) {
+    TORCH_CHECK(
+        domain.at(i)->isBroadcast() != contiguity_.at(i).has_value(),
+        "The contiguity of a broadcast dimension must be None. "
+        "The contiguity of a non-broadcast dimension must be true/false");
+  }
+
+  if (uniform_contiguity_.has_value()) {
+    TORCH_INTERNAL_ASSERT(
+        contiguity_.empty(),
+        "contiguity_ and uniform_contiguity_ can not be set at the same time");
+    // Create the final TensorView
+    return IrBuilder::create<TensorView>(
+        IrBuilder::create<TensorDomain>(
+            domain,
+            TensorDomain::getContiguityFilledWith(
+                domain, *uniform_contiguity_)),
+        dtype_);
+  } else {
+    // Create the final TensorView
+    return IrBuilder::create<TensorView>(
+        IrBuilder::create<TensorDomain>(domain, contiguity_), dtype_);
+  }
 }
 
 } // namespace nvfuser

@@ -780,7 +780,7 @@ TensorView* castIntermediateValueInCompleteFusion(
     return IrBuilder::create<TensorView>(
         IrBuilder::create<TensorDomain>(
             new_root_domain,
-            TensorDomain::getContiguousContiguity(new_root_domain)),
+            TensorDomain::getContiguityFilledWith(new_root_domain, true)),
         data_type);
   };
 

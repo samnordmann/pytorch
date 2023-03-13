@@ -2,6 +2,7 @@
 #include <gtest/gtest.h>
 
 #include <executor.h>
+#include <inlining.h>
 #include <ir_all_nodes.h>
 #include <ir_builder.h>
 #include <ops/arith.h>
@@ -781,6 +782,46 @@ TEST_F(NVFuserTest, FusionIndexing17_CUDA) {
 
   testValidate(
       &fusion, cg_outputs, aten_inputs, aten_outputs, __LINE__, __FILE__);
+}
+
+// Repro of issue #2560
+TEST_F(NVFuserTest, FusionIndexing18_CUDA) {
+  Fusion fusion;
+  FusionGuard fg(&fusion);
+
+  auto tv0 = makeSymbolicTensor(1);
+  fusion.addInput(tv0);
+  auto tv1 = makeSymbolicTensor(2);
+  fusion.addInput(tv1);
+
+  auto tv2 = broadcast(tv0, {false, true});
+  auto tv3 = add(tv2, tv1);
+  auto tv4 = sum(tv3, {0, 1});
+  fusion.addOutput(tv4);
+
+  tv4->merge(0);
+  tv4->split(0, 4);
+  auto tv5 = tv4->rFactor({1});
+
+  MaxRootDomainInfoSpanningTree tree(tv5);
+  TransformPropagator tp(tv5);
+  tree.traverse(&tp);
+
+  inlineAllAt(tv4, 1, true);
+
+  auto options = at::TensorOptions().dtype(at::kFloat).device(at::kCUDA, 0);
+  at::manual_seed(1);
+  at::Tensor t0 = at::randn({5}, options);
+  at::Tensor t1 = at::randn({5, 3}, options);
+  std::vector<c10::IValue> inputs = {t0, t1};
+
+  FusionExecutor fe;
+  fe.compileFusion(&fusion, inputs);
+  auto cg_outputs = fe.runFusion(inputs);
+
+  auto ref = (t0.unsqueeze(-1) + t1).sum();
+
+  testValidate(fe.kernel(), cg_outputs, inputs, {ref}, __LINE__, __FILE__);
 }
 
 } // namespace nvfuser

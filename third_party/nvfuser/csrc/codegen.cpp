@@ -1485,12 +1485,7 @@ class CudaKernelGenerator : private OptOutConstDispatch {
       TORCH_INTERNAL_ASSERT(
           !(parallel_reduction && pred), "Cannot reduce predicated axis: ", pt);
       bool flag = false;
-      // Currently assumed that no dimensions parallelized with blocks
-      // are predicated. This assumption may be lifted, but
-      // gridReduction would need some changes.
       if (isParallelTypeBlockDim(pt)) {
-        TORCH_INTERNAL_ASSERT(
-            !pred, "Predication on block dimensions not allowed: ", pt);
         flag = parallel_reduction;
       } else {
         flag = !pred && !parallel_reduction;
@@ -1520,13 +1515,6 @@ class CudaKernelGenerator : private OptOutConstDispatch {
       const bool pred = thread_pred.get(pt);
       TORCH_INTERNAL_ASSERT(
           !(parallel_reduction && pred), "Cannot reduce predicated axis: ", pt);
-      // Currently assumed that no dimensions parallelized with blocks
-      // are predicated. This assumption may be lifted, but
-      // gridReduction would need some changes.
-      if (isParallelTypeBlockDim(pt)) {
-        TORCH_INTERNAL_ASSERT(
-            !pred, "Predication on block dimensions not allowed: ", pt);
-      }
       flags.arg(parallel_reduction);
     }
     return flags.str();

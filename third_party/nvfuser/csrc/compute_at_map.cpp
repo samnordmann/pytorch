@@ -330,25 +330,16 @@ void IterDomainGraph::build(Fusion* fusion) {
     const auto& domain = tv->domain()->domain();
     auto all_ids = ir_utils::allIDsOf(tv);
 
-    // Check is this domain is a consumer of a view-like operation
-    bool view_like_domain = tv->domain()->hasViewLikeRFactor();
-
     for (auto id : all_ids) {
-      // Check if this id is a view like rfactor id
-      bool is_view_rfactor_id = false;
-      if (view_like_domain && id->isRFactorProduct()) {
-        // If the tensor domain is a view like domain, and the iteration domain
-        // is marked as an rfactor product and is in the rfactor domain, it's a
-        // view like rfactor iteration domain
-        const auto& rfactor_domain = tv->domain()->getMaybeRFactorDomain();
-        if (std::find(rfactor_domain.begin(), rfactor_domain.end(), id) !=
-            rfactor_domain.end()) {
-          is_view_rfactor_id = true;
-        }
-      }
+      // Check if this id is an rfactor id in the rfactor domain
+      bool is_rfactor_domain_id = id->isRFactorProduct() &&
+          std::find(
+              tv->getMaybeRFactorDomain().begin(),
+              tv->getMaybeRFactorDomain().end(),
+              id) != tv->getMaybeRFactorDomain().end();
       bool is_leaf_id =
           std::find(domain.begin(), domain.end(), id) != domain.end();
-      initializeId(id, is_view_rfactor_id, is_leaf_id);
+      initializeId(id, is_rfactor_domain_id, is_leaf_id);
     }
   }
 
@@ -687,7 +678,7 @@ void IterDomainGraph::build(Fusion* fusion) {
 
 void IterDomainGraph::initializeId(
     IterDomain* id,
-    bool is_view_rfactor_id,
+    bool is_rfactor_id,
     bool is_leaf_id) {
   permissive_nodes_.initializeSet(id);
   exact_nodes_.initializeSet(id);
@@ -700,8 +691,8 @@ void IterDomainGraph::initializeId(
 
   all_ids_.pushBack(id);
 
-  if (is_view_rfactor_id) {
-    view_rfactor_ids_.emplace(id);
+  if (is_rfactor_id) {
+    rfactor_ids_.emplace(id);
   }
 }
 
@@ -994,7 +985,7 @@ IterDomain* ComputeAtMap::computeConcreteId(
       if (std::none_of(
               exact_set->vector().begin(),
               exact_set->vector().end(),
-              [&](IterDomain* id) { return isViewRfactor(id); })) {
+              [&](IterDomain* id) { return isRfactor(id); })) {
         continue;
       }
       VectorOfUniqueEntries<std::shared_ptr<VectorOfUniqueEntries<IterDomain*>>>
@@ -1372,19 +1363,18 @@ std::string ComputeAtMap::toString() const {
   return ss.str();
 }
 
-bool ComputeAtMap::isViewRfactor(IterDomain* ref_id) const {
-  return id_graph_.viewRfactorIds().find(ref_id) !=
-      id_graph_.viewRfactorIds().end();
+bool ComputeAtMap::isRfactor(IterDomain* ref_id) const {
+  return id_graph_.rfactorIds().find(ref_id) != id_graph_.rfactorIds().end();
 }
 
-std::vector<IterDomain*> ComputeAtMap::getViewRfactorDomainsOfIdGroup(
+std::vector<IterDomain*> ComputeAtMap::getRfactorDomainsOfIdGroup(
     IterDomain* ref_id,
     IdMappingMode mode) const {
   auto disjoint_set = disjointSetOf(ref_id, mode);
   std::vector<IterDomain*> rfactor_ids;
   for (auto disjoint_id : disjoint_set->vector()) {
-    if (id_graph_.viewRfactorIds().find(disjoint_id) !=
-        id_graph_.viewRfactorIds().end()) {
+    if (id_graph_.rfactorIds().find(disjoint_id) !=
+        id_graph_.rfactorIds().end()) {
       rfactor_ids.push_back(disjoint_id);
     }
   }
@@ -1453,7 +1443,7 @@ ComputeAtMap::getInputDisjointSetsOf(IterDomain* of_id, bool stop_at_rfactor) {
         std::any_of(
             currently_visiting->vector().begin(),
             currently_visiting->vector().end(),
-            [&](IterDomain* id) { return isViewRfactor(id); })) {
+            [&](IterDomain* id) { return isRfactor(id); })) {
       input_disjoint_sets.pushBack(currently_visiting);
       continue;
     }

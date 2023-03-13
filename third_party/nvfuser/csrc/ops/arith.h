@@ -140,7 +140,7 @@ TORCH_CUDA_CU_API WelfordResult WelfordRaw(
     // import IrBuilder just for this one interface.
     Int* init_N = nullptr);
 
-TORCH_CUDA_CU_API TensorView* select(TensorView* tv, int dim, Int* index);
+TORCH_CUDA_CU_API TensorView* select(TensorView* tv, int dim, Val* index);
 
 // RNG OPERATIONS
 TORCH_CUDA_CU_API TensorView* rand(

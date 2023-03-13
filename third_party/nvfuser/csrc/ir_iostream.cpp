@@ -112,7 +112,7 @@ void IrTransformPrinter::printTransforms(TensorView* tv) {
     os() << ")\n";
   }
 
-  os() << " contiguity: " << tv->domain()->contiguity() << "\n";
+  os() << " contiguity: " << tv->domain()->getContiguityString() << "\n";
 
   auto from = tv->getMaybeRFactorDomain();
   auto all_exp = DependencyCheck::getAllExprsBetween(

@@ -577,7 +577,7 @@ std::shared_ptr<TransposeParams> getTransposeHeuristics(
   FusionGuard fg(fusion);
 
   // Incase any buffer is of type DataType::Index
-  DataType index_type = indexModeToDtype(runtime_info.getIndexMode());
+  const auto index_type = indexModeToDtype(runtime_info.getIndexMode());
 
   auto domain_map_entry = getDomainMap(data_cache, fusion);
   auto& domain_map = dynamic_cast<DomainMap&>(domain_map_entry.get());
@@ -604,7 +604,8 @@ std::shared_ptr<TransposeParams> getTransposeHeuristics(
   auto inner_most_pos1_in_ref1 = innermost_info[0];
   auto inner_most_pos2_in_ref1 = innermost_info[1];
 
-  auto params = std::make_shared<TransposeParams>("Transpose heuristics");
+  auto params =
+      std::make_shared<TransposeParams>("Transpose heuristics", index_type);
 
   // Expand inner-most dims to virtual inner-most dims so that the inner-most
   // dims has at least tile_size elements

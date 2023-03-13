@@ -2230,7 +2230,7 @@ __global__ void kernel1(Tensor<float, 1> T0, Tensor<float, 1> T1) {
   }
 }
     )";
-  fe.compileRtc(kernel, "CudaCodeGen::kernel1");
+  fe.compileRtc(kernel, "CudaCodeGen::kernel1", false, PrimDataType::Int);
   LaunchParams lp(
       256, // gdimx
       1, // gdimy
@@ -2245,7 +2245,7 @@ __global__ void kernel1(Tensor<float, 1> T0, Tensor<float, 1> T1) {
   const std::vector<int64_t> tensor_dims = {8};
   auto in0 = at::randn(tensor_dims, options);
   auto out0 = at::empty_like(in0);
-  fe.runRtc(lp, {in0, out0});
+  fe.runRtc(lp, {in0, out0}, PrimDataType::Int);
 
   auto out_ref = in0 * 2;
   TORCH_CHECK(out_ref.allclose(out0));
@@ -2286,7 +2286,7 @@ __global__ void kernel1(
     }
 }
     )";
-  fe.compileRtc(kernel, "CudaCodeGen::kernel1");
+  fe.compileRtc(kernel, "CudaCodeGen::kernel1", false, PrimDataType::Int);
   LaunchParams lp(
       1, // gdimx
       1, // gdimy
@@ -2302,7 +2302,7 @@ __global__ void kernel1(
   auto in0 = at::randn(tensor_dims, options);
   auto out_var = at::empty({x}, options);
   auto out_avg = at::empty({x}, options);
-  fe.runRtc(lp, {in0, out_var, out_avg});
+  fe.runRtc(lp, {in0, out_var, out_avg}, PrimDataType::Int);
 
   TORCH_CHECK(in0.var({1, 2}, false).allclose(out_var));
   TORCH_CHECK(in0.mean({1, 2}).allclose(out_avg, /*rtol*/ 1e-5, /*atol*/ 1e-6));
@@ -2360,7 +2360,7 @@ __global__ void kernel1(
     }
 }
     )";
-  fe.compileRtc(kernel, "CudaCodeGen::kernel1");
+  fe.compileRtc(kernel, "CudaCodeGen::kernel1", false, PrimDataType::Int);
   LaunchParams lp(
       1, // gdimx
       1, // gdimy
@@ -2387,7 +2387,10 @@ __global__ void kernel1(
   // run kernel
   auto out_var = at::zeros({x}, options);
   auto out_avg = at::zeros({x}, options);
-  fe.runRtc(lp, {in0, out_avg, out_var, init_avg, init_var, init_N});
+  fe.runRtc(
+      lp,
+      {in0, out_avg, out_var, init_avg, init_var, init_N},
+      PrimDataType::Int);
 
   // compare with reference output
   auto cat_tensor = at::cat({init_in, in0}, 1);
@@ -2440,7 +2443,7 @@ __global__ void kernel1(
     }
 }
     )";
-  fe.compileRtc(kernel, "CudaCodeGen::kernel1");
+  fe.compileRtc(kernel, "CudaCodeGen::kernel1", false, PrimDataType::Int);
   LaunchParams lp(
       1, // gdimx
       1, // gdimy
@@ -2456,7 +2459,7 @@ __global__ void kernel1(
   auto in0 = at::randn(tensor_dims, options);
   auto out_var = at::empty({x}, options);
   auto out_avg = at::empty({x}, options);
-  fe.runRtc(lp, {in0, out_avg, out_var});
+  fe.runRtc(lp, {in0, out_avg, out_var}, PrimDataType::Int);
 
   TORCH_CHECK(in0.var({1, 2}, false).allclose(out_var));
   TORCH_CHECK(in0.mean({1, 2}).allclose(out_avg, /*rtol*/ 1e-5, /*atol*/ 1e-6));
@@ -2515,7 +2518,7 @@ __global__ void kernel1(
     }
 }
     )";
-  fe.compileRtc(kernel, "CudaCodeGen::kernel1");
+  fe.compileRtc(kernel, "CudaCodeGen::kernel1", false, PrimDataType::Int);
   LaunchParams lp(
       x, // gdimx
       y, // gdimy
@@ -2547,7 +2550,8 @@ __global__ void kernel1(
        work_buf_avg,
        work_buf_var,
        work_buf_N,
-       sync_flag});
+       sync_flag},
+      PrimDataType::Int);
   std::vector<int64_t> dims{0, 1};
 
   TORCH_CHECK(in0.mean(dims).allclose(out_avg, /*rtol*/ 1e-5, /*atol*/ 1e-6));
@@ -8694,9 +8698,6 @@ TEST_F(NVFuserTest, FusionGridReductionWithNonExactParallelDimensions2_CUDA) {
   tv5->axis(1)->parallelize(ParallelType::BIDy);
   tv5->axis(2)->parallelize(ParallelType::BIDz);
 
-  // TODO: This needs a fix for issue #1102.
-  // Also, need to allow predicated grid reductions.
-#if 0
   FusionExecutor fe;
   fe.compileFusion(&fusion);
 
@@ -8713,7 +8714,6 @@ TEST_F(NVFuserTest, FusionGridReductionWithNonExactParallelDimensions2_CUDA) {
 
   testValidate(
       &fusion, outputs, aten_inputs, {ref1, ref2, ref3}, __LINE__, __FILE__);
-#endif
 }
 
 TEST_F(NVFuserTest, FusionGridWelfordWithNonExactParallelDimensions2_CUDA) {
@@ -8747,9 +8747,6 @@ TEST_F(NVFuserTest, FusionGridWelfordWithNonExactParallelDimensions2_CUDA) {
   tv5->axis(1)->parallelize(ParallelType::BIDy);
   tv5->axis(2)->parallelize(ParallelType::BIDz);
 
-  // TODO: needs a fix for issue #1102
-  // Also, need to allow predicated grid reductions.
-#if 0
   FusionExecutor fe;
   fe.compileFusion(&fusion);
 
@@ -8766,7 +8763,6 @@ TEST_F(NVFuserTest, FusionGridWelfordWithNonExactParallelDimensions2_CUDA) {
 
   testValidate(
       &fusion, outputs, aten_inputs, {ref1, ref2, ref3}, __LINE__, __FILE__);
-#endif
 }
 
 // Repro of issue #1102
@@ -9032,25 +9028,27 @@ TEST_F(NVFuserTest, FusionChannelsLastParser_CUDA) {
   // 2. use a fuzzy compare (ignore non-significant whitespaces for example)
   const std::string expected_kernel = R"(
 __global__ void CUDAGeneratedKernel(Tensor<__half, 4> T0, Tensor<__half, 4> T2, Tensor<__half, 4> T7) {
-  int64_t i275;
-  i275 = (((nvfuser_index_t)blockIdx.x) * 128) + ((nvfuser_index_t)threadIdx.x);
-  int64_t i277;
-  i277 = (T0.size[1] * T0.size[2]) * T0.size[3];
-  int64_t i311;
-  i311 = i275 % i277;
-  int64_t i287;
-  i287 = T0.size[2] * T0.size[3];
-  int64_t i312;
-  i312 = i311 % i287;
-  if ((i275 < (((T0.size[0] * T0.size[1]) * T0.size[2]) * T0.size[3]))) {
+  int64_t i295;
+  i295 = T0.size[2] * T0.size[1];
+  int64_t i298;
+  i298 = ((nvfuser_index_t)threadIdx.x) + (128 * ((nvfuser_index_t)blockIdx.x));
+  int64_t i300;
+  i300 = (T0.size[1] * T0.size[2]) * T0.size[3];
+  int64_t i332;
+  i332 = i298 % i300;
+  int64_t i309;
+  i309 = T0.size[2] * T0.size[3];
+  int64_t i333;
+  i333 = i332 % i309;
+  if ((i298 < (((T0.size[0] * T0.size[1]) * T0.size[2]) * T0.size[3]))) {
     __half T9[1];
     T9[0] = 0;
     T9[0]
-       = T2[(((((((i275 / i277) * T0.size[2]) * T0.size[1]) * T0.size[3]) + (((i312 % T0.size[3]) * T0.size[2]) * T0.size[1])) + ((i311 / i287) * T0.size[2])) + (i312 / T0.size[3]))];
+       = T2[(((((i295 * T0.size[3]) * (i298 / i300)) + (i295 * (i333 % T0.size[3]))) + (T0.size[2] * (i332 / i309))) + (i333 / T0.size[3]))];
     __half T8[1];
     T8[0] = 0;
     T8[0]
-       = T0[i275];
+       = T0[i298];
     float T3[1];
     T3[0]
        = __half2float(T9[0]);
@@ -9070,7 +9068,7 @@ __global__ void CUDAGeneratedKernel(Tensor<__half, 4> T0, Tensor<__half, 4> T2, 
     __half T10[1];
     T10[0]
        = __float2half(T6[0]);
-    T7[i275]
+    T7[i298]
        = T10[0];
   }
 }

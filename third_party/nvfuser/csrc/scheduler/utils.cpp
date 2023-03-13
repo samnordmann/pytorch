@@ -1256,26 +1256,25 @@ bool hasInnerDim(
     return true;
   }
 
-  auto rfactor_dom_nob =
-      TensorDomain::noBroadcasts(tv->getMaybeRFactorDomain());
+  auto rfactor_dom = tv->getMaybeRFactorDomain();
 
   auto root_pos_it = std::find_if(
-      rfactor_dom_nob.begin(),
-      rfactor_dom_nob.end(),
+      rfactor_dom.begin(),
+      rfactor_dom.end(),
       [&inner_most_dim](IterDomain* id) { return inner_most_dim == id; });
 
-  if (root_pos_it == rfactor_dom_nob.end()) {
+  if (root_pos_it == rfactor_dom.end()) {
     return false;
   }
 
-  auto inner_most_dim_pos = std::distance(rfactor_dom_nob.begin(), root_pos_it);
+  auto inner_most_dim_pos = std::distance(rfactor_dom.begin(), root_pos_it);
 
   const auto& contiguity = tv->domain()->contiguity();
 
-  TORCH_INTERNAL_ASSERT(contiguity.size() == rfactor_dom_nob.size());
+  TORCH_INTERNAL_ASSERT(contiguity.size() == rfactor_dom.size());
 
   // Don't vectorize if inner most dimension is not contiguous
-  if (!contiguity[inner_most_dim_pos]) {
+  if (!*contiguity[inner_most_dim_pos]) {
     return false;
   }
 

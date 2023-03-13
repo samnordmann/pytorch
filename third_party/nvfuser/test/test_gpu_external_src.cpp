@@ -31,7 +31,8 @@ TEST_F(NVFuserTest, FusionExternalSrc_CUDA) {
   buffer << cuda_src.rdbuf();
   std::string cuda_src_str = buffer.str();
 
-  fe.compileRtc(cuda_src_str, "CudaCodeGen::kernel1", true);
+  fe.compileRtc(
+      cuda_src_str, "CudaCodeGen::kernel1", true, PrimDataType::Int32);
 
   // The following is a sample launch pattern of the compiled
   // kernel. It must be adapted for each particular source file.
@@ -69,7 +70,7 @@ TEST_F(NVFuserTest, FusionExternalSrc_CUDA) {
     clearL2Cache();
     std::cout << "Launching the kernel" << std::endl;
     float elapsed_time_ms =
-        fe.runRtc(lp, {t0, t7, t14, t15, t16, t17}, KernelIndexMode::INT32);
+        fe.runRtc(lp, {t0, t7, t14, t15, t16, t17}, PrimDataType::Int32);
     std::cout << "kernel run in " << elapsed_time_ms << " ms, achieved "
               << (read_write_bytes / elapsed_time_ms / 1000.0 / 1000.0)
               << " GB/s" << std::endl;
@@ -102,7 +103,8 @@ TEST_F(NVFuserTest, FusionExternalSrcMatmul_CUDA) {
   buffer << cuda_src.rdbuf();
   std::string cuda_src_str = buffer.str();
 
-  fe.compileRtc(cuda_src_str, "CudaCodeGen::kernel1", true);
+  fe.compileRtc(
+      cuda_src_str, "CudaCodeGen::kernel1", true, PrimDataType::Int32);
 
   int M = 2048, N = 3456, K = 2048;
   MmaOptions::MmaInputLayout layout = MmaOptions::MmaInputLayout::TN;
@@ -117,7 +119,7 @@ TEST_F(NVFuserTest, FusionExternalSrcMatmul_CUDA) {
     clearL2Cache();
     std::cout << "Launching the kernel" << std::endl;
     float elapsed_time_ms = fe.runRtc(
-        lp, {inputs.first, inputs.second, output}, KernelIndexMode::INT32);
+        lp, {inputs.first, inputs.second, output}, PrimDataType::Int32);
     std::cout << "kernel run in " << elapsed_time_ms << " ms." << std::endl;
 
     std::cout << "Max diff: " << (at_output - output).abs().max().item<float>()

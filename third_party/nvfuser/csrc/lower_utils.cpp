@@ -55,18 +55,18 @@ ir_utils::TVDomainGuard overrideContiguityGuard(
   // Use domain guard to ignore the contiguity of
   //  consumer tv.
   TensorDomain* domain_with_specified_contiguity = nullptr;
-  std::vector<bool> contiguity_vector(
-      TensorDomain::noBroadcasts(tv->getMaybeRFactorDomain()).size(),
-      contiguity);
   if (tv->hasRFactor()) {
     domain_with_specified_contiguity = IrBuilder::create<TensorDomain>(
         tv->getRootDomain(),
         tv->getRFactorDomain(),
         tv->domain()->domain(),
-        contiguity_vector);
+        TensorDomain::getContiguityFilledWith(
+            tv->getRFactorDomain(), contiguity));
   } else {
     domain_with_specified_contiguity = IrBuilder::create<TensorDomain>(
-        tv->getRootDomain(), tv->domain()->domain(), contiguity_vector);
+        tv->getRootDomain(),
+        tv->domain()->domain(),
+        TensorDomain::getContiguityFilledWith(tv->getRootDomain(), contiguity));
   }
 
   return ir_utils::TVDomainGuard(tv, domain_with_specified_contiguity);

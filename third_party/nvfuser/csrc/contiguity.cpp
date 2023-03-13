@@ -386,7 +386,7 @@ NonDivisibleSplitDependencies::NonDivisibleSplitDependencies(
 ContigIDs::ContigIDs(
     const std::vector<IterDomain*>& ids,
     const std::vector<IterDomain*>& root_domain,
-    const std::vector<bool>& root_contiguity,
+    const std::vector<c10::optional<bool>>& root_contiguity,
     const std::unordered_set<IterDomain*>& final_ids,
     const std::unordered_map<IterDomain*, Val*>& index_map,
     const std::unordered_set<Split*>& divisible_splits,
@@ -419,7 +419,7 @@ ContigIDs::ContigIDs(
 ContigIDs::ContigIDs(
     const std::vector<IterDomain*>& ids,
     const std::vector<IterDomain*>& root_domain,
-    const std::vector<bool>& root_contiguity,
+    const std::vector<c10::optional<bool>>& root_contiguity,
     const std::unordered_set<IterDomain*>& final_ids,
     const std::unordered_map<IterDomain*, Val*>& index_map,
     const std::unordered_set<Split*>& divisible_splits,
@@ -458,17 +458,16 @@ void ContigIDs::build(const std::vector<IterDomain*>& ids) {
   }
 
   TORCH_INTERNAL_ASSERT(
-      TensorDomain::noBroadcasts(root_domain_).size() ==
-          root_contiguity_.size(),
+      root_domain_.size() == root_contiguity_.size(),
       "Arguments don't match ",
-      TensorDomain::noBroadcasts(root_domain_).size(),
+      root_domain_.size(),
       " != ",
       root_contiguity_.size());
 
-  int no_broadcast_i = 0;
   for (const auto root_domain_i : c10::irange(root_domain_.size())) {
     auto root_domain_id = root_domain_.at(root_domain_i)->as<IterDomain>();
     if (root_domain_id->isBroadcast()) {
+      TORCH_INTERNAL_ASSERT(!root_contiguity_.at(root_domain_i).has_value());
       continue;
     }
     root_to_indexed_id_[root_domain_id] = root_domain_id;
@@ -479,14 +478,13 @@ void ContigIDs::build(const std::vector<IterDomain*>& ids) {
     // rfactor root domains, which should just return "zero"
     // RootAxisInfo. This should be safe as no rfactor tensor should
     // need halo.
-    if (root_contiguity_.at(no_broadcast_i) &&
+    if (*root_contiguity_.at(root_domain_i) &&
         !halo_info_->getRootAxisInfo(root_domain_id).hasHalo() &&
         root_domain_id->getIterType() != IterType::GatherScatter) {
       contig_ids_.emplace(root_domain_id);
       is_contig_root_.at(root_domain_id) = true;
       within_contig_ids_[root_domain_id] = std::unordered_set<IterDomain*>();
     }
-    no_broadcast_i++;
   }
 
   if (!contig_ids_.empty()) {
@@ -540,10 +538,10 @@ void ContigIDs::handle(Merge* merge) {
   bool is_indexing_pass = !ignore_consistent_ordering_;
 
   IterDomain* last_root = nullptr;
-  int no_broadcast_i = 0;
   for (auto root_id_i : c10::irange(root_domain_.size())) {
     auto root_id = root_domain_[root_id_i];
     if (root_id->isBroadcast()) {
+      TORCH_INTERNAL_ASSERT(!root_contiguity_.at(root_id_i).has_value());
       continue;
     }
     if (root_ids.has(root_id)) {
@@ -556,14 +554,13 @@ void ContigIDs::handle(Merge* merge) {
       // If we're computing predicates (ignore_consistent_ordering_==true),
       // then we don't have this same constraint, we can just ignore
       // contiguity of the roots all together.
-      if (!root_contiguity_.at(no_broadcast_i) && is_indexing_pass) {
+      if (!*root_contiguity_.at(root_id_i) && is_indexing_pass) {
         if (!root_ids.empty()) {
           return;
         }
       }
       last_root = root_id;
     }
-    no_broadcast_i++;
   }
 
   // If there's a non_divisible split in the history of merge->out then it can't

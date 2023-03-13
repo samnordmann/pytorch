@@ -40,7 +40,6 @@ TORCH_CUDA_CU_API void setAssertOutOfBound(bool value);
 // TODO: Should this actually be in launch params?
 struct TORCH_CUDA_CU_API CompileOptions {
   c10::Device device = c10::Device(c10::DeviceType::CUDA, 0);
-  KernelIndexMode index_mode = KernelIndexMode::INT64;
 };
 
 class TORCH_CUDA_CU_API FusionExecutor : public NonCopyable {
@@ -63,8 +62,8 @@ class TORCH_CUDA_CU_API FusionExecutor : public NonCopyable {
   void compileFusion(
       Fusion* fusion,
       const KernelArgumentHolder& args,
-      const LaunchParams& launch_constraints = LaunchParams(),
-      CompileParams compile_params = CompileParams());
+      const LaunchParams& launch_constraints,
+      CompileParams compile_params);
 
   // TODO: merge it with the overload above.
   //! This API is merely here so we don't have to go back and update all cpp
@@ -92,7 +91,8 @@ class TORCH_CUDA_CU_API FusionExecutor : public NonCopyable {
       CompileParams compile_params = CompileParams(),
       const c10::optional<size_t>& opt_code = c10::nullopt) {
     KernelArgumentHolder args =
-        KernelArgumentHolder::createKernelArgumentHolder(inputs);
+        KernelArgumentHolder::createKernelArgumentHolder(
+            inputs, indexTypeToMode(kernel()->indexType()));
     if (opt_code.has_value()) {
       args.setCacheId(*opt_code);
     }
@@ -215,18 +215,20 @@ class TORCH_CUDA_CU_API FusionExecutor : public NonCopyable {
   //! Internal tests only. Compiles CUDA code with NVRTC directly from
   //! string. This util provides a path to test runtime code, i.e. the resource
   //! strings.
+  // TODO: Consider split out compileRtc and runRtc to a different
+  //! class. Not much code is shared with the normal path.
   void compileRtc(
       const std::string& code,
       const std::string& name,
-      bool structured = false,
-      CompileOptions options = CompileOptions());
+      bool structured,
+      PrimDataType index_type);
 
   //! Internal tests only. Runs the compiled CUDA kernel from
   //! compileRtc. Return the elapsed milliseconds.
   float runRtc(
       const LaunchParams& launch_params,
       const std::vector<at::Tensor>& args,
-      KernelIndexMode index_mode = KernelIndexMode::INT64);
+      PrimDataType indextype);
 
   //! Internal knob used for debugging/profiling only
   void disableLaunchParamCache() {
@@ -252,7 +254,9 @@ class TORCH_CUDA_CU_API FusionExecutor : public NonCopyable {
   }
 
   // Add preamble and wrap in namespace
-  std::string getStructuredCode(const std::string& kernel);
+  std::string getStructuredCode(
+      const std::string& kernel,
+      PrimDataType index_type);
 
   LaunchParams computeLaunchParams(
       const LaunchParams& launch_constraints,

@@ -78,7 +78,8 @@ MultiDeviceRuntime::CompiledKernelPtr MultiDeviceRuntime::compileCluster(
 
   args.setDeviceIndex(device_index);
   // Lower the fusion and compile the generated kernel.
-  executor_ptr->compileFusion(fusion_from_cluster.get(), args, launch_params);
+  executor_ptr->compileFusion(
+      fusion_from_cluster.get(), args, launch_params, {});
 
   return executor_ptr;
 }

@@ -94,7 +94,7 @@ TensorView* unaryOp(
   return unaryOp(type, cast_v1)->as<TensorView>();
 }
 
-TensorView* select(TensorView* tv, int dim, Int* index) {
+TensorView* select(TensorView* tv, int dim, Val* index) {
   auto dom = TensorDomain::noReductions(tv->getMaybeRFactorDomain());
   TORCH_CHECK(dom.size() > 0, "select can not be applied to 0d tensor.");
 
@@ -120,7 +120,7 @@ TensorView* select(TensorView* tv, int dim, Int* index) {
   }
 
   auto td = IrBuilder::create<TensorDomain>(
-      new_root, TensorDomain::getContiguousContiguity(new_root));
+      new_root, TensorDomain::getContiguityFilledWith(new_root, true));
   auto out = IrBuilder::create<TensorView>(td, *tv->getDataType());
   IrBuilder::create<SelectOp>(out, tv, dom.at(dim), index);
   return out;
@@ -137,7 +137,13 @@ TensorView* index_select(TensorView* lookup_tv, int dim, TensorView* index_tv) {
       TensorDomain::noReductions(index_tv->getMaybeRFactorDomain());
   size_t n_dims = lookup_dom.size();
   TORCH_CHECK(n_dims > 0, "index_select can not be applied to 0d tensor.");
-  TORCH_CHECK(index_dom.size() == 1, "index array must be 1d tensor.");
+  TORCH_CHECK(
+      index_dom.size() <= 1, "index array must be 1d or scalar tensor.");
+
+  if (index_dom.size() == 0) {
+    auto select_tv = select(lookup_tv, dim, index_tv);
+    return unsqueeze(select_tv, dim);
+  }
 
   if (dim < 0) {
     dim += lookup_dom.size();
@@ -162,7 +168,7 @@ TensorView* index_select(TensorView* lookup_tv, int dim, TensorView* index_tv) {
   }
 
   auto td = IrBuilder::create<TensorDomain>(
-      new_root, TensorDomain::getContiguousContiguity(new_root));
+      new_root, TensorDomain::getContiguityFilledWith(new_root, true));
   auto out = IrBuilder::create<TensorView>(td, dtype);
 
   // broadcast index to lookup's rank.
@@ -206,7 +212,7 @@ TensorView* torch_gather(TensorView* inp, int dim, TensorView* index) {
 
   TensorView* out_tensor = IrBuilder::create<TensorView>(
       IrBuilder::create<TensorDomain>(
-          out_domain, TensorDomain::getContiguousContiguity(out_domain)),
+          out_domain, TensorDomain::getContiguityFilledWith(out_domain, true)),
       inp->getDataType().value());
 
   IrBuilder::create<TorchGatherOp>(
@@ -254,7 +260,7 @@ TensorView* scatterOp(
 
   TensorView* out_tensor = IrBuilder::create<TensorView>(
       IrBuilder::create<TensorDomain>(
-          out_domain, TensorDomain::getContiguousContiguity(out_domain)),
+          out_domain, TensorDomain::getContiguityFilledWith(out_domain, true)),
       self->getDataType().value());
 
   IrBuilder::create<ScatterOp>(
@@ -273,12 +279,10 @@ TensorView* scatter(
 // TENSOR FACTORIES
 TensorView* rand(const std::vector<Val*>& shape, DataType dtype) {
   auto n = shape.size();
-  auto n_nob = std::count_if(
-      shape.begin(), shape.end(), [](auto x) { return !x->isOneInt(); });
   auto out = TensorViewBuilder()
                  .ndims(n)
                  .dtype(dtype)
-                 .contiguity(std::vector<bool>(n_nob, true))
+                 .contiguity(true)
                  .shape(shape)
                  .build();
   IrBuilder::create<RNGOp>(RNGOpType::Uniform, out, dtype);
@@ -292,12 +296,10 @@ TensorView* uniform(
     Val* high,
     DataType dtype) {
   auto n = shape.size();
-  auto n_nob = std::count_if(
-      shape.begin(), shape.end(), [](auto x) { return !x->isOneInt(); });
   auto out = TensorViewBuilder()
                  .ndims(n)
                  .dtype(dtype)
-                 .contiguity(std::vector<bool>(n_nob, true))
+                 .contiguity(true)
                  .shape(shape)
                  .build();
   IrBuilder::create<RNGOp>(
@@ -311,12 +313,10 @@ TensorView* normal(
     Val* std,
     DataType dtype) {
   auto n = shape.size();
-  auto n_nob = std::count_if(
-      shape.begin(), shape.end(), [](auto x) { return !x->isOneInt(); });
   auto out = TensorViewBuilder()
                  .ndims(n)
                  .dtype(dtype)
-                 .contiguity(std::vector<bool>(n_nob, true))
+                 .contiguity(true)
                  .shape(shape)
                  .build();
   IrBuilder::create<RNGOp>(
@@ -326,12 +326,10 @@ TensorView* normal(
 
 TensorView* randn(const std::vector<Val*>& shape, DataType dtype) {
   auto n = shape.size();
-  auto n_nob = std::count_if(
-      shape.begin(), shape.end(), [](auto x) { return !x->isOneInt(); });
   auto out = TensorViewBuilder()
                  .ndims(n)
                  .dtype(dtype)
-                 .contiguity(std::vector<bool>(n_nob, true))
+                 .contiguity(true)
                  .shape(shape)
                  .build();
   IrBuilder::create<RNGOp>(RNGOpType::NormalStandard, out, dtype);
@@ -382,12 +380,10 @@ TensorView* full(
     fill_value = castOp(dtype, fill_value);
   }
   auto n = shape.size();
-  auto n_nob = std::count_if(
-      shape.begin(), shape.end(), [](auto x) { return !x->isOneInt(); });
   auto out = TensorViewBuilder()
                  .ndims(n)
                  .dtype(dtype)
-                 .contiguity(std::vector<bool>(n_nob, true))
+                 .contiguity(true)
                  .shape(shape)
                  .build();
   IrBuilder::create<FullOp>(out, fill_value);
@@ -469,12 +465,10 @@ TensorView* iota(Val* length, Val* start, Val* step, DataType dtype) {
   if (step->getDataType() != dtype) {
     step = castOp(dtype, step);
   }
-  auto contiguity =
-      length->isOneInt() ? std::vector<bool>{} : std::vector<bool>{true};
   auto out = TensorViewBuilder()
                  .ndims(1)
                  .dtype(dtype)
-                 .contiguity(contiguity)
+                 .contiguity(true)
                  .shape({length})
                  .build();
   IrBuilder::create<IotaOp>(out, length, start, step);
@@ -535,16 +529,10 @@ TensorView* arange(Val* start, Val* end, Val* step, DataType dtype) {
 TensorView* eye(Val* rows, Val* cols, DataType dtype) {
   TORCH_CHECK(rows->getDataType() == DataType::Int, "rows must have type Int");
   TORCH_CHECK(cols->getDataType() == DataType::Int, "cols must have type Int");
-  std::vector<bool> contiguity;
-  for (auto len : {rows, cols}) {
-    if (!len->isOneInt()) {
-      contiguity.push_back(true);
-    }
-  }
   auto out = TensorViewBuilder()
                  .ndims(2)
                  .dtype(dtype)
-                 .contiguity(contiguity)
+                 .contiguity(true)
                  .shape(std::vector<Val*>{rows, cols})
                  .build();
   IrBuilder::create<EyeOp>(out, dtype);
@@ -1106,7 +1094,7 @@ static TensorView* newForReduction(
   }
 
   TensorDomain* td = IrBuilder::create<TensorDomain>(
-      new_domain, TensorDomain::getContiguousContiguity(new_domain));
+      new_domain, TensorDomain::getContiguityFilledWith(new_domain, true));
 
   data_type =
       data_type == DataType::Null ? tv->getDataType().value() : data_type;
@@ -1228,7 +1216,7 @@ TensorView* maybeFullInsteadOfReduction(
       }
 
       TensorDomain* td = IrBuilder::create<TensorDomain>(
-          new_root, TensorDomain::getContiguousContiguity(new_root));
+          new_root, TensorDomain::getContiguityFilledWith(new_root, true));
 
       dtype = (dtype == DataType::Null ? tv->getDataType().value() : dtype);
       auto output = IrBuilder::create<TensorView>(td, dtype);
@@ -1447,7 +1435,7 @@ TensorView* broadcast(
 
   TensorView* out_tensor = IrBuilder::create<TensorView>(
       IrBuilder::create<TensorDomain>(
-          out_domain, TensorDomain::getContiguousContiguity(out_domain)),
+          out_domain, TensorDomain::getContiguityFilledWith(out_domain, true)),
       inp->getDataType().value());
   IrBuilder::create<BroadcastOp>(out_tensor, inp, is_broadcast_dim);
   return out_tensor;
@@ -1517,7 +1505,7 @@ TensorView* expand(TensorView* inp, const std::vector<Val*>& expanded_sizes) {
 
   TensorView* out_tensor = IrBuilder::create<TensorView>(
       IrBuilder::create<TensorDomain>(
-          out_domain, TensorDomain::getContiguousContiguity(out_domain)),
+          out_domain, TensorDomain::getContiguityFilledWith(out_domain, true)),
       inp->getDataType().value());
   if (!expanded) {
     IrBuilder::create<UnaryOp>(UnaryOpType::Set, out_tensor, inp);
@@ -1577,7 +1565,7 @@ TensorView* expand_as(TensorView* inp, TensorView* other) {
 
   TensorView* out_tensor = IrBuilder::create<TensorView>(
       IrBuilder::create<TensorDomain>(
-          out_domain, TensorDomain::getContiguousContiguity(out_domain)),
+          out_domain, TensorDomain::getContiguityFilledWith(out_domain, true)),
       inp->getDataType().value());
   if (!expanded) {
     IrBuilder::create<UnaryOp>(UnaryOpType::Set, out_tensor, inp);
@@ -2238,7 +2226,7 @@ TensorView* shift(
 
   out = IrBuilder::create<TensorView>(
       IrBuilder::create<TensorDomain>(
-          out_dom, TensorDomain::getContiguousContiguity(out_dom)),
+          out_dom, TensorDomain::getContiguityFilledWith(out_dom, true)),
       inp->getDataType().value());
 
   IrBuilder::create<ShiftOp>(out, inp, offsets, pad_width);
@@ -2262,7 +2250,8 @@ TensorDomain* generateTensorDomainWithStrides(
        std::all_of(
            strides.begin(), strides.end(), [](int s) { return s == 1; }))) {
     return IrBuilder::create<TensorDomain>(
-        root_domains, TensorDomain::getContiguousContiguity(root_domains));
+        root_domains,
+        TensorDomain::getContiguityFilledWith(root_domains, true));
   }
 
   for (const auto i : c10::irange(root_domains.size())) {
@@ -2283,7 +2272,7 @@ TensorDomain* generateTensorDomainWithStrides(
       root_domains,
       strided_domains,
       strided_domains,
-      TensorDomain::getContiguousContiguity(strided_domains));
+      TensorDomain::getContiguityFilledWith(strided_domains, true));
 
   return strided_td;
 }
@@ -2421,7 +2410,7 @@ TensorView* viewAsScalar(TensorView* inp) {
   auto out = IrBuilder::create<TensorView>(
       inp->container(),
       IrBuilder::create<TensorDomain>(
-          out_domain, TensorDomain::getContiguousContiguity(out_domain)),
+          out_domain, TensorDomain::getContiguityFilledWith(out_domain, true)),
       out_type);
 
   IrBuilder::create<ViewAsScalar>(inp->container(), out, inp, id);
@@ -2490,7 +2479,7 @@ static TensorView* newForMma(
   }
 
   TensorDomain* td = IrBuilder::create<TensorDomain>(
-      new_domain, TensorDomain::getContiguousContiguity(new_domain));
+      new_domain, TensorDomain::getContiguityFilledWith(new_domain, true));
 
   return IrBuilder::create<TensorView>(td, data_type);
 }

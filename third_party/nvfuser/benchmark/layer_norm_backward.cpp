@@ -27,12 +27,12 @@ static void setupLayerNorm_BWD(Fusion* fusion, DataType dtype) {
   auto bias = makeContigTensor(1, dtype);
 
   auto mean = TensorViewBuilder()
-                  .contiguity({false})
+                  .contiguity({false, c10::nullopt})
                   .shape({-1, 1})
                   .dtype(DataType::Float)
                   .build();
   auto rstd = TensorViewBuilder()
-                  .contiguity({false})
+                  .contiguity({false, c10::nullopt})
                   .shape({-1, 1})
                   .dtype(DataType::Float)
                   .build();
