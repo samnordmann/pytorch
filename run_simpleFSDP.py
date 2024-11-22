@@ -4,6 +4,8 @@ import torch.distributed as dist
 import os
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
+# !pip install accelerate
+
 def setup_pg(rank, world_size):
     os.environ['MASTER_ADDR'] = 'localhost'
     os.environ['MASTER_PORT'] = '12355'
@@ -15,7 +17,7 @@ def cleanup_pg():
 
 print("GPUs detected: ", torch.cuda.device_count())  # Should return 8
 
-model_name = "llama-3.1-8b"  # Update with the exact model identifier.
+model_name = "meta-llama/Llama-3.1-8B"  # Update with the exact model identifier.
 
 # Load model and tokenizer
 tokenizer = AutoTokenizer.from_pretrained(model_name)
@@ -30,7 +32,7 @@ model = AutoModelForCausalLM.from_pretrained(
 
 # Example setup for 8 GPUs
 world_size = 8
-rank = ...  # Set rank per process (0 to 7)
+rank =   # Set rank per process (0 to 7)
 
 setup_pg(rank, world_size)
 
