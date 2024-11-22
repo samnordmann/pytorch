@@ -2849,6 +2849,10 @@ c10::intrusive_ptr<Work> ProcessGroupNCCL::endCoalescing() {
   return endCoalescing(OpType::COALESCED);
 }
 
+at::cuda::CUDAStream ProcessGroupNCCL::getCudaStream(at::Device device) {
+  return ncclStreams_.at(getKeyFromDevice(device));
+}
+
 template <typename Fn, typename PreProcess, typename PostProcess>
 c10::intrusive_ptr<Work> ProcessGroupNCCL::collective(
     std::vector<at::Tensor>& inputs,

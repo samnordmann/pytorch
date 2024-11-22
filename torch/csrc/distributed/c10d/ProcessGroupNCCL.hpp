@@ -605,6 +605,8 @@ class TORCH_API ProcessGroupNCCL : public Backend {
   // For specifying a composite optype, such as ALLGATHER and REDUCE_SCATTER
   c10::intrusive_ptr<Work> endCoalescing(OpType optype);
 
+  at::cuda::CUDAStream getCudaStream(at::Device device) override;
+
   c10::intrusive_ptr<Work> broadcast(
       std::vector<at::Tensor>& tensors,
       const BroadcastOptions& opts = BroadcastOptions()) override;

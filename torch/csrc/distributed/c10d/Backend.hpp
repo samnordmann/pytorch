@@ -5,12 +5,15 @@
 #include <vector>
 
 #include <ATen/ATen.h>
+#include <c10/cuda/CUDAStream.h>
 #include <c10/macros/Macros.h>
 
 #include <torch/csrc/distributed/c10d/Types.hpp>
 #include <torch/csrc/distributed/c10d/Utils.hpp>
 #include <torch/csrc/distributed/c10d/Work.hpp>
 #include <torch/csrc/distributed/c10d/debug.h>
+
+// at::cuda::CUDAStream
 
 constexpr auto kBackendDefaultTimeout =
     std::chrono::milliseconds(30 * 60 * 1000);
@@ -72,6 +75,13 @@ class TORCH_API Backend : public torch::CustomClassHolder {
         false,
         c10::str(
             "Backend ", getBackendName(), " does not implement endCoalescing"));
+  }
+
+  virtual at::cuda::CUDAStream getCudaStream(at::Device device) {
+    TORCH_CHECK(
+        false,
+        c10::str(
+            "Backend ", getBackendName(), " does not implement getCudaStream"));
   }
 
   // Subclasses must override this method to return the backend name

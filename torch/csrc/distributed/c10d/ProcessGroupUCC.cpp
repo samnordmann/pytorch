@@ -746,6 +746,11 @@ void ProcessGroupUCC::runHealthCheck() {
       rank_);
 }
 
+at::cuda::CUDAStream ProcessGroupUCC::getCudaStream(at::Device device) {
+  return *stream;
+}
+
+
 void ProcessGroupUCC::set_timeout(ucc_coll_args_t& args) {
   args.mask |= UCC_COLL_ARGS_FIELD_FLAGS;
   args.flags |= UCC_COLL_ARGS_FLAG_TIMEOUT;
