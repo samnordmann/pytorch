@@ -77,7 +77,7 @@ class TORCH_API Backend : public torch::CustomClassHolder {
             "Backend ", getBackendName(), " does not implement endCoalescing"));
   }
 
-  virtual at::cuda::CUDAStream getCudaStream(at::Device device) {
+  virtual c10::cuda::CUDAStream getCudaStream(at::Device device) {
     TORCH_CHECK(
         false,
         c10::str(

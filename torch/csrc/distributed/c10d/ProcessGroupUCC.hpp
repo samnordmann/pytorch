@@ -175,7 +175,7 @@ class TORCH_API ProcessGroupUCC : public Backend {
   // application.
   void runHealthCheck();
 
-  at::cuda::CUDAStream getCudaStream(at::Device device) override;
+  c10::cuda::CUDAStream getCudaStream(at::Device device) override;
 
   template <typename PreProcess, typename PostProcess>
   c10::intrusive_ptr<Work> collective_post(

@@ -746,7 +746,7 @@ void ProcessGroupUCC::runHealthCheck() {
       rank_);
 }
 
-at::cuda::CUDAStream ProcessGroupUCC::getCudaStream(at::Device device) {
+c10::cuda::CUDAStream ProcessGroupUCC::getCudaStream(at::Device device) {
   return *stream;
 }
 

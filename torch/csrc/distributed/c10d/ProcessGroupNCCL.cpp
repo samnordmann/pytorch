@@ -2849,7 +2849,7 @@ c10::intrusive_ptr<Work> ProcessGroupNCCL::endCoalescing() {
   return endCoalescing(OpType::COALESCED);
 }
 
-at::cuda::CUDAStream ProcessGroupNCCL::getCudaStream(at::Device device) {
+c10::cuda::CUDAStream ProcessGroupNCCL::getCudaStream(at::Device device) {
   return ncclStreams_.at(getKeyFromDevice(device));
 }
 
