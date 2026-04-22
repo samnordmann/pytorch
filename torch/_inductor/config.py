@@ -1237,6 +1237,23 @@ class aten_distributed_optimizations:
     # Use v2 all-gather (stream_write/wait_value32 instead of barrier kernels).
     low_contention_all_gather_v2: bool = False
 
+    # NVLS multicast + Copy Engine variant. Requires NVSwitch / NVLink SHARP
+    # (CU_DEVICE_ATTRIBUTE_MULTICAST_SUPPORTED). Bandwidth-optimal: each byte
+    # crosses NVLink exactly once via NVSwitch hardware multicast, driven by
+    # cudaMemcpyAsync to the multicast pointer. Zero SM usage. The lowering
+    # pass falls back to v2 if multicast is not available on the device.
+    low_contention_all_gather_v3: bool = False
+
+    # Pairwise sync + multi-stream Copy Engine variant. Each peer's wait +
+    # CE copy runs on a dedicated stream so multiple copy engines can
+    # operate in parallel. No multicast requirement.
+    low_contention_all_gather_v4: bool = False
+
+    # In-kernel sync + multimem.st variant. Single CUDA kernel launch per
+    # AG: GPU-initiated multicast writes + system-scope atomic barrier.
+    # Requires multicast support; falls back to v2 otherwise.
+    low_contention_all_gather_v5: bool = False
+
 
 def parallel_compile_enabled_internally() -> bool:
     """

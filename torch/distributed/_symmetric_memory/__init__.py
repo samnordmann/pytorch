@@ -143,6 +143,22 @@ def _get_backend_stream(priority: int = 0) -> torch.cuda.Stream:
     return _backend_streams[priority]
 
 
+# Cached per-(device_index, peer) CUDA streams used by
+# _low_contention_all_gather_v4 to dispatch each peer's wait+copy pair on an
+# independent stream. Multiple streams are necessary to engage more than one
+# copy engine concurrently on H100 / GB200.
+_peer_streams: dict[tuple[int, int], torch.cuda.Stream] = {}
+
+
+def _get_peer_stream(device_index: int, peer: int) -> torch.cuda.Stream:
+    key = (device_index, peer)
+    stream = _peer_streams.get(key)
+    if stream is None:
+        stream = torch.cuda.Stream(device=device_index, priority=0)
+        _peer_streams[key] = stream
+    return stream
+
+
 def _pipelined_multi_all_gather_and_consume(
     shard: list[torch.Tensor],
     shard_consumer: Callable[[list[torch.Tensor], int], None],
@@ -476,6 +492,15 @@ lib.define(
 )
 lib.define(
     "_low_contention_all_gather_v2(Tensor tensor, str group_name) -> Tensor"
+)
+lib.define(
+    "_low_contention_all_gather_v3(Tensor tensor, str group_name) -> Tensor"
+)
+lib.define(
+    "_low_contention_all_gather_v4(Tensor tensor, str group_name) -> Tensor"
+)
+lib.define(
+    "_low_contention_all_gather_v5(Tensor tensor, str group_name) -> Tensor"
 )
 
 lib.define("get_remote_tensors(Tensor x, str group_name) -> Tensor[]")
@@ -1822,6 +1847,362 @@ def _low_contention_all_gather_v2(
                 torch.ops.symm_mem.stream_wait_value32(
                     local_signal_pad, b2_base + peer, counter
                 )
+
+        torch._C._distributed_c10d._register_work(output, Work())
+        return output
+
+
+# Signal-pad layout for the low-contention all-gather family:
+#
+#   slots [0 .. ws)           barrier() channel 0 + multimem sync_remote_blocks
+#   slots [ws .. 3*ws)        v2 two barriers (b1_base=ws, b2_base=2*ws)
+#   slots [3*ws .. 4*ws)      v3 single ping-pong slot (b1+b2 share the slot,
+#                             distinguished by IDLE/IN_PROGRESS value)
+#   slots [4*ws .. 5*ws)      v4 single ping-pong slot (same scheme as v3)
+#
+# v5 reuses the existing multimem kernel's sync_remote_blocks layout at slots
+# [0 .. num_blocks * ws) of channel 0 and therefore does not consume extra
+# slots beyond what multimem_all_gather_out already uses.
+#
+# Values are a strict ping-pong: _LC_IDLE (0) is the quiescent value at the
+# start and end of every AG. _LC_IN_PROGRESS (1) is asserted at barrier 1,
+# and barrier 2 writes back to _LC_IDLE to restore the quiescent state. Both
+# barriers use EQ waits. Because both values are compile-time constants, the
+# scheme is safe under CUDA graph capture/replay (no captured host counter)
+# and avoids the reset-vs-write race of naive 0/1 signaling that a GEQ-counter
+# scheme exhibits on replay.
+_LC_IDLE = 0
+_LC_IN_PROGRESS = 1
+
+# cuStreamBatchMemOp op type codes consumed by symm_mem::stream_batch_mem_op.
+_LC_OP_WRITE = 0
+_LC_OP_WAIT = 1
+
+# Wait-value flags consumed by symm_mem::stream_wait_value32 /
+# symm_mem::stream_batch_mem_op wait ops.
+_LC_WAIT_GEQ = 0
+_LC_WAIT_EQ = 1
+
+
+def _check_lc_signal_pad_capacity(symm_mem: _SymmetricMemory) -> None:
+    """Ensure the signal pad can hold the 5 * world_size slots consumed by v2,
+    v3, and v4. Raises with an actionable message pointing at
+    :func:`set_signal_pad_size` if the pad was deliberately shrunk by the user.
+    """
+    world_size = symm_mem.world_size
+    required_bytes = 5 * world_size * 4
+    actual_bytes = _SymmetricMemory.signal_pad_size
+    if actual_bytes < required_bytes:
+        raise RuntimeError(
+            f"low_contention all-gather requires signal_pad_size >= "
+            f"{required_bytes} bytes for world_size={world_size}, but the "
+            f"current size is {actual_bytes} bytes. Call "
+            f"torch.distributed._symmetric_memory.set_signal_pad_size(...) "
+            f"before any symm_mem allocation."
+        )
+
+
+def _batched_barrier(
+    symm_mem: _SymmetricMemory,
+    rank: int,
+    world_size: int,
+    base_slot: int,
+    value: int,
+) -> None:
+    """Emit one ping-pong barrier using a single cuStreamBatchMemOp call.
+
+    Each peer's signal-pad slot ``[base_slot + rank]`` is written with
+    ``value``, then the local signal pad is waited on for ``value`` at offsets
+    ``[base_slot + peer]`` for every other peer. This mirrors
+    ``postAllgatherWithCudaBackend`` in NVIDIA/Fuser ``cuda_p2p.cpp``: one
+    driver call replaces the O(world_size) per-peer sequential driver calls
+    used by v2.
+    """
+    if world_size <= 1:
+        return
+
+    pads: list[torch.Tensor] = []
+    offsets: list[int] = []
+    vals: list[int] = []
+    op_types: list[int] = []
+    flags: list[int] = []
+
+    for peer in range(world_size):
+        if peer == rank:
+            continue
+        pads.append(symm_mem.get_signal_pad(peer))
+        offsets.append(base_slot + rank)
+        vals.append(value)
+        op_types.append(_LC_OP_WRITE)
+        flags.append(0)
+
+    local_pad = symm_mem.get_signal_pad(rank)
+    for peer in range(world_size):
+        if peer == rank:
+            continue
+        pads.append(local_pad)
+        offsets.append(base_slot + peer)
+        vals.append(value)
+        op_types.append(_LC_OP_WAIT)
+        flags.append(_LC_WAIT_EQ)
+
+    _SymmetricMemory.stream_batch_mem_op(pads, offsets, vals, op_types, flags)
+
+
+@torch.library.impl(lib, "_low_contention_all_gather_v3", "Meta")
+def _low_contention_all_gather_v3_meta(
+    tensor: torch.Tensor,
+    group_name: c10d.GroupName,
+) -> torch.Tensor:
+    group_size = c10d._get_group_size_by_name(group_name)
+    return tensor.new_empty(tensor.shape[0] * group_size, *tensor.shape[1:])
+
+
+@torch.library.impl(lib, "_low_contention_all_gather_v3", "CUDA")
+def _low_contention_all_gather_v3(
+    tensor: torch.Tensor,
+    group_name: c10d.GroupName,
+) -> torch.Tensor:
+    """
+    NVLS multicast + Copy Engine all-gather.
+
+    Each rank writes its shard to ``multicast_ptr + rank * shard_bytes`` via
+    ``cudaMemcpyAsync``. The NVSwitch broadcasts the write to all peers'
+    backing memory, so each byte crosses NVLink exactly once (vs N-1 times
+    in naive AG). Zero SMs consumed on the write path. Synchronization uses
+    one batched ``cuStreamBatchMemOp`` ping-pong barrier at slot 3*world_size.
+
+    Requires ``has_multicast_support == True`` and NVSwitch / NVLink SHARP
+    (e.g. DGX H100, GB200 NVL). The lowering pass falls back to v2 if
+    multicast is not available on the device.
+    """
+    symm_mem = rendezvous(tensor, group_name)
+    if symm_mem is not None:
+        input_is_symm_mem = True
+    else:
+        symm_mem = get_symm_mem_workspace(
+            group_name, tensor.numel() * tensor.element_size()
+        )
+        input_is_symm_mem = False
+
+    if not _SymmetricMemory.has_multicast_support(
+        DeviceType.CUDA, tensor.device.index
+    ):
+        raise RuntimeError(
+            "_low_contention_all_gather_v3 requires multicast support "
+            "(NVSwitch / NVLink SHARP). Fall back to v2 via the lowering "
+            "pass on devices without multicast."
+        )
+    _check_lc_signal_pad_capacity(symm_mem)
+
+    rank = symm_mem.rank
+    world_size = symm_mem.world_size
+
+    out_shape = (tensor.shape[0] * world_size, *tensor.shape[1:])
+    output = _SymmetricMemory.empty_strided_p2p(
+        size=out_shape,
+        stride=torch.empty(out_shape, dtype=tensor.dtype).stride(),
+        dtype=tensor.dtype,
+        device=tensor.device,
+        group_name=group_name,
+    )
+
+    shard_bytes = tensor.numel() * tensor.element_size()
+    rank_byte_offset = rank * shard_bytes
+
+    # v3 uses a single ping-pong slot at 3*world_size. Barrier 1 asserts
+    # _LC_IN_PROGRESS, barrier 2 restores _LC_IDLE.
+    v3_slot = 3 * world_size
+
+    _get_backend_stream().wait_stream(torch.cuda.current_stream())
+    with _get_backend_stream():
+        if input_is_symm_mem:
+            src_for_mc = tensor
+        else:
+            local_buf = symm_mem.get_buffer(rank, tensor.shape, tensor.dtype)
+            local_buf.copy_(tensor)
+            src_for_mc = local_buf
+
+        # Barrier 1: signal ready and wait for every peer to signal ready.
+        _batched_barrier(
+            symm_mem, rank, world_size, v3_slot, _LC_IN_PROGRESS
+        )
+
+        # CE copy: write our shard to the multicast pointer. The NVSwitch
+        # replicates the store to every peer's backing buffer.
+        torch.ops.symm_mem.memcpy_async_to_multicast(
+            output, src_for_mc.contiguous(), rank_byte_offset, group_name
+        )
+
+        # Barrier 2: advertise completion and wait for every peer to
+        # complete; restores the pad to _LC_IDLE for the next AG.
+        _batched_barrier(symm_mem, rank, world_size, v3_slot, _LC_IDLE)
+
+        torch._C._distributed_c10d._register_work(output, Work())
+        return output
+
+
+@torch.library.impl(lib, "_low_contention_all_gather_v4", "Meta")
+def _low_contention_all_gather_v4_meta(
+    tensor: torch.Tensor,
+    group_name: c10d.GroupName,
+) -> torch.Tensor:
+    group_size = c10d._get_group_size_by_name(group_name)
+    return tensor.new_empty(tensor.shape[0] * group_size, *tensor.shape[1:])
+
+
+@torch.library.impl(lib, "_low_contention_all_gather_v4", "CUDA")
+def _low_contention_all_gather_v4(
+    tensor: torch.Tensor,
+    group_name: c10d.GroupName,
+) -> torch.Tensor:
+    """
+    Pairwise sync + multi-stream Copy Engine all-gather.
+
+    v2 runs N CE copies serially on one backend stream, which bottlenecks on
+    a single copy engine. v4 issues each peer's wait + CE copy on an
+    independent cached peer stream, allowing multiple copy engines
+    (typically 2 on H100, up to 3 on GB200) to operate in parallel. Uses
+    the same nvFuser-style ping-pong barrier as v3 via batched
+    ``cuStreamBatchMemOp``; no multicast dependency.
+    """
+    symm_mem = rendezvous(tensor, group_name)
+    if symm_mem is not None:
+        input_is_symm_mem = True
+    else:
+        symm_mem = get_symm_mem_workspace(
+            group_name, tensor.numel() * tensor.element_size()
+        )
+        input_is_symm_mem = False
+
+    _check_lc_signal_pad_capacity(symm_mem)
+
+    rank = symm_mem.rank
+    world_size = symm_mem.world_size
+
+    output = tensor.new_empty(tensor.shape[0] * world_size, *tensor.shape[1:])
+    chunks = output.chunk(world_size)
+
+    # v4 uses a single ping-pong slot at 4*world_size. Barrier 1 asserts
+    # _LC_IN_PROGRESS; barrier 2 restores _LC_IDLE.
+    v4_slot = 4 * world_size
+
+    backend_stream = _get_backend_stream()
+    backend_stream.wait_stream(torch.cuda.current_stream())
+    device_index = tensor.device.index
+    assert device_index is not None
+
+    with backend_stream:
+        if not input_is_symm_mem:
+            local_buf = symm_mem.get_buffer(rank, tensor.shape, tensor.dtype)
+            local_buf.copy_(tensor)
+
+        # Barrier 1: one batched driver call advertising data-ready to every
+        # peer and waiting for every peer to advertise data-ready back.
+        _batched_barrier(
+            symm_mem, rank, world_size, v4_slot, _LC_IN_PROGRESS
+        )
+
+        # Self copy stays on the backend stream: same-rank access, no sync
+        # required. Peer pulls run on independent streams so multiple copy
+        # engines can operate in parallel (typically 2 on H100, up to 3 on
+        # GB200).
+        self_src = symm_mem.get_buffer(rank, tensor.shape, tensor.dtype)
+        chunks[rank].copy_(self_src)
+
+        peer_streams: list[torch.cuda.Stream] = []
+        for peer in range(world_size):
+            if peer == rank:
+                continue
+            peer_stream = _get_peer_stream(device_index, peer)
+            peer_stream.wait_stream(backend_stream)
+            with peer_stream:
+                src_buf = symm_mem.get_buffer(peer, tensor.shape, tensor.dtype)
+                chunks[peer].copy_(src_buf)
+            peer_streams.append(peer_stream)
+
+        for peer_stream in peer_streams:
+            backend_stream.wait_stream(peer_stream)
+
+        # Barrier 2: reads complete; restore pads to _LC_IDLE.
+        _batched_barrier(symm_mem, rank, world_size, v4_slot, _LC_IDLE)
+
+        torch._C._distributed_c10d._register_work(output, Work())
+        return output
+
+
+@torch.library.impl(lib, "_low_contention_all_gather_v5", "Meta")
+def _low_contention_all_gather_v5_meta(
+    tensor: torch.Tensor,
+    group_name: c10d.GroupName,
+) -> torch.Tensor:
+    group_size = c10d._get_group_size_by_name(group_name)
+    return tensor.new_empty(tensor.shape[0] * group_size, *tensor.shape[1:])
+
+
+@torch.library.impl(lib, "_low_contention_all_gather_v5", "CUDA")
+def _low_contention_all_gather_v5(
+    tensor: torch.Tensor,
+    group_name: c10d.GroupName,
+) -> torch.Tensor:
+    """
+    In-kernel sync + ``multimem.st`` all-gather (single kernel launch).
+
+    A single CUDA kernel issues ``multimem.st`` instructions to broadcast
+    each rank's shard to the multicast address and performs a system-scope
+    atomic barrier via the existing ``sync_remote_blocks`` helper. Zero
+    host-side driver calls per collective. Requires multicast support.
+
+    Implementation reuses ``torch.ops.symm_mem.multimem_all_gather_out`` which
+    already provides the fused ``multimem.st`` + barrier kernel. The wrapper
+    only rendezvous'es the input and allocates a multicast-bound output.
+    """
+    symm_mem = rendezvous(tensor, group_name)
+    if symm_mem is not None:
+        input_is_symm_mem = True
+    else:
+        symm_mem = get_symm_mem_workspace(
+            group_name, tensor.numel() * tensor.element_size()
+        )
+        input_is_symm_mem = False
+
+    if not _SymmetricMemory.has_multicast_support(
+        DeviceType.CUDA, tensor.device.index
+    ):
+        raise RuntimeError(
+            "_low_contention_all_gather_v5 requires multicast support "
+            "(NVSwitch / NVLink SHARP). Fall back to v2 via the lowering "
+            "pass on devices without multicast."
+        )
+
+    rank = symm_mem.rank
+    world_size = symm_mem.world_size
+
+    out_shape = (tensor.shape[0] * world_size, *tensor.shape[1:])
+    output = _SymmetricMemory.empty_strided_p2p(
+        size=out_shape,
+        stride=torch.empty(out_shape, dtype=tensor.dtype).stride(),
+        dtype=tensor.dtype,
+        device=tensor.device,
+        group_name=group_name,
+    )
+
+    backend_stream = _get_backend_stream()
+    backend_stream.wait_stream(torch.cuda.current_stream())
+    with backend_stream:
+        if input_is_symm_mem:
+            ag_input = tensor
+        else:
+            local_buf = symm_mem.get_buffer(rank, tensor.shape, tensor.dtype)
+            local_buf.copy_(tensor)
+            ag_input = local_buf
+
+        # multimem_all_gather_out launches a single kernel that does
+        # multimem.st writes followed by sync_remote_blocks. The returned
+        # tensor aliases `output`.
+        torch.ops.symm_mem.multimem_all_gather_out(
+            ag_input.contiguous(), group_name, output
+        )
 
         torch._C._distributed_c10d._register_work(output, Work())
         return output

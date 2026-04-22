@@ -900,6 +900,57 @@ def register_symm_mem_lowerings():
             ),
         )
 
+    @register_lowering(symm_mem._low_contention_all_gather_v3)
+    def _symm_mem_low_contention_all_gather_v3(
+        inp: ir.TensorBox,
+        group_name: str,
+    ):
+        inp = _copy_input_to_comm_buffer(
+            inp, ir.CommBufferType.SYMM_MEM, group_name,
+        )
+        return pytree.tree_map(
+            ir.TensorBox.create,
+            ir.FallbackKernel.create(
+                symm_mem._low_contention_all_gather_v3.default,
+                inp,
+                group_name,
+            ),
+        )
+
+    @register_lowering(symm_mem._low_contention_all_gather_v4)
+    def _symm_mem_low_contention_all_gather_v4(
+        inp: ir.TensorBox,
+        group_name: str,
+    ):
+        inp = _copy_input_to_comm_buffer(
+            inp, ir.CommBufferType.SYMM_MEM, group_name,
+        )
+        return pytree.tree_map(
+            ir.TensorBox.create,
+            ir.FallbackKernel.create(
+                symm_mem._low_contention_all_gather_v4.default,
+                inp,
+                group_name,
+            ),
+        )
+
+    @register_lowering(symm_mem._low_contention_all_gather_v5)
+    def _symm_mem_low_contention_all_gather_v5(
+        inp: ir.TensorBox,
+        group_name: str,
+    ):
+        inp = _copy_input_to_comm_buffer(
+            inp, ir.CommBufferType.SYMM_MEM, group_name,
+        )
+        return pytree.tree_map(
+            ir.TensorBox.create,
+            ir.FallbackKernel.create(
+                symm_mem._low_contention_all_gather_v5.default,
+                inp,
+                group_name,
+            ),
+        )
+
     @register_lowering(symm_mem._nccl_ce_all_gather)
     def _symm_mem_nccl_ce_all_gather(
         inp: ir.TensorBox,
