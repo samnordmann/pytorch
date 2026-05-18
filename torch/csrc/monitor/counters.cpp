@@ -1,11 +1,9 @@
+#include <c10/util/Exception.h>
 #include <torch/csrc/monitor/counters.h>
-#include <torch/csrc/monitor/events.h>
 
-#include <sstream>
 #include <unordered_set>
 
-namespace torch {
-namespace monitor {
+namespace torch::monitor {
 
 const char* aggregationName(Aggregation agg) {
   switch (agg) {
@@ -24,8 +22,10 @@ const char* aggregationName(Aggregation agg) {
     case Aggregation::MIN:
       return "min";
     default:
-      throw std::runtime_error(
-          "unknown aggregation: " + std::to_string(static_cast<int>(agg)));
+      TORCH_CHECK(
+          false,
+          "unknown aggregation: ",
+          std::to_string(static_cast<int>(agg)));
   }
 }
 
@@ -66,5 +66,4 @@ void unregisterStat(Stat<int64_t>* stat) {
 }
 } // namespace detail
 
-} // namespace monitor
-} // namespace torch
+} // namespace torch::monitor

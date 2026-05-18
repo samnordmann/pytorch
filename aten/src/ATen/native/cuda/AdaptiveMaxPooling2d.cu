@@ -1,29 +1,38 @@
-#include <ATen/ATen.h>
+#define TORCH_ASSERT_ONLY_METHOD_OPERATORS
+#include <ATen/core/Tensor.h>
 #include <ATen/cuda/Atomic.cuh>
 #include <ATen/cuda/CUDAContext.h>
 #include <ATen/cuda/NumericLimits.cuh>
-#include <ATen/NativeFunctions.h>
+#include <ATen/Dispatch.h>
 #include <ATen/NumericUtils.h>
 #include <ATen/TensorUtils.h>
 #include <ATen/Utils.h>
 #include <c10/util/Exception.h>
+
+#ifndef AT_PER_OPERATOR_HEADERS
+#include <ATen/Functions.h>
+#include <ATen/NativeFunctions.h>
+#else
+#include <ATen/ops/adaptive_max_pool2d_backward_native.h>
+#include <ATen/ops/adaptive_max_pool2d_native.h>
+#include <ATen/ops/empty.h>
+#endif
 
 #include <algorithm>
 #include <cfloat>
 #include <cmath>
 
 
-namespace at {
-namespace native {
+namespace at::native {
 
 namespace {
 
-__device__ inline int start_index(int a, int b, int c) {
-  return (int)std::floor((float)(a * c) / b);
+__device__ inline int64_t start_index(int64_t a, int64_t b, int64_t c) {
+  return (a / b) * c + ((a % b) * c) / b;
 }
 
-__device__ inline int end_index(int a, int b, int c) {
-  return (int)std::ceil((float)((a + 1) * c) / b);
+__device__ inline int64_t end_index(int64_t a, int64_t b, int64_t c) {
+  return 1 + ((a + 1) * c - 1) / b;
 }
 
 // 4d tensor B x D x H x W
@@ -34,7 +43,7 @@ __device__ inline int end_index(int a, int b, int c) {
  *    4D input, 4D output, 4D argmax x and y
  */
  template <typename T>
-__global__ void adaptivemaxpool(T *input, T *output, int64_t *indices,
+__global__ void adaptivemaxpool(const T *input, T *output, int64_t *indices,
                         int isizeH, int isizeW,
                         int osizeH, int osizeW,
                         int64_t istrideD, int64_t istrideH, int64_t istrideW)
@@ -72,7 +81,7 @@ __global__ void adaptivemaxpool(T *input, T *output, int64_t *indices,
       int kW = iendW - istartW;
 
       // Compute the mean of the input image...
-      T *ptr_input = input + istartH*istrideH + istartW*istrideW;
+      const T *ptr_input = input + istartH*istrideH + istartW*istrideW;
       T *ptr_output = output + oh*osizeW + ow;
       int64_t *ptr_ind = indices + oh*osizeW + ow;
       int argmax = istartH * isizeW + istartW;
@@ -100,7 +109,7 @@ __global__ void adaptivemaxpool(T *input, T *output, int64_t *indices,
  *    this function computes the gradInput from weight and gradOutput
  */
  template <typename T>
-__global__ void adaptivemaxgradinput(T *gradInput, T *gradOutput, int64_t *indices,
+__global__ void adaptivemaxgradinput(T *gradInput, const T *gradOutput, const int64_t *indices,
                              int isizeH, int isizeW,
                              int osizeH, int osizeW)
 {
@@ -130,8 +139,8 @@ __global__ void adaptivemaxgradinput(T *gradInput, T *gradOutput, int64_t *indic
 
     for(ow = ostartW; ow < oendW; ow += ostepW) {
 
-      T *ptr_gradOutput = gradOutput + oh*osizeW + ow;
-      int64_t *ptr_ind = indices + oh*osizeW + ow;
+      const T *ptr_gradOutput = gradOutput + oh*osizeW + ow;
+      const int64_t *ptr_ind = indices + oh*osizeW + ow;
       T z = *ptr_gradOutput;
 
       int argmax = (*ptr_ind);
@@ -148,7 +157,7 @@ __global__ void adaptivemaxgradinput(T *gradInput, T *gradOutput, int64_t *indic
  */
  template <typename T>
 __global__ void atomicadaptivemaxgradinput(
-  T *gradInput, T *gradOutput, int64_t *indices,
+  T *gradInput, const T *gradOutput, const int64_t *indices,
   int isizeH, int isizeW, int osizeH, int osizeW
 )
 {
@@ -177,8 +186,8 @@ __global__ void atomicadaptivemaxgradinput(
 
     for(ow = ostartW; ow < oendW; ow += ostepW) {
 
-      T *ptr_gradOutput = gradOutput + oh*osizeW + ow;
-      int64_t *ptr_ind = indices + oh*osizeW + ow;
+      const T *ptr_gradOutput = gradOutput + oh*osizeW + ow;
+      const int64_t *ptr_ind = indices + oh*osizeW + ow;
       T z = *ptr_gradOutput;
 
       int argmax = (*ptr_ind);
@@ -224,9 +233,9 @@ const Tensor& indices) {
 
     AT_DISPATCH_FLOATING_TYPES_AND2(
         kHalf, kBFloat16, input.scalar_type(), "adaptive_max_pool2d_cuda", [&] {
-          scalar_t* input_data = input.data_ptr<scalar_t>();
-          scalar_t* output_data = output_c.data_ptr<scalar_t>();
-          int64_t* indices_data = indices_c.data_ptr<int64_t>();
+          const scalar_t* input_data = input.const_data_ptr<scalar_t>();
+          scalar_t* output_data = output_c.mutable_data_ptr<scalar_t>();
+          int64_t* indices_data = indices_c.mutable_data_ptr<int64_t>();
 
           // cuda blocks & threads:
           int blocksH = (int)(16L / sizeD);
@@ -259,7 +268,11 @@ const Tensor& indices) {
     int64_t isizeH = input_.size(2);
     int64_t isizeW = input_.size(3);
 
-    int64_t istrideD = input_.stride(1);
+    // In the kernel, the batch and channel dimensions are treated as if they
+    // are flattened and istrideD is used as the stride of this flattened dim
+    // Handle the edge case where input_.size(1) == 1, where despite passing the
+    // contiguity check the stride might not be H * W
+    int64_t istrideD = isizeH * isizeW;
     int64_t istrideH = input_.stride(2);
     int64_t istrideW = input_.stride(3);
 
@@ -269,9 +282,9 @@ const Tensor& indices) {
         input_.scalar_type(),
         "adaptive_max_pool2d_cuda",
         [&] {
-          scalar_t* input_data = input_.data_ptr<scalar_t>();
-          scalar_t* output_data = output_c.data_ptr<scalar_t>();
-          int64_t* indices_data = indices_c.data_ptr<int64_t>();
+          const scalar_t* input_data = input_.const_data_ptr<scalar_t>();
+          scalar_t* output_data = output_c.mutable_data_ptr<scalar_t>();
+          int64_t* indices_data = indices_c.mutable_data_ptr<int64_t>();
 
           // cuda blocks & threads:
           int blocksH = (int)(16L / sizeD);
@@ -353,9 +366,9 @@ TORCH_IMPL_FUNC(adaptive_max_pool2d_backward_out_cuda)
         input.scalar_type(),
         "adaptive_max_pool2d_backward_cuda",
         [&] {
-          scalar_t* gradInput_data = gradInput_c.data_ptr<scalar_t>();
-          scalar_t* gradOutput_data = gradOutput_.data_ptr<scalar_t>();
-          int64_t* indices_data = indices_.data_ptr<int64_t>();
+          scalar_t* gradInput_data = gradInput_c.mutable_data_ptr<scalar_t>();
+          const scalar_t* gradOutput_data = gradOutput_.const_data_ptr<scalar_t>();
+          const int64_t* indices_data = indices_.const_data_ptr<int64_t>();
 
           // cuda blocks & threads:
           int blocksH = (int)(16L / sizeD);
@@ -380,7 +393,7 @@ TORCH_IMPL_FUNC(adaptive_max_pool2d_backward_out_cuda)
             C10_CUDA_KERNEL_LAUNCH_CHECK();
           } else {
             // run updateGradInput kernel
-            atomicadaptivemaxgradinput<<<
+            adaptivemaxgradinput<<<
                 blocks,
                 threads,
                 0,
@@ -414,9 +427,9 @@ TORCH_IMPL_FUNC(adaptive_max_pool2d_backward_out_cuda)
         input.scalar_type(),
         "adaptive_max_pool2d_backward_cuda",
         [&] {
-          scalar_t* gradInput_data = gradInput_c.data_ptr<scalar_t>();
-          scalar_t* gradOutput_data = gradOutput_.data_ptr<scalar_t>();
-          int64_t* indices_data = indices_.data_ptr<int64_t>();
+          scalar_t* gradInput_data = gradInput_c.mutable_data_ptr<scalar_t>();
+          const scalar_t* gradOutput_data = gradOutput_.const_data_ptr<scalar_t>();
+          const int64_t* indices_data = indices_.const_data_ptr<int64_t>();
 
           // cuda blocks & threads:
           int blocksH = (int)(16L / sizeD);
@@ -462,5 +475,4 @@ TORCH_IMPL_FUNC(adaptive_max_pool2d_backward_out_cuda)
     gradInput.copy_(gradInput_c);
   }
  }
-} // at::native
-} // at
+} // namespace at::native

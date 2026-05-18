@@ -1,8 +1,5 @@
-#include <ATen/ATen.h>
-#include <ATen/core/op_registration/op_registration.h>
 #include <torch/csrc/distributed/autograd/autograd.h>
 #include <torch/csrc/distributed/autograd/context/container.h>
-#include <torch/csrc/distributed/autograd/engine/dist_engine.h>
 #include <torch/csrc/distributed/rpc/rpc_agent.h>
 #include <torch/csrc/distributed/rpc/rref_impl.h>
 #include <torch/csrc/distributed/rpc/torchscript_functions.h>
@@ -13,19 +10,13 @@
 #include <fmt/format.h>
 #include <stdexcept>
 
-using at::Scalar;
-using at::Tensor;
 namespace dist_autograd = torch::distributed::autograd;
 namespace dist_rpc = torch::distributed::rpc;
 
-namespace torch {
-namespace jit {
+namespace torch::jit {
 
 namespace {
-
-static auto workerInfo =
-    torch::class_<dist_rpc::WorkerInfo>("dist_rpc", "WorkerInfo")
-        .def(torch::init<std::string, int64_t>());
+distributed::rpc::RegisterWorkerInfoOnce workerInfo{};
 
 // prepare the rpc input arguments and call the C++ impls
 void prepare_and_call_rpc_op(
@@ -108,7 +99,7 @@ void prepare_and_call_rpc_op(
     std::vector<std::string> names;
     for (const auto& entry : kwargsDict) {
       const IValue& keyIValue = entry.key();
-      const string& keyStr = keyIValue.toStringRef();
+      const std::string& keyStr = keyIValue.toStringRef();
       names.emplace_back(keyStr);
     }
     throw std::runtime_error(functionSchema.findErrorInKwargs(names));
@@ -288,5 +279,4 @@ TORCH_LIBRARY_IMPL(aten, CatchAll, m) {
 }
 
 } // namespace
-} // namespace jit
-} // namespace torch
+} // namespace torch::jit

@@ -4,14 +4,12 @@
 #include <c10/util/irange.h>
 #include <torch/csrc/jit/jit_log.h>
 #include <torch/csrc/jit/passes/clear_profiling.h>
-#include <torch/csrc/jit/passes/constant_propagation.h>
-#include <torch/csrc/jit/passes/cuda_graph_fuser.h>
 #include <torch/csrc/jit/passes/tensorexpr_fuser.h>
 #include <torch/csrc/jit/runtime/autodiff.h>
 #include <torch/csrc/jit/runtime/graph_executor.h>
 #include <torch/csrc/jit/runtime/interpreter.h>
-namespace torch {
-namespace jit {
+
+namespace torch::jit {
 
 namespace {
 
@@ -206,14 +204,8 @@ void ProfilingRecord::insertShapeProfile(
   n->replaceInput(offset, pn->output());
 }
 
-bool needsProfiledInputs(Node* n) {
-  if (tensorexpr::isSupported(n) ||
-#ifndef C10_MOBILE
-      (RegisterCudaFuseGraph::isRegistered() && fuser::cuda::profileNode(n))
-#else
-      false
-#endif
-  ) {
+static bool needsProfiledInputs(Node* n) {
+  if (tensorexpr::isSupported(n)) {
     return true;
   }
 
@@ -243,14 +235,8 @@ bool needsProfiledInputs(Node* n) {
   }
 }
 
-bool needsProfiledOutput(Node* n) {
-  if (tensorexpr::isSupported(n) ||
-#ifndef C10_MOBILE
-      (RegisterCudaFuseGraph::isRegistered() && fuser::cuda::profileNode(n))
-#else
-      false
-#endif
-  ) {
+static bool needsProfiledOutput(Node* n) {
+  if (tensorexpr::isSupported(n)) {
     return true;
   }
 
@@ -266,7 +252,7 @@ bool needsProfiledOutput(Node* n) {
 void ProfilingRecord::removeProfileCounter(Block* b) {
   for (auto it = b->nodes().rbegin(); it != b->nodes().rend();) {
     auto n = *it;
-    if (n->kind() == prim::profile && n->inputs().size() == 0) {
+    if (n->kind() == prim::profile && n->inputs().empty()) {
       it.destroyCurrent();
       // there is only one counter node
       return;
@@ -354,5 +340,4 @@ std::unique_ptr<ProfilingRecord> ProfilingRecord::instrumentGraph(
   return pr;
 }
 
-} // namespace jit
-} // namespace torch
+} // namespace torch::jit

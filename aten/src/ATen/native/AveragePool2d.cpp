@@ -1,12 +1,18 @@
-#include <ATen/ATen.h>
-#include <ATen/NativeFunctions.h>
+#define TORCH_ASSERT_ONLY_METHOD_OPERATORS
+#include <ATen/core/Tensor.h>
+#include <ATen/ScalarOps.h>
 #include <ATen/native/Pool.h>
 
+#ifndef AT_PER_OPERATOR_HEADERS
+#include <ATen/Functions.h>
+#include <ATen/NativeFunctions.h>
+#else
+#include <ATen/ops/avg_pool2d_backward_native.h>
+#include <ATen/ops/avg_pool2d_native.h>
+#endif
 
-namespace at {
-
-namespace meta{
-using namespace native;
+namespace at::meta {
+using namespace ::at::native;
 
 TORCH_PRECOMPUTE_META_FUNC(avg_pool2d)
 (const Tensor& input,
@@ -15,22 +21,26 @@ TORCH_PRECOMPUTE_META_FUNC(avg_pool2d)
  IntArrayRef padding,
  bool ceil_mode,
  bool count_include_pad,
- c10::optional<int64_t> divisor_override) {
+ std::optional<int64_t> divisor_override) {
+  // checked_convert below only guards against int overflow; non-positive
+  // kernel/stride and negative padding are caught downstream in
+  // pooling_output_shape / pool2d_shape_check with more specific messages.
   // #20866, #22032: Guarantee this for the official C++ API?
   TORCH_CHECK(kernel_size.size() == 1 || kernel_size.size() == 2,
     "avg_pool2d: kernel_size must either be a single int, or a tuple of two ints");
-  const int64_t kH = kernel_size[0];
-  const int64_t kW = kernel_size.size() == 1 ? kH : kernel_size[1];
+  const int kH = c10::checked_convert<int>(kernel_size[0], "int");
+  const int kW = kernel_size.size() == 1 ? kH : c10::checked_convert<int>(kernel_size[1], "int");
 
   TORCH_CHECK(stride.empty() || stride.size() == 1 || stride.size() == 2,
     "avg_pool2d: stride must either be omitted, a single int, or a tuple of two ints");
-  const int64_t dH = stride.empty() ? kH : stride[0];
-  const int64_t dW = stride.empty() ? kW : stride.size() == 1 ? dH : stride[1];
+  const int dH = stride.empty() ? kH : c10::checked_convert<int>(stride[0], "int");
+  const int dW = stride.empty() ? kW :
+                 stride.size() == 1 ? dH : c10::checked_convert<int>(stride[1], "int");
 
   TORCH_CHECK(padding.size() == 1 || padding.size() == 2,
     "avg_pool2d: padding must either be a single int, or a tuple of two ints");
-  const int64_t padH = padding[0];
-  const int64_t padW = padding.size() == 1 ? padH : padding[1];
+  const int padH = c10::checked_convert<int>(padding[0], "int");
+  const int padW = padding.size() == 1 ? padH : c10::checked_convert<int>(padding[1], "int");
 
   TORCH_CHECK(!divisor_override.has_value() || divisor_override.value() != 0,
     "divisor must be not zero");
@@ -65,20 +75,22 @@ TORCH_PRECOMPUTE_META_FUNC(avg_pool2d)
 
   /* resize output */
   if (input.ndimension() == 3) {
-    set_output(
+    set_output_raw_strided(
         0,
         {nInputPlane,
          outputHeight,
          outputWidth},
+        {},
         input.options());
   }
   else {
-    set_output(
+    set_output_raw_strided(
         0,
         {nbatch,
          nInputPlane,
          outputHeight,
          outputWidth},
+        {},
         input.options().memory_format(memory_format));
   }
 
@@ -93,24 +105,27 @@ TORCH_META_FUNC(avg_pool2d_backward) (
   IntArrayRef padding,
   bool ceil_mode,
   bool count_include_pad,
-  c10::optional<int64_t> divisor_override
+  std::optional<int64_t> divisor_override
 ) {
+  // checked_convert below only guards against int overflow; non-positive
+  // kernel/stride and negative padding are caught downstream in
+  // pooling_output_shape / avg_pool2d_backward_shape_check with more specific messages.
   // #20866, #22032: Guarantee this for the official C++ API?
   TORCH_CHECK(kernel_size.size() == 1 || kernel_size.size() == 2,
     "avg_pool2d: kernel_size must either be a single int, or a tuple of two ints");
-  const int kH = safe_downcast<int, int64_t>(kernel_size[0]);
-  const int kW = kernel_size.size() == 1 ? kH : safe_downcast<int, int64_t>(kernel_size[1]);
+  const int kH = c10::checked_convert<int>(kernel_size[0], "int");
+  const int kW = kernel_size.size() == 1 ? kH : c10::checked_convert<int>(kernel_size[1], "int");
 
   TORCH_CHECK(stride.empty() || stride.size() == 1 || stride.size() == 2,
     "avg_pool2d: stride must either be omitted, a single int, or a tuple of two ints");
-  const int dH = stride.empty() ? kH : safe_downcast<int, int64_t>(stride[0]);
+  const int dH = stride.empty() ? kH : c10::checked_convert<int>(stride[0], "int");
   const int dW = stride.empty() ? kW :
-                 stride.size() == 1 ? dH : safe_downcast<int, int64_t>(stride[1]);
+                 stride.size() == 1 ? dH : c10::checked_convert<int>(stride[1], "int");
 
   TORCH_CHECK(padding.size() == 1 || padding.size() == 2,
     "avg_pool2d: padding must either be a single int, or a tuple of two ints");
-  const int padH = safe_downcast<int, int64_t>(padding[0]);
-  const int padW = padding.size() == 1 ? padH : safe_downcast<int, int64_t>(padding[1]);
+  const int padH = c10::checked_convert<int>(padding[0], "int");
+  const int padW = padding.size() == 1 ? padH : c10::checked_convert<int>(padding[1], "int");
 
   TORCH_CHECK(!divisor_override.has_value() || divisor_override.value() != 0, "divisor must be not zero");
 
@@ -134,12 +149,12 @@ TORCH_META_FUNC(avg_pool2d_backward) (
     memory_format);
 
   /* resize output */
-  set_output(0, input.sizes(), input.options().memory_format(memory_format));
+  set_output_raw_strided(0, input.sizes(), {}, input.options().memory_format(memory_format));
 }
 
-} // namespace meta
+} // namespace at::meta
 
-namespace native {
+namespace at::native {
 
 TORCH_IMPL_FUNC(avg_pool2d_out_cpu)
 (const Tensor& input,
@@ -151,7 +166,7 @@ TORCH_IMPL_FUNC(avg_pool2d_out_cpu)
  int64_t padW,
  bool ceil_mode,
  bool count_include_pad,
- c10::optional<int64_t> divisor_override,
+ std::optional<int64_t> divisor_override,
  const Tensor& output) {
   avg_pool2d_kernel(
       kCPU,
@@ -175,18 +190,18 @@ TORCH_IMPL_FUNC(avg_pool2d_backward_out_cpu) (
   IntArrayRef padding,
   bool ceil_mode,
   bool count_include_pad,
-  c10::optional<int64_t> divisor_override,
+  std::optional<int64_t> divisor_override,
   const Tensor& gradInput
 ) {
-  const int kH = safe_downcast<int, int64_t>(kernel_size[0]);
-  const int kW = kernel_size.size() == 1 ? kH : safe_downcast<int, int64_t>(kernel_size[1]);
+  const int kH = c10::checked_convert<int>(kernel_size[0], "int");
+  const int kW = kernel_size.size() == 1 ? kH : c10::checked_convert<int>(kernel_size[1], "int");
 
-  const int dH = stride.empty() ? kH : safe_downcast<int, int64_t>(stride[0]);
+  const int dH = stride.empty() ? kH : c10::checked_convert<int>(stride[0], "int");
   const int dW = stride.empty() ? kW :
-                 stride.size() == 1 ? dH : safe_downcast<int, int64_t>(stride[1]);
+                 stride.size() == 1 ? dH : c10::checked_convert<int>(stride[1], "int");
 
-  const int padH = safe_downcast<int, int64_t>(padding[0]);
-  const int padW = padding.size() == 1 ? padH : safe_downcast<int, int64_t>(padding[1]);
+  const int padH = c10::checked_convert<int>(padding[0], "int");
+  const int padW = padding.size() == 1 ? padH : c10::checked_convert<int>(padding[1], "int");
 
   TORCH_CHECK(!divisor_override.has_value() || divisor_override.value() != 0, "divisor must be not zero");
 
@@ -205,5 +220,4 @@ TORCH_IMPL_FUNC(avg_pool2d_backward_out_cpu) (
 DEFINE_DISPATCH(avg_pool2d_kernel);
 DEFINE_DISPATCH(avg_pool2d_backward_kernel);
 
-} // at::native
-} // at
+} // namespace at::native

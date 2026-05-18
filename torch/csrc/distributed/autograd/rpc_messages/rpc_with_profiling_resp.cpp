@@ -1,10 +1,9 @@
+#include <c10/util/irange.h>
 #include <torch/csrc/distributed/autograd/rpc_messages/rpc_with_profiling_resp.h>
 #include <torch/csrc/distributed/rpc/utils.h>
 #include <torch/csrc/jit/serialization/pickle.h>
 
-namespace torch {
-namespace distributed {
-namespace autograd {
+namespace torch::distributed::autograd {
 using rpc::RpcCommandBase;
 
 constexpr auto kProfileEventsStartIdx = 3;
@@ -17,9 +16,9 @@ RpcWithProfilingResp::RpcWithProfilingResp(
     rpc::ProfilingId profilingId)
     : messageType_(messageType),
       wrappedMessage_(std::move(wrappedMessage)),
+      tensors_(wrappedMessage_->tensors()),
       profiledEvents_(std::move(profiledEvents)),
       profilingId_(profilingId) {
-  tensors_ = wrappedMessage_->tensors();
   TORCH_INTERNAL_ASSERT(
       messageType_ == rpc::MessageType::RUN_WITH_PROFILING_RESP,
       "Incorrect Message type");
@@ -76,8 +75,7 @@ c10::intrusive_ptr<rpc::Message> RpcWithProfilingResp::toMessageImpl() && {
   // Create ivalues to send over
   std::vector<at::IValue> ivalues{wrappedMsgType, profilingId_.toIValue()};
   // Attach the serialized events.
-  ivalues.emplace_back(
-      at::IValue(static_cast<int32_t>(profiledEvents_.size())));
+  ivalues.emplace_back(static_cast<int32_t>(profiledEvents_.size()));
   for (const auto& e : profiledEvents_) {
     ivalues.emplace_back(e.toIValue());
   }
@@ -118,14 +116,13 @@ std::unique_ptr<RpcWithProfilingResp> RpcWithProfilingResp::fromMessage(
   rpc::MessageType wrappedMsgType =
       static_cast<rpc::MessageType>(tupleElements[0].toInt());
   rpc::ProfilingId profilingId = rpc::ProfilingId::fromIValue(tupleElements[1]);
-  int profiledEventsSize = tupleElements[2].toInt();
+  auto profiledEventsSize = tupleElements[2].toInt();
   std::vector<torch::autograd::profiler::LegacyEvent> remoteEvents;
   remoteEvents.reserve(profiledEventsSize);
-  for (int i = kProfileEventsStartIdx;
-       i < kProfileEventsStartIdx + profiledEventsSize;
-       ++i) {
-    // NOLINTNEXTLINE(clang-diagnostic-sign-compare)
-    TORCH_CHECK(i < tupleElements.size());
+  for (const auto i : c10::irange(
+           kProfileEventsStartIdx,
+           kProfileEventsStartIdx + profiledEventsSize)) {
+    TORCH_CHECK(static_cast<size_t>(i) < tupleElements.size());
     // Reconstruct remote event from the ivalues.
     torch::autograd::profiler::LegacyEvent fromIvalueEvent =
         torch::autograd::profiler::LegacyEvent::fromIValue(tupleElements[i]);
@@ -147,6 +144,4 @@ std::unique_ptr<RpcWithProfilingResp> RpcWithProfilingResp::fromMessage(
       std::move(remoteEvents),
       profilingId);
 }
-} // namespace autograd
-} // namespace distributed
-} // namespace torch
+} // namespace torch::distributed::autograd

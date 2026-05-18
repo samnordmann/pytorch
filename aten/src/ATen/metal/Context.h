@@ -5,8 +5,7 @@
 
 #include <ATen/Tensor.h>
 
-namespace at {
-namespace metal {
+namespace at::metal {
 
 struct MetalInterface {
   virtual ~MetalInterface() = default;
@@ -19,17 +18,15 @@ extern std::atomic<const MetalInterface*> g_metal_impl_registry;
 
 class MetalImplRegistrar {
  public:
-  explicit MetalImplRegistrar(MetalInterface*);
+  explicit MetalImplRegistrar(MetalInterface* /*impl*/);
 };
 
 at::Tensor& metal_copy_(at::Tensor& self, const at::Tensor& src);
 
-} // namespace metal
+} // namespace at::metal
 
-namespace native {
+namespace at::native {
 bool is_metal_available();
-} // namespace native
-
-} // namespace at
+} // namespace at::native
 
 #endif /* MetalContext_h */

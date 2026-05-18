@@ -7,31 +7,28 @@ from unittest.case import expectedFailure
 import torch
 from torch import complex32, float32, float64, int32, int64
 from torch.jit._passes import _property_propagation
+from torch.testing._internal.common_device_type import (
+    instantiate_device_type_tests,
+    ops,
+)
 from torch.testing._internal.common_methods_invocations import (
-    SampleInput,
+    op_db,
     sample_inputs_adaptive_avg_pool2d,
     sample_inputs_conv2d,
+    SampleInput,
 )
-from torch.testing._internal.common_utils import set_default_dtype, first_sample
-from torch.testing._internal.jit_utils import JitTestCase
+from torch.testing._internal.common_utils import (
+    first_sample,
+    raise_on_run_directly,
+    set_default_dtype,
+)
 from torch.testing._internal.jit_metaprogramming_utils import create_traced_fn
-from torch.testing._internal.common_device_type import (
-    ops,
-    instantiate_device_type_tests,
-)
-from torch.testing._internal.common_methods_invocations import op_db
+from torch.testing._internal.jit_utils import JitTestCase
+
 
 """
 Dtype Analysis relies on symbolic shape analysis, which is still in beta
 """
-
-
-if __name__ == "__main__":
-    raise RuntimeError(
-        "This test file is not meant to be run directly, use:\n\n"
-        "\tpython test/test_jit.py TESTNAME\n\n"
-        "instead."
-    )
 
 
 custom_rules_works_list = {
@@ -51,7 +48,6 @@ custom_rules_works_list = {
     "max_pool2d",
     "max_pool3d",
     "nn.functional.prelu",
-    "batch_norm",
     "batch_norm",
 }
 
@@ -90,6 +86,11 @@ class TestDtypeBase(JitTestCase):
     SCALAR = "SCALAR"  # To mark unary vs 0 dim tensor
 
     def setUp(self):
+        # Don't call super().setUp() — JitTestCase.setUp installs JIT emit
+        # hooks that cause segfaults during process cleanup. Record state
+        # baselines that tearDown checks for.
+        self._prev_torch_function_mode_stack_len = torch._C._len_torch_function_stack()
+        self._prev_torch_function_state = torch._C._get_torch_function_state()
         self.prev_symbolic_shapes_test_enabled = (
             torch._C._jit_symbolic_shapes_test_mode_enabled()
         )
@@ -113,7 +114,8 @@ class TestDtypeBase(JitTestCase):
     @staticmethod
     def node_output_dtype_single(graph):
         dtypes = TestDtypeBase.node_output_dtypes(graph)
-        assert len(dtypes) == 1
+        if len(dtypes) != 1:
+            raise AssertionError(f"Expected 1 output dtype, got {len(dtypes)}")
         return dtypes[0]
 
     def prop_dtype_on_graph(self, graph, example_inputs):
@@ -128,15 +130,15 @@ class TestDtypeBase(JitTestCase):
         inputs = [self.get_rand_tensor(s, d) for s, d in zip(in_shapes, in_dtypes)]
         try:
             self.assert_dtype_equal_custom_args(fn, inputs)
-        except Exception:
+        except Exception as e:
             fail_text = f"Failed for shapes {in_shapes}, and dtypes {in_dtypes}"
-            raise AssertionError(fail_text)
+            raise AssertionError(fail_text) from e
 
     def assert_dtype_equal_custom_args(self, fn, args):
         try:
             # Eager execution
             expected_res = fn(*args)
-        except RuntimeError as e:
+        except RuntimeError:
             return
 
         expected_dtype = expected_res.dtype
@@ -275,7 +277,9 @@ class TestDtypeAnalysis(TestDtypeBase):
         ):
             for dtype in (torch.int8, torch.float64):
                 # Gets default version for conv2d
-                sample_input: SampleInput = list(inputs_fn(None, "cpu", dtype, False))[-1]
+                sample_input: SampleInput = list(inputs_fn(None, "cpu", dtype, False))[
+                    -1
+                ]
                 input_args = [sample_input.input, *sample_input.args]
                 self.assert_dtype_equal_custom_args(fn, input_args)
 
@@ -353,6 +357,9 @@ class TestDtypeCustomRules(TestDtypeBase):
         # Run the Dtype Analysis
         graph = traced_fn.graph  # Note this is a cached graph
         input_tensors = [t for t in input_args if isinstance(t, torch.Tensor)]
+        input_tensors += [
+            v for v in sample_input.kwargs.values() if isinstance(v, torch.Tensor)
+        ]
         self.prop_dtype_on_graph(graph, input_tensors)
         self.assert_output_dtype_equal(expected_res, graph)
 
@@ -381,3 +388,6 @@ class TestDtypeCustomRules(TestDtypeBase):
 TestDtypeCustomRulesCPU = None
 # This creates TestDtypeCustomRulesCPU
 instantiate_device_type_tests(TestDtypeCustomRules, globals(), only_for=("cpu",))
+
+if __name__ == "__main__":
+    raise_on_run_directly("test/test_jit.py")

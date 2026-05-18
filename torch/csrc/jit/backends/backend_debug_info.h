@@ -5,8 +5,7 @@
 #endif
 #include <torch/custom_class.h>
 
-namespace torch {
-namespace jit {
+namespace torch::jit {
 
 constexpr static auto kBackendUtilsNamespace = "backendutils";
 constexpr static auto kBackendDebugInfoClass = "BackendDebugInfo";
@@ -27,7 +26,7 @@ class TORCH_API PyTorchBackendDebugInfo : public torch::CustomClassHolder {
  public:
   PyTorchBackendDebugInfo() = default;
 
-  c10::optional<BackendDebugInfoMapType>& getDebugInfoMap() {
+  std::optional<BackendDebugInfoMapType>& getDebugInfoMap() {
     return debug_info_map_;
   }
 
@@ -36,7 +35,7 @@ class TORCH_API PyTorchBackendDebugInfo : public torch::CustomClassHolder {
   }
 
  private:
-  c10::optional<BackendDebugInfoMapType> debug_info_map_;
+  std::optional<BackendDebugInfoMapType> debug_info_map_;
 };
 
 #else
@@ -46,10 +45,10 @@ class TORCH_API PyTorchBackendDebugInfo : public torch::CustomClassHolder {
  * __backend_debug_info is of type BackendDebugInfo which is a torchbind'
  * class backed by cpp class PyTorchBackendDebugInfo.
  * PyTorchBackendDebugInfo, depends on ir.h., scope.h, source_range etc.
- * We dont include this on lite interpreter side. Thus on lite interpreter side
+ * We don't include this on lite interpreter side. Thus on lite interpreter side
  * we cannot have valid definition of PyTorchBackendDebugInfo. However we do not
  * need valid instance of __backend_debug_info in lite interpreter anyway as we
- * dont serialize this info as part of LowerdModule as mentioned ealrier.
+ * don't serialize this info as part of LoweredModule as mentioned earlier.
  * However since LoweredModule has registered attribute of __backend_debug_info
  * we still need to make sure that BackendDebugInfo is registered with
  * TorchScript. However in this instance it does not have to be backed by
@@ -61,5 +60,4 @@ class PyTorchBackendDebugInfoDummy : public torch::CustomClassHolder {
   PyTorchBackendDebugInfoDummy() = default;
 };
 #endif
-} // namespace jit
-} // namespace torch
+} // namespace torch::jit

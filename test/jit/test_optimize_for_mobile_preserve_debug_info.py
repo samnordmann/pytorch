@@ -2,9 +2,10 @@
 
 import torch
 import torch._C
-import torch.backends.xnnpack
 import torch.nn.functional as F
+from torch.testing._internal.common_utils import raise_on_run_directly, skipIfNoXNNPACK
 from torch.testing._internal.jit_utils import JitTestCase
+
 
 class TestOptimizeForMobilePreserveDebugInfo(JitTestCase):
     def check_replacement(
@@ -36,10 +37,11 @@ class TestOptimizeForMobilePreserveDebugInfo(JitTestCase):
                     original_source_ranges[replacements[node.kind()]],
                 )
 
+    @skipIfNoXNNPACK
     def test_replace_conv1d_with_conv2d(self):
         class TestConv1d(torch.nn.Module):
             def __init__(self, weight, bias):
-                super(TestConv1d, self).__init__()
+                super().__init__()
                 self.weight = weight
                 self.bias = bias
 
@@ -63,6 +65,7 @@ class TestOptimizeForMobilePreserveDebugInfo(JitTestCase):
             jit_pass=torch._C._jit_pass_transform_conv1d_to_conv2d,
         )
 
+    @skipIfNoXNNPACK
     def test_insert_pre_packed_linear_before_inline_and_conv_2d_op(self):
         class TestPrepackedLinearBeforeInlineAndConv2dOp(torch.nn.Module):
             def __init__(
@@ -102,9 +105,7 @@ class TestOptimizeForMobilePreserveDebugInfo(JitTestCase):
                     bias=self.conv_transpose2d_bias,
                 )
 
-        minibatch = 1
         in_channels = 6
-        iH = 4
         iW = 5
         out_channels = 6
         kH = 2
@@ -131,20 +132,19 @@ class TestOptimizeForMobilePreserveDebugInfo(JitTestCase):
                 "prepacked::linear_clamp_run": "aten::linear",
                 "prepacked::conv2d_clamp_prepack": "aten::conv2d",
                 "prepacked::conv2d_clamp_run": "aten::conv2d",
-                "prepacked::conv2d_transpose_clamp_prepack":
-                    "aten::conv_transpose2d",
-                "prepacked::conv2d_transpose_clamp_run":
-                    "aten::conv_transpose2d",
+                "prepacked::conv2d_transpose_clamp_prepack": "aten::conv_transpose2d",
+                "prepacked::conv2d_transpose_clamp_run": "aten::conv_transpose2d",
             },
             jit_pass=torch._C._jit_pass_insert_prepacked_ops,
         )
 
+    @skipIfNoXNNPACK
     def test_insert_pre_packed_linear_op(self):
         self.check_replacement(
             model=torch.jit.trace(torch.nn.Linear(5, 4), torch.rand(3, 2, 5)),
             replacements={
                 "prepacked::linear_clamp_prepack": "aten::linear",
-                "prepacked::linear_clamp_run": "aten::linear"
+                "prepacked::linear_clamp_run": "aten::linear",
             },
             jit_pass=torch._C._jit_pass_insert_prepacked_ops,
         )
@@ -164,7 +164,7 @@ class TestOptimizeForMobilePreserveDebugInfo(JitTestCase):
                 conv2d_weight,
                 conv2d_bias,
             ):
-                super(TestFuseActivationLinearConv2d, self).__init__()
+                super().__init__()
                 self.linear_weight = linear_weight
                 self.linear_bias = linear_bias
                 self.conv2d_weight = conv2d_weight
@@ -220,44 +220,50 @@ class TestOptimizeForMobilePreserveDebugInfo(JitTestCase):
         self.check_replacement(
             model=model,
             replacements={
-                "prepacked::linear_clamp_prepack":
-                    "prepacked::linear_clamp_prepack",
+                "prepacked::linear_clamp_prepack": "prepacked::linear_clamp_prepack",
                 "prepacked::linear_clamp_run": linear_activation_kind,
-                "prepacked::conv2d_clamp_prepack":
-                    "prepacked::conv2d_clamp_prepack",
+                "prepacked::conv2d_clamp_prepack": "prepacked::conv2d_clamp_prepack",
                 "prepacked::conv2d_clamp_run": conv2d_activation_kind,
             },
             jit_pass=torch._C._jit_pass_fuse_clamp_w_prepacked_linear_conv,
         )
 
+    @skipIfNoXNNPACK
     def test_fuse_activation_with_pack_ops_linear_conv2d_1(self):
         self.run_test_fuse_activation_with_pack_ops_linear_conv2d(
             linear_activation=F.hardtanh,
             linear_activation_kind="aten::hardtanh",
             conv2d_activation=F.hardtanh_,
-            conv2d_activation_kind="aten::hardtanh_"
+            conv2d_activation_kind="aten::hardtanh_",
         )
 
+    @skipIfNoXNNPACK
     def test_fuse_activation_with_pack_ops_linear_conv2d_2(self):
         self.run_test_fuse_activation_with_pack_ops_linear_conv2d(
             linear_activation=F.hardtanh_,
             linear_activation_kind="aten::hardtanh_",
             conv2d_activation=F.hardtanh,
-            conv2d_activation_kind="aten::hardtanh"
+            conv2d_activation_kind="aten::hardtanh",
         )
 
+    @skipIfNoXNNPACK
     def test_fuse_activation_with_pack_ops_linear_conv2d_3(self):
         self.run_test_fuse_activation_with_pack_ops_linear_conv2d(
             linear_activation=F.relu,
             linear_activation_kind="aten::relu",
             conv2d_activation=F.relu_,
-            conv2d_activation_kind="aten::relu_"
+            conv2d_activation_kind="aten::relu_",
         )
 
+    @skipIfNoXNNPACK
     def test_fuse_activation_with_pack_ops_linear_conv2d_4(self):
         self.run_test_fuse_activation_with_pack_ops_linear_conv2d(
             linear_activation=F.relu_,
             linear_activation_kind="aten::relu_",
             conv2d_activation=F.relu,
-            conv2d_activation_kind="aten::relu"
+            conv2d_activation_kind="aten::relu",
         )
+
+
+if __name__ == "__main__":
+    raise_on_run_directly("test/test_jit.py")

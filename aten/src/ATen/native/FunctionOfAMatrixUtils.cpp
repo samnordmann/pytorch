@@ -1,6 +1,18 @@
+#define TORCH_ASSERT_ONLY_METHOD_OPERATORS
 #include <ATen/native/FunctionOfAMatrixUtils.h>
 
-namespace at { namespace native {
+#include <ATen/core/Tensor.h>
+#include <ATen/TensorIterator.h>
+
+#ifndef AT_PER_OPERATOR_HEADERS
+#include <ATen/Functions.h>
+#include <ATen/NativeFunctions.h>
+#else
+#include <ATen/ops/_compute_linear_combination_native.h>
+#include <ATen/ops/zeros.h>
+#endif
+
+namespace at::native {
 
 DEFINE_DISPATCH(_compute_linear_combination_stub);
 
@@ -14,6 +26,7 @@ DEFINE_DISPATCH(_compute_linear_combination_stub);
 // Note: if input.dtype == scalar_t<T>, then coefficients.dtype == T.
 // This is relevant when scalar_t<T> == complex<T>.
 Tensor _compute_linear_combination(const Tensor& input, const Tensor& coefficients) {
+  TORCH_CHECK(input.ndimension() > 0 && input.numel() > 0, "Empty tensor not supported");
   auto output_first_dim_size = coefficients.size(0);
 
   auto output_sizes = input.sizes().vec();
@@ -43,7 +56,7 @@ Tensor& _compute_linear_combination_out(const Tensor& input, const Tensor& coeff
   // output.sizes() = [m, 1 (instead of n), ...].
   // The second dimension in newly restrided Tensors is traversed inside the kernels.
   // This is done to avoid synchronizations/atomic operations in the kernels
-  // and also quarantees determinism, required by the autograd.
+  // and also guarantees determinism, required by the autograd.
 
   // restride output
   auto output_to_broadcasted_dim = output.unsqueeze(1);
@@ -102,4 +115,4 @@ Tensor& _compute_linear_combination_out(const Tensor& input, const Tensor& coeff
   return output;
 }
 
-}} // namespace at::native
+} // namespace at::native

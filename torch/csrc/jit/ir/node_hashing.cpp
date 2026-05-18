@@ -1,26 +1,25 @@
 #include <torch/csrc/jit/ir/ir.h>
 
 #include <algorithm>
-#include <unordered_map>
 
-#include <ATen/core/functional.h>
 #include <ATen/core/symbol.h>
 #include <c10/util/Exception.h>
 #include <c10/util/hash.h>
 #include <c10/util/irange.h>
 #include <torch/csrc/jit/ir/node_hashing.h>
-#include <torch/csrc/jit/passes/common_subexpression_elimination.h>
 
-namespace torch {
-namespace jit {
+namespace torch::jit {
 
 namespace {
 
 bool tensorEqual(const at::Tensor& lhs, const at::Tensor& rhs) {
-  // type_equal doesnt distinguish between mkldnn/pytorch cpu tensors,
+  // type_equal doesn't distinguish between mkldnn/pytorch cpu tensors,
   // and we dont want to coalesce mkldnn tensors bc they do layout
   // transformations based on usage
   if (lhs.is_mkldnn() || rhs.is_mkldnn()) {
+    return false;
+  }
+  if (lhs.is_nested() || rhs.is_nested()) {
     return false;
   }
   // If device is not equal, lhs.equal(rhs) would throw an error.
@@ -140,6 +139,9 @@ bool ivaluesEqual(const IValue& a1, const IValue& a2) {
   if (a1.isObject()) {
     return &a1.toObjectRef() == &a2.toObjectRef();
   }
+  if (a1.isGenerator()) {
+    return a1.toGenerator() == a2.toGenerator();
+  }
   TORCH_INTERNAL_ASSERT(false);
 }
 
@@ -235,7 +237,7 @@ size_t HashNode::operator()(const Node* k) const {
       fmap(k->outputs(), [](const Value* v) { return v->type()->kind(); }),
       fmap(k->inputs(), [](const Value* v) { return v->unique(); }),
       constant_hash);
-};
+}
 
 // Checks that two nodes have the same inputs, output types
 // and node attributes.
@@ -282,7 +284,6 @@ bool EqualNode::operator()(const Node* lhs, const Node* rhs) const {
   }
 
   return true;
-};
+}
 
-} // namespace jit
-} // namespace torch
+} // namespace torch::jit

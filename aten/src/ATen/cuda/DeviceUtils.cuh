@@ -14,6 +14,12 @@ __device__ __forceinline__ unsigned int ACTIVE_MASK()
 #endif
 }
 
+__device__ __forceinline__ void WARP_SYNC(unsigned mask = 0xffffffff) {
+#if !defined(USE_ROCM)
+  return __syncwarp(mask);
+#endif
+}
+
 #if defined(USE_ROCM)
 __device__ __forceinline__ unsigned long long int WARP_BALLOT(int predicate)
 {
@@ -107,7 +113,7 @@ __device__ __forceinline__ c10::complex<T> WARP_SHFL_DOWN(c10::complex<T> value,
  */
 template <typename T>
 __device__ __forceinline__ T doLdg(const T* p) {
-#if __CUDA_ARCH__ >= 350 && !defined(USE_ROCM)
+#if !defined(USE_ROCM)
   return __ldg(p);
 #else
   return *p;

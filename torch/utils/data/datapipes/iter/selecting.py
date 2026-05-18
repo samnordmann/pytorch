@@ -1,61 +1,86 @@
-import warnings
-from typing import Callable, Iterator, TypeVar
+# mypy: allow-untyped-defs
+from collections.abc import Callable, Iterator
+from typing import TypeVar
 
-from torch.utils.data import IterDataPipe, functional_datapipe
+from torch.utils.data.datapipes._decorator import functional_datapipe
 from torch.utils.data.datapipes.dataframe import dataframe_wrapper as df_wrapper
-
-T_co = TypeVar('T_co', covariant=True)
-
-try:
-    import dill
-
-    # XXX: By default, dill writes the Pickler dispatch table to inject its
-    # own logic there. This globally affects the behavior of the standard library
-    # pickler for any user who transitively depends on this module!
-    # Undo this extension to avoid altering the behavior of the pickler globally.
-    dill.extend(use_dill=False)
-    DILL_AVAILABLE = True
-except ImportError:
-    DILL_AVAILABLE = False
+from torch.utils.data.datapipes.datapipe import IterDataPipe
+from torch.utils.data.datapipes.utils.common import (
+    _check_unpickable_fn,
+    StreamWrapper,
+    validate_input_col,
+)
 
 
-@functional_datapipe('filter')
-class FilterIterDataPipe(IterDataPipe[T_co]):
+__all__ = ["FilterIterDataPipe"]
+
+
+_T = TypeVar("_T")
+_T_co = TypeVar("_T_co", covariant=True)
+
+
+@functional_datapipe("filter")
+class FilterIterDataPipe(IterDataPipe[_T_co]):
     r"""
     Filters out elements from the source datapipe according to input ``filter_fn`` (functional name: ``filter``).
 
     Args:
         datapipe: Iterable DataPipe being filtered
         filter_fn: Customized function mapping an element to a boolean.
-        drop_empty_batches: By default, drops a batch if it is empty after filtering instead of keeping an empty list
-    """
-    datapipe: IterDataPipe
-    filter_fn: Callable
-    drop_empty_batches: bool
+        input_col: Index or indices of data which ``filter_fn`` is applied, such as:
 
-    def __init__(self,
-                 datapipe: IterDataPipe,
-                 filter_fn: Callable,
-                 drop_empty_batches: bool = True,
-                 ) -> None:
+            - ``None`` as default to apply ``filter_fn`` to the data directly.
+            - Integer(s) is used for list/tuple.
+            - Key(s) is used for dict.
+
+    Example:
+        >>> # xdoctest: +SKIP
+        >>> from torchdata.datapipes.iter import IterableWrapper
+        >>> def is_even(n):
+        ...     return n % 2 == 0
+        >>> dp = IterableWrapper(range(5))
+        >>> filter_dp = dp.filter(filter_fn=is_even)
+        >>> list(filter_dp)
+        [0, 2, 4]
+    """
+
+    datapipe: IterDataPipe[_T_co]
+    filter_fn: Callable
+
+    def __init__(
+        self,
+        datapipe: IterDataPipe[_T_co],
+        filter_fn: Callable,
+        input_col=None,
+    ) -> None:
         super().__init__()
         self.datapipe = datapipe
-        # Partial object has no attribute '__name__', but can be pickled
-        if hasattr(filter_fn, '__name__') and filter_fn.__name__ == '<lambda>' and not DILL_AVAILABLE:
-            warnings.warn("Lambda function is not supported for pickle, please use "
-                          "regular python function or functools.partial instead.")
+
+        _check_unpickable_fn(filter_fn)
         self.filter_fn = filter_fn  # type: ignore[assignment]
-        self.drop_empty_batches = drop_empty_batches
 
-    def __iter__(self) -> Iterator[T_co]:
-        res: bool
+        self.input_col = input_col
+        validate_input_col(filter_fn, input_col)
+
+    def _apply_filter_fn(self, data) -> bool:
+        if self.input_col is None:
+            return self.filter_fn(data)
+        elif isinstance(self.input_col, (list, tuple)):
+            args = tuple(data[col] for col in self.input_col)
+            return self.filter_fn(*args)
+        else:
+            return self.filter_fn(data[self.input_col])
+
+    def __iter__(self) -> Iterator[_T_co]:
         for data in self.datapipe:
-            filtered = self._returnIfTrue(data)
-            if self._isNonEmpty(filtered):
+            condition, filtered = self._returnIfTrue(data)
+            if condition:
                 yield filtered
+            else:
+                StreamWrapper.close_streams(data)
 
-    def _returnIfTrue(self, data):
-        condition = self.filter_fn(data)
+    def _returnIfTrue(self, data: _T) -> tuple[bool, _T]:
+        condition = self._apply_filter_fn(data)
 
         if df_wrapper.is_column(condition):
             # We are operating on DataFrames filter here
@@ -63,37 +88,15 @@ class FilterIterDataPipe(IterDataPipe[T_co]):
             for idx, mask in enumerate(df_wrapper.iterate(condition)):
                 if mask:
                     result.append(df_wrapper.get_item(data, idx))
-            if len(result):
-                return df_wrapper.concat(result)
+            if result:
+                return True, df_wrapper.concat(result)
             else:
-                return None
+                return False, None  # type: ignore[return-value]
 
         if not isinstance(condition, bool):
-            raise ValueError("Boolean output is required for `filter_fn` of FilterIterDataPipe, got", type(condition))
-        if condition:
-            return data
+            raise ValueError(
+                "Boolean output is required for `filter_fn` of FilterIterDataPipe, got",
+                type(condition),
+            )
 
-    def _isNonEmpty(self, data):
-        if df_wrapper.is_dataframe(data):
-            return True
-        r = data is not None and \
-            not (isinstance(data, list) and len(data) == 0 and self.drop_empty_batches)
-        return r
-
-    def __getstate__(self):
-        if IterDataPipe.getstate_hook is not None:
-            return IterDataPipe.getstate_hook(self)
-
-        if DILL_AVAILABLE:
-            dill_function = dill.dumps(self.filter_fn)
-        else:
-            dill_function = self.filter_fn
-        state = (self.datapipe, dill_function, self.drop_empty_batches)
-        return state
-
-    def __setstate__(self, state):
-        (self.datapipe, dill_function, self.drop_empty_batches) = state
-        if DILL_AVAILABLE:
-            self.filter_fn = dill.loads(dill_function)  # type: ignore[assignment]
-        else:
-            self.filter_fn = dill_function  # type: ignore[assignment]
+        return condition, data

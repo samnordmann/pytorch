@@ -15,8 +15,8 @@ from contextlib import closing
 import torch.distributed.launch as launch
 from torch.distributed.elastic.utils import get_socket_with_port
 from torch.testing._internal.common_utils import (
+    skip_but_pass_in_sandcastle_if,
     TEST_WITH_DEV_DBG_ASAN,
-    sandcastle_skip_if,
 )
 
 
@@ -26,6 +26,7 @@ def path(script):
 
 class LaunchTest(unittest.TestCase):
     def setUp(self):
+        super().setUp()
         self.test_dir = tempfile.mkdtemp()
         # set a sentinel env var on the parent proc
         # this should be present on the child and gets
@@ -35,29 +36,28 @@ class LaunchTest(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.test_dir)
 
-    @sandcastle_skip_if(
+    @skip_but_pass_in_sandcastle_if(
         TEST_WITH_DEV_DBG_ASAN, "test incompatible with dev/dbg asan"
     )
     def test_launch_without_env(self):
         nnodes = 1
         nproc_per_node = 4
-        world_size = nnodes * nproc_per_node
         sock = get_socket_with_port()
         with closing(sock):
             master_port = sock.getsockname()[1]
         args = [
             f"--nnodes={nnodes}",
-            f"--nproc_per_node={nproc_per_node}",
-            "--monitor_interval=1",
-            "--start_method=spawn",
-            "--master_addr=localhost",
-            f"--master_port={master_port}",
-            "--node_rank=0",
+            f"--nproc-per-node={nproc_per_node}",
+            "--monitor-interval=1",
+            "--start-method=spawn",
+            "--master-addr=localhost",
+            f"--master-port={master_port}",
+            "--node-rank=0",
             path("bin/test_script_local_rank.py"),
         ]
         launch.main(args)
 
-    @sandcastle_skip_if(
+    @skip_but_pass_in_sandcastle_if(
         TEST_WITH_DEV_DBG_ASAN, "test incompatible with dev/dbg asan"
     )
     def test_launch_with_env(self):
@@ -69,15 +69,15 @@ class LaunchTest(unittest.TestCase):
             master_port = sock.getsockname()[1]
         args = [
             f"--nnodes={nnodes}",
-            f"--nproc_per_node={nproc_per_node}",
-            "--monitor_interval=1",
-            "--start_method=spawn",
-            "--master_addr=localhost",
-            f"--master_port={master_port}",
-            "--node_rank=0",
-            "--use_env",
+            f"--nproc-per-node={nproc_per_node}",
+            "--monitor-interval=1",
+            "--start-method=spawn",
+            "--master-addr=localhost",
+            f"--master-port={master_port}",
+            "--node-rank=0",
+            "--use-env",
             path("bin/test_script.py"),
-            f"--touch_file_dir={self.test_dir}",
+            f"--touch-file-dir={self.test_dir}",
         ]
         launch.main(args)
         # make sure all the workers ran
@@ -85,3 +85,10 @@ class LaunchTest(unittest.TestCase):
         self.assertSetEqual(
             {str(i) for i in range(world_size)}, set(os.listdir(self.test_dir))
         )
+
+
+if __name__ == "__main__":
+    raise RuntimeError(
+        "This test is not currently used and should be "
+        "enabled in discover_tests.py if required."
+    )

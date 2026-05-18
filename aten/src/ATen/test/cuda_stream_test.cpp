@@ -69,6 +69,39 @@ TEST(TestStream, CopyAndMoveTest) {
   ASSERT_EQ_CUDA(moveStream.stream(), cuda_stream);
 }
 
+// Verifies stream priority is handled properly
+TEST(TestStream, StreamPriorityTest) {
+  if (!at::cuda::is_available()) return;
+  auto [least_priority, greatest_priority] =
+      at::cuda::CUDAStream::priority_range();
+  EXPECT_EQ(least_priority, 0);
+
+  auto stream = at::cuda::getStreamFromPool(-1);
+  EXPECT_EQ(stream.priority(), -1);
+  EXPECT_GT(10, at::cuda::max_compile_time_stream_priorities);
+  stream = at::cuda::getStreamFromPool(-10);
+  EXPECT_EQ(stream.priority(), greatest_priority);
+  stream = at::cuda::getStreamFromPool(0);
+  EXPECT_EQ(stream.priority(), 0);
+  stream = at::cuda::getStreamFromPool(10);
+  EXPECT_EQ(stream.priority(), 0);
+}
+
+TEST(TestStream, GenericStream) {
+  if (!at::cuda::is_available()) return;
+
+  c10::cuda::CUDAStream cuda_stream = c10::cuda::getStreamFromPool();
+  c10::Stream generic_stream = cuda_stream.unwrap();
+  c10::cuda::CUDAStream wrapped_stream = c10::cuda::CUDAStream(generic_stream);
+  EXPECT_EQ(cuda_stream, wrapped_stream);
+  EXPECT_EQ(
+      (cudaStream_t)cuda_stream,
+      reinterpret_cast<cudaStream_t>(generic_stream.native_handle()));
+  EXPECT_EQ(
+      cuda_stream.stream(),
+      reinterpret_cast<cudaStream_t>(generic_stream.native_handle()));
+}
+
 // Verifies streams are set properly
 TEST(TestStream, GetAndSetTest) {
   if (!at::cuda::is_available()) return;
@@ -89,7 +122,7 @@ TEST(TestStream, GetAndSetTest) {
   ASSERT_EQ_CUDA(curStream, defaultStream);
 }
 
-void thread_fun(at::optional<at::cuda::CUDAStream>& cur_thread_stream) {
+void thread_fun(std::optional<at::cuda::CUDAStream>& cur_thread_stream) {
   auto new_stream = at::cuda::getStreamFromPool();
   at::cuda::setCurrentCUDAStream(new_stream);
   cur_thread_stream = {at::cuda::getCurrentCUDAStream()};
@@ -99,7 +132,7 @@ void thread_fun(at::optional<at::cuda::CUDAStream>& cur_thread_stream) {
 // Ensures streams are thread local
 TEST(TestStream, MultithreadGetAndSetTest) {
   if (!at::cuda::is_available()) return;
-  at::optional<at::cuda::CUDAStream> s0, s1;
+  std::optional<at::cuda::CUDAStream> s0, s1;
 
   std::thread t0{thread_fun, std::ref(s0)};
   std::thread t1{thread_fun, std::ref(s1)};
@@ -408,7 +441,7 @@ TEST(TestStream, ExternalMultiThreadTest) {
 
   std::promise<void> aToBProm;
   std::promise<void> bToAProm;
-  c10::optional<at::cuda::CUDAStream> foundStream;
+  std::optional<at::cuda::CUDAStream> foundStream;
 
   std::thread threadA([&]() {
     at::cuda::CUDAGuard device_guard(0);

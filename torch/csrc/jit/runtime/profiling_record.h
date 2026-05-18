@@ -76,13 +76,13 @@
 //         locations that have `ShapeSymbol S1` in run #1`getSymbolInSet` will
 //         return the same symbol.
 
-namespace torch {
-namespace jit {
+namespace torch::jit {
 
 using ::c10::TensorTypePtr;
 using Dimension = int64_t;
 
-TORCH_API void RegisterProfilingNode(const std::function<bool(const Node*)>&);
+TORCH_API void RegisterProfilingNode(
+    const std::function<bool(const Node*)>& /*func*/);
 
 struct ProfilingRecord;
 
@@ -203,5 +203,4 @@ struct ProfilingRecord {
   ProfilingRecord(std::shared_ptr<Graph> g);
 };
 
-} // namespace jit
-} // namespace torch
+} // namespace torch::jit

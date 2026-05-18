@@ -53,16 +53,19 @@ using namespace at::native::metal;
           isOperatingSystemAtLeastVersion:supportedVer]) {
     return false;
   }
+C10_CLANG_DIAGNOSTIC_PUSH()
+C10_CLANG_DIAGNOSTIC_IGNORE("-Wdeprecated-declarations")
   if (![_device supportsFeatureSet:MTLFeatureSet_macOS_GPUFamily1_v3]) {
     return false;
   }
+C10_CLANG_DIAGNOSTIC_POP()
 #else
   return false;
 #endif
   NSError* error = [self _compileProgram];
   if (error) {
-    std::string compilationError = error.localizedDescription.UTF8String;
-    std::string deviceInfo = self.description.UTF8String;
+    std::string compilationError = error.localizedDescription.UTF8String ?: "<unknown error>";
+    std::string deviceInfo = self.description.UTF8String ?: "<unknown device>";
     TORCH_CHECK(false, compilationError + "\n" + deviceInfo);
   }
   return _device && _library && _commandQueue;
@@ -75,11 +78,11 @@ using namespace at::native::metal;
   if (state) {
     return state;
   }
-  id<MTLFunction> func = [_library newFunctionWithName:[NSString stringWithUTF8String:kernel.c_str()]];
+  id<MTLFunction> func = [_library newFunctionWithName:[NSString stringWithUTF8String:kernel.c_str()] ?: @""];
   TORCH_CHECK(func, "Failed to load the Metal Shader function: ", kernel);
   NSError* errors = nil;
   state = [_device newComputePipelineStateWithFunction:func error:&errors];
-  TORCH_CHECK(state, errors.localizedDescription.UTF8String);
+  TORCH_CHECK(state, errors.localizedDescription.UTF8String ?: "<unknown error>");
   _pipelineCache[kernel] = state;
   return state;
 }
@@ -89,8 +92,10 @@ using namespace at::native::metal;
                                                             constants {
   TORCH_CHECK(_library, "Failed to load Metal shaders");
   std::string kernelStr = kernel;
-  for (auto i = 0; i < constants.count; ++i) {
-    kernelStr += "_" + std::string([constants[i] stringValue].UTF8String);
+  for (NSUInteger i = 0; i < constants.count; ++i) {
+    const char* constantStr = [constants[i] stringValue].UTF8String;
+    NSCAssert(constantStr, @"UTF8String returned nil for constant value");
+    kernelStr += "_" + std::string(constantStr);
   }
   std::lock_guard<std::mutex> g(_pipelineCacheMutex);
   id<MTLComputePipelineState> state = _pipelineCache[kernelStr];
@@ -100,7 +105,7 @@ using namespace at::native::metal;
   MTLFunctionConstantValues* constantValues = [MTLFunctionConstantValues new];
   NSUInteger ushortArgIndex = 0;
   NSUInteger floatArgIndex = 12;
-  for (auto i = 0; i < constants.count; ++i) {
+  for (NSUInteger i = 0; i < constants.count; ++i) {
     NSNumber* constant = constants[i];
     const char* type = constant.objCType;
     if (strcmp(type, @encode(NSUInteger)) == 0 ||
@@ -123,12 +128,12 @@ using namespace at::native::metal;
     }
   }
   NSError* errors = nil;
-  id<MTLFunction> func = [_library newFunctionWithName:[NSString stringWithUTF8String:kernel.c_str()]
+  id<MTLFunction> func = [_library newFunctionWithName:[NSString stringWithUTF8String:kernel.c_str()] ?: @""
                                         constantValues:constantValues
                                                  error:&errors];
-  TORCH_CHECK(func, errors.localizedDescription.UTF8String);
+  TORCH_CHECK(func, errors.localizedDescription.UTF8String ?: "<unknown error>");
   state = [_device newComputePipelineStateWithFunction:func error:&errors];
-  TORCH_CHECK(state, errors.localizedDescription.UTF8String);
+  TORCH_CHECK(state, errors.localizedDescription.UTF8String ?: "<unknown error>");
   _pipelineCache[kernelStr] = state;
   return state;
 }
@@ -136,7 +141,7 @@ using namespace at::native::metal;
 - (id<MTLBuffer>)emptyMTLBuffer:(int64_t) size {
     TORCH_CHECK(_device);
     id<MTLBuffer> buffer = [_device newBufferWithLength:size
-                      options:MTLResourceOptionCPUCacheModeWriteCombined];
+                      options:MTLResourceCPUCacheModeWriteCombined];
     return buffer;
 }
 
@@ -157,7 +162,7 @@ using namespace at::native::metal;
     [options setLanguageVersion:_deviceInfo.languageVersion];
     [options setFastMathEnabled:YES];
     _library = [_device
-        newLibraryWithSource:[NSString stringWithUTF8String:PT_METAL_SHADERS]
+        newLibraryWithSource:[NSString stringWithUTF8String:PT_METAL_SHADERS] ?: @""
                      options:options
                        error:&localError];
     compilationError = localError;

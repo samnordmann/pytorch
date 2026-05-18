@@ -17,7 +17,7 @@ set(BACKEND_WITH_COMPILER_SRCS
 )
 if(USE_KINETO)
   # Testing edge profiler for backend use
-  # profiler_edge should only be aded when USE_KINETO flag is on
+  # profiler_edge should only be added when USE_KINETO flag is on
   list(APPEND BACKEND_WITH_COMPILER_SRCS
     ${TORCH_SRC_DIR}/csrc/jit/mobile/profiler_edge.cpp)
 endif()
@@ -39,6 +39,8 @@ endif()
 
 # Build the cpp gtest binary containing the cpp-only tests.
 set(JIT_TEST_SRCS
+  ${JIT_TEST_ROOT}/source_range_test.cpp
+  ${JIT_TEST_ROOT}/test_add_if_then_else.cpp
   ${JIT_TEST_ROOT}/test_alias_analysis.cpp
   ${JIT_TEST_ROOT}/test_argument_spec.cpp
   ${JIT_TEST_ROOT}/test_autodiff.cpp
@@ -69,6 +71,7 @@ set(JIT_TEST_SRCS
   ${JIT_TEST_ROOT}/test_ir.cpp
   ${JIT_TEST_ROOT}/test_irparser.cpp
   ${JIT_TEST_ROOT}/test_jit_type.cpp
+  ${JIT_TEST_ROOT}/test_lexer.cpp
   ${JIT_TEST_ROOT}/test_lite_interpreter.cpp
   ${JIT_TEST_ROOT}/test_lite_interpreter_direct.cpp
   ${JIT_TEST_ROOT}/test_lite_trainer.cpp
@@ -79,28 +82,32 @@ set(JIT_TEST_SRCS
   ${JIT_TEST_ROOT}/test_peephole_optimize.cpp
   ${JIT_TEST_ROOT}/test_qualified_name.cpp
   ${JIT_TEST_ROOT}/test_save_load.cpp
+  ${JIT_TEST_ROOT}/test_schema_info.cpp
   ${JIT_TEST_ROOT}/test_schema_matching.cpp
   ${JIT_TEST_ROOT}/test_stack_opt.cpp
   ${JIT_TEST_ROOT}/test_subgraph_matcher.cpp
   ${JIT_TEST_ROOT}/test_subgraph_rewriter.cpp
   ${JIT_TEST_ROOT}/test_subgraph_utils.cpp
+  ${JIT_TEST_ROOT}/test_te.cpp
   ${JIT_TEST_ROOT}/test_union.cpp
   ${JIT_TEST_ROOT}/test_utils.cpp
   ${JIT_TEST_ROOT}/test_script_profile.cpp
   ${JIT_TEST_ROOT}/test_shape_analysis.cpp
   ${JIT_TEST_ROOT}/test_jit_logging_levels.cpp
+  ${JIT_TEST_ROOT}/test_file_format.cpp
   ${JIT_TEST_ROOT}/test_flatbuffer.cpp
 )
-
-if(USE_CUDA)
-  list(APPEND JIT_TEST_SRCS ${JIT_TEST_ROOT}/test_gpu.cpp)
-  list(APPEND JIT_TEST_SRCS ${JIT_TEST_ROOT}/test_gpu_shift.cpp)
-endif()
 
 add_executable(test_jit
   ${TORCH_ROOT}/test/cpp/common/main.cpp
   ${JIT_TEST_SRCS}
 )
+
+# We also build with UBSAN flag in build_asan.h
+if(USE_ASAN)
+  target_compile_options(test_jit PRIVATE "-fsanitize=undefined")
+  target_link_libraries(test_jit PRIVATE "-fsanitize=undefined")
+endif()
 
 target_link_libraries(
   test_jit PRIVATE flatbuffers)
@@ -111,9 +118,15 @@ target_compile_definitions(test_jit PRIVATE USE_GTEST)
 
 if(USE_SYSTEM_ONNX)
   target_link_libraries(test_jit PRIVATE onnx_proto onnx)
+else()
+  target_link_libraries(test_jit PRIVATE onnx_library)
 endif()
 
-set(JIT_TEST_DEPENDENCIES torch gtest jitbackend_test backend_with_compiler)
+if(USE_MKLDNN)
+  target_link_libraries(test_jit PRIVATE caffe2::mkldnn)
+endif()
+
+set(JIT_TEST_DEPENDENCIES torch gtest_main jitbackend_test backend_with_compiler gmock)
 
 if(MSVC)
   list(APPEND JIT_TEST_DEPENDENCIES onnx_library)
@@ -121,9 +134,6 @@ endif(MSVC)
 
 target_link_libraries(test_jit PRIVATE ${JIT_TEST_DEPENDENCIES})
 target_include_directories(test_jit PRIVATE ${ATen_CPU_INCLUDE})
-if(NOT MSVC)
-  target_compile_options(test_jit PRIVATE -Wno-unused-variable)
-endif()
 
 if(LINUX)
   #Update to target_link_options when CMake version can be upgraded
@@ -131,24 +141,26 @@ if(LINUX)
 endif()
 
 if(USE_CUDA)
-  target_link_libraries(test_jit PRIVATE
-    ${CUDA_LIBRARIES}
-    ${CUDA_NVRTC_LIB}
-    ${CUDA_CUDA_LIB}
-    ${TORCH_CUDA_LIBRARIES})
-
   target_compile_definitions(test_jit PRIVATE USE_CUDA)
+  # Suppress sign compare checks for NVFUSER JIT tests
+  if(NOT MSVC)
+    target_compile_options(test_jit PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-Wno-sign-compare>)
+  endif()
 elseif(USE_ROCM)
   target_link_libraries(test_jit PRIVATE
-    ${ROCM_HIPRTC_LIB}
-    ${PYTORCH_HIP_HCC_LIBRARIES}
+    hiprtc::hiprtc
+    hip::amdhip64
     ${TORCH_CUDA_LIBRARIES})
 
   target_compile_definitions(test_jit PRIVATE USE_ROCM)
 endif()
 
 if(INSTALL_TEST)
+  set_target_properties(test_jit PROPERTIES INSTALL_RPATH "${CMAKE_INSTALL_RPATH}:${_rpath_portable_origin}/../lib")
   install(TARGETS test_jit DESTINATION bin)
+  install(FILES ${JIT_TEST_ROOT}/test_interpreter_async.pt DESTINATION bin)
+  install(FILES ${JIT_TEST_ROOT}/script_module_v4.ptl DESTINATION bin)
+  install(DIRECTORY ${JIT_TEST_ROOT}/upgrader_models DESTINATION bin)
   # Install PDB files for MSVC builds
   if(MSVC AND BUILD_SHARED_LIBS)
     install(FILES $<TARGET_PDB_FILE:test_jit> DESTINATION bin OPTIONAL)

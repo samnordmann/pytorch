@@ -1,15 +1,8 @@
 #include <torch/csrc/jit/mobile/train/optim/sgd.h>
 
-#include <torch/types.h>
 #include <torch/utils.h>
 
-#include <ATen/ATen.h>
-
-#include <functional>
-
-namespace torch {
-namespace jit {
-namespace mobile {
+namespace torch::jit::mobile {
 
 bool SGDParamGroup::has_options() const {
   return options_ != nullptr;
@@ -17,12 +10,12 @@ bool SGDParamGroup::has_options() const {
 
 SGDOptions& SGDParamGroup::options() {
   TORCH_CHECK(has_options());
-  return *options_.get();
+  return *options_;
 }
 
 const SGDOptions& SGDParamGroup::options() const {
   TORCH_CHECK(has_options());
-  return *options_.get();
+  return *options_;
 }
 
 void SGDParamGroup::set_options(std::unique_ptr<SGDOptions> options) {
@@ -63,7 +56,7 @@ void SGD::add_param_group(const SGDParamGroup& param_group) {
   }
   for (const auto& p : param_group_.params()) {
     TORCH_CHECK(
-        state_.count(c10::guts::to_string(p.unsafeGetTensorImpl())) == 0,
+        state_.count(p.unsafeGetTensorImpl()) == 0,
         "some parameters appear in more than one parameter group");
   }
   param_groups_.emplace_back(std::move(param_group_));
@@ -88,7 +81,7 @@ Tensor SGD::step(const LossClosure& closure) {
     loss = closure();
   }
   for (auto& group : param_groups_) {
-    auto& options = static_cast<SGDOptions&>(group.options());
+    auto& options = group.options();
     auto weight_decay = options.weight_decay();
     auto momentum = options.momentum();
     auto dampening = options.dampening();
@@ -104,14 +97,12 @@ Tensor SGD::step(const LossClosure& closure) {
       }
       if (momentum != 0) {
         Tensor buf;
-        auto param_state =
-            state_.find(c10::guts::to_string(p.unsafeGetTensorImpl()));
+        auto param_state = state_.find(p.unsafeGetTensorImpl());
         if (param_state == state_.end()) {
-          buf = torch::clone(d_p).detach();
+          buf = d_p.detach().clone();
           auto state = std::make_unique<SGDParamState>();
           state->momentum_buffer(buf);
-          state_[c10::guts::to_string(p.unsafeGetTensorImpl())] =
-              std::move(state);
+          state_[p.unsafeGetTensorImpl()] = std::move(state);
         } else {
           buf = static_cast<SGDParamState&>(*param_state->second)
                     .momentum_buffer();
@@ -128,6 +119,4 @@ Tensor SGD::step(const LossClosure& closure) {
   }
   return loss;
 }
-} // namespace mobile
-} // namespace jit
-} // namespace torch
+} // namespace torch::jit::mobile

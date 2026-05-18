@@ -1,3 +1,4 @@
+# mypy: allow-untyped-defs
 # Copyright (c) Facebook, Inc. and its affiliates.
 # All rights reserved.
 #
@@ -13,28 +14,39 @@ import threading
 import time
 import weakref
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from enum import Enum
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple, cast
+from typing import Any
 
-from torch.distributed import PrefixStore, Store
-from torch.distributed.elastic.events import (
-    NodeState,
-    construct_and_record_rdzv_event,
-)
+import torch.distributed as dist
+from torch.distributed import Store
+from torch.distributed.elastic.events import construct_and_record_rdzv_event, NodeState
 
 from .api import (
     RendezvousClosedError,
     RendezvousError,
+    RendezvousGracefulExitError,
     RendezvousHandler,
+    RendezvousInfo,
     RendezvousParameters,
     RendezvousStateError,
+    RendezvousStoreInfo,
     RendezvousTimeoutError,
 )
 from .utils import _delay, _PeriodicTimer
 
-log = logging.getLogger(__name__)
+
+__all__ = [
+    "RendezvousBackend",
+    "RendezvousTimeout",
+    "RendezvousSettings",
+    "DynamicRendezvousHandler",
+    "create_handler",
+]
+
+logger = logging.getLogger(__name__)
 
 
 def get_method_name(depth=2):
@@ -44,20 +56,20 @@ def get_method_name(depth=2):
 
 
 Token = Any
-"""Represents an opaque fencing token used by the rendezvous backend."""
+"""Represent an opaque fencing token used by the rendezvous backend."""
 
 
 class RendezvousBackend(ABC):
-    """Represents a backend that holds the rendezvous state."""
+    """Represent a backend that holds the rendezvous state."""
 
     @property
     @abstractmethod
     def name(self) -> str:
-        """Gets the name of the backend."""
+        """Get the name of the backend."""
 
     @abstractmethod
-    def get_state(self) -> Optional[Tuple[bytes, Token]]:
-        """Gets the rendezvous state.
+    def get_state(self) -> tuple[bytes, Token] | None:
+        """Get the rendezvous state.
 
         Returns:
             A tuple of the encoded rendezvous state and its fencing token or
@@ -72,9 +84,9 @@ class RendezvousBackend(ABC):
 
     @abstractmethod
     def set_state(
-        self, state: bytes, token: Optional[Token] = None
-    ) -> Optional[Tuple[bytes, Token, bool]]:
-        """Sets the rendezvous state.
+        self, state: bytes, token: Token | None = None
+    ) -> tuple[bytes, Token, bool] | None:
+        """Set the rendezvous state.
 
         The new rendezvous state is set conditionally:
 
@@ -109,7 +121,7 @@ class RendezvousBackend(ABC):
 
 
 class RendezvousTimeout:
-    """Holds the timeout configuration of a rendezvous.
+    """Hold the timeout configuration of a rendezvous.
 
     Args:
         join:
@@ -121,7 +133,7 @@ class RendezvousTimeout:
             The time within which the rendezvous is expected to close after a
             call to :py:meth:`RendezvousHandler.set_closed` or
             :py:meth:`RendezvousHandler.shutdown`.
-        keep_alive:
+        heartbeat:
             The time within which a keep-alive heartbeat is expected to
             complete.
     """
@@ -142,34 +154,36 @@ class RendezvousTimeout:
 
     def __init__(
         self,
-        join: Optional[timedelta] = None,
-        last_call: Optional[timedelta] = None,
-        close: Optional[timedelta] = None,
-        heartbeat: Optional[timedelta] = None,
+        join: timedelta | None = None,
+        last_call: timedelta | None = None,
+        close: timedelta | None = None,
+        heartbeat: timedelta | None = None,
     ) -> None:
-        self._set_timeouts(join=join, last_call=last_call, close=close, heartbeat=heartbeat)
+        self._set_timeouts(
+            join=join, last_call=last_call, close=close, heartbeat=heartbeat
+        )
 
     @property
     def join(self) -> timedelta:
-        """Gets the join timeout."""
+        """Get the join timeout."""
         return self._join
 
     @property
     def last_call(self) -> timedelta:
-        """Gets the last call timeout."""
+        """Get the last call timeout."""
         return self._last_call
 
     @property
     def close(self) -> timedelta:
-        """Gets the close timeout."""
+        """Get the close timeout."""
         return self._close
 
     @property
     def heartbeat(self) -> timedelta:
-        """Gets the keep-alive heartbeat timeout."""
+        """Get the keep-alive heartbeat timeout."""
         return self._heartbeat
 
-    def _set_timeouts(self, **timeouts: Optional[timedelta]):
+    def _set_timeouts(self, **timeouts: timedelta | None):
         for name, timeout in timeouts.items():
             if timeout is None:
                 timeout = self._DEFAULT_TIMEOUTS[name]
@@ -180,7 +194,7 @@ class RendezvousTimeout:
 
 @dataclass(repr=False, eq=False, frozen=True)
 class RendezvousSettings:
-    """Holds the settings of the rendezvous.
+    """Hold the settings of the rendezvous.
 
     Attributes:
         run_id:
@@ -209,27 +223,27 @@ class RendezvousSettings:
 
 @dataclass(eq=True, order=True, frozen=True)
 class _NodeDesc:
-    """Describes a node in the rendezvous.
+    """Describe a node in the rendezvous.
 
     Attributes:
-        fqdn:
-            The FQDN of the node.
+        addr:
+            The FQDN of the node or user specified local node address.
         pid:
             The id of the process in which the rendezvous handler runs.
         local_id:
             A process-wide unique id.
     """
 
-    fqdn: str
+    addr: str
     pid: int
     local_id: int
 
     def __repr__(self) -> str:
-        return f"{self.fqdn}_{self.pid}_{self.local_id}"
+        return f"{self.addr}_{self.pid}_{self.local_id}"
 
 
 class _NodeDescGenerator:
-    """Generates node descriptors.
+    """Generate node descriptors.
 
     A node descriptor is a combination of an FQDN, a process id, and an auto-
     incremented integer that uniquely identifies a node in the rendezvous.
@@ -244,7 +258,7 @@ class _NodeDescGenerator:
         # An integer that is incremented with each call to generate().
         self._local_id = 0
 
-    def generate(self) -> _NodeDesc:
+    def generate(self, local_addr: str | None = None) -> _NodeDesc:
         # This method can be called by multiple threads concurrently; therefore,
         # we must increment the integer atomically.
         with self._lock:
@@ -252,11 +266,11 @@ class _NodeDescGenerator:
 
             self._local_id += 1
 
-        return _NodeDesc(socket.getfqdn(), os.getpid(), local_id)
+        return _NodeDesc(local_addr or socket.getfqdn(), os.getpid(), local_id)
 
 
 class _RendezvousState:
-    """Holds the state of a rendezvous.
+    """Hold the state of a rendezvous.
 
     Attributes:
         round:
@@ -274,17 +288,21 @@ class _RendezvousState:
         wait_list:
             A set of nodes that are waiting to participate in the next round of
             the rendezvous.
+        redundancy_list:
+            A set of nodes that are redundant in the current round and can join
+            the next rendezvous without triggering re-rendezvous.
         last_heartbeats:
             A dictionary containing each node's last heartbeat time.
     """
 
     round: int
     complete: bool
-    deadline: Optional[datetime]
+    deadline: datetime | None
     closed: bool
-    participants: Dict[_NodeDesc, int]
-    wait_list: Set[_NodeDesc]
-    last_heartbeats: Dict[_NodeDesc, datetime]
+    participants: dict[_NodeDesc, int]
+    wait_list: set[_NodeDesc]
+    redundancy_list: set[_NodeDesc]
+    last_heartbeats: dict[_NodeDesc, datetime]
 
     def __init__(self) -> None:
         self.round = 0
@@ -293,32 +311,42 @@ class _RendezvousState:
         self.closed = False
         self.participants = {}
         self.wait_list = set()
+        self.redundancy_list = set()
         self.last_heartbeats = {}
 
 
-def _remove_participant_epilogue(state: _RendezvousState, settings: RendezvousSettings) -> None:
+def _remove_participant_epilogue(
+    state: _RendezvousState, settings: RendezvousSettings
+) -> None:
     if state.complete:
         # If we do not have any participants left, move to the next round.
         if not state.participants:
+            msg = "No participants left in the rendezvous, marking rendezvous as incomplete"
+            logger.debug(msg)
             state.complete = False
 
             state.round += 1
     else:
         if len(state.participants) < settings.min_nodes:
+            msg = (
+                f"Number of participants {len(state.participants)} less than "
+                f"min_nodes {settings.min_nodes}, clearing deadline in state"
+            )
+            logger.debug(msg)
             state.deadline = None
 
 
 class _RendezvousStateHolder(ABC):
-    """Holds the shared rendezvous state synced with other nodes."""
+    """Hold the shared rendezvous state synced with other nodes."""
 
     @property
     @abstractmethod
     def state(self) -> _RendezvousState:
-        """Gets the local state."""
+        """Get the local state."""
 
     @abstractmethod
-    def sync(self) -> Optional[bool]:
-        """Reads or writes the latest state.
+    def sync(self) -> bool | None:
+        """Read or writes the latest state.
 
         Returns:
             A boolean value indicating whether the local state, in case marked
@@ -327,11 +355,11 @@ class _RendezvousStateHolder(ABC):
 
     @abstractmethod
     def mark_dirty(self) -> None:
-        """Marks the local state as dirty."""
+        """Mark the local state as dirty."""
 
 
 class _BackendRendezvousStateHolder(_RendezvousStateHolder):
-    """Holds the rendezvous state synced with other nodes via a backend.
+    """Hold the rendezvous state synced with other nodes via a backend.
 
     Args:
         backend:
@@ -350,7 +378,7 @@ class _BackendRendezvousStateHolder(_RendezvousStateHolder):
     _token: Token
     _dirty: bool
     _last_sync_time: float
-    _dead_nodes: List[_NodeDesc]
+    _dead_nodes: list[_NodeDesc]
 
     def __init__(
         self,
@@ -380,13 +408,13 @@ class _BackendRendezvousStateHolder(_RendezvousStateHolder):
         """See base class."""
         return self._state
 
-    def sync(self) -> Optional[bool]:
+    def sync(self) -> bool | None:
         """See base class."""
-        state_bits: Optional[bytes] = None
+        state_bits: bytes | None = None
 
         token = None
 
-        has_set: Optional[bool]
+        has_set: bool | None
 
         if self._dirty:
             has_set = False
@@ -402,7 +430,9 @@ class _BackendRendezvousStateHolder(_RendezvousStateHolder):
             if self._cache_duration > 0:
                 # Avoid overloading the backend if we are asked to retrieve the
                 # state repeatedly. Try to serve the cached state.
-                if self._last_sync_time >= max(time.monotonic() - self._cache_duration, 0):
+                if self._last_sync_time >= max(
+                    time.monotonic() - self._cache_duration, 0
+                ):
                     return None
 
             get_response = self._backend.get_state()
@@ -419,7 +449,7 @@ class _BackendRendezvousStateHolder(_RendezvousStateHolder):
         else:
             self._state = _RendezvousState()
 
-        if has_set and self._dead_nodes and log.isEnabledFor(logging.DEBUG):
+        if has_set and self._dead_nodes and logger.isEnabledFor(logging.DEBUG):
             node_list = ", ".join(f"'{dead_node}'" for dead_node in self._dead_nodes)
 
             msg = (
@@ -427,7 +457,7 @@ class _BackendRendezvousStateHolder(_RendezvousStateHolder):
                 f"rendezvous '{self._settings.run_id}' since they had no heartbeat."
             )
             self._record(message=msg)
-            log.debug(msg)
+            logger.debug(msg)
 
         self._token = token
 
@@ -442,7 +472,7 @@ class _BackendRendezvousStateHolder(_RendezvousStateHolder):
     def _sanitize(self) -> None:
         state = self._state
 
-        expire_time = datetime.utcnow() - (
+        expire_time = datetime.now(timezone.utc) - (
             self._settings.keep_alive_interval * self._settings.keep_alive_max_attempt
         )
 
@@ -456,6 +486,8 @@ class _BackendRendezvousStateHolder(_RendezvousStateHolder):
         participant_removed = False
 
         for dead_node in self._dead_nodes:
+            msg = f"Detected dead node '{dead_node}', removing it from the rendezvous"
+            logger.debug(msg)
             del state.last_heartbeats[dead_node]
 
             try:
@@ -467,6 +499,11 @@ class _BackendRendezvousStateHolder(_RendezvousStateHolder):
 
             try:
                 state.wait_list.remove(dead_node)
+            except KeyError:
+                pass
+
+            try:
+                state.redundancy_list.remove(dead_node)
             except KeyError:
                 pass
 
@@ -492,14 +529,16 @@ class _Action(Enum):
     KEEP_ALIVE = 1
     ADD_TO_PARTICIPANTS = 2
     ADD_TO_WAIT_LIST = 3
-    REMOVE_FROM_PARTICIPANTS = 4
-    REMOVE_FROM_WAIT_LIST = 5
-    MARK_RENDEZVOUS_COMPLETE = 6
-    MARK_RENDEZVOUS_CLOSED = 7
-    SYNC = 8
-    ERROR_CLOSED = 9
-    ERROR_TIMEOUT = 10
-    FINISH = 11
+    ADD_TO_REDUNDANCY_LIST = 4
+    REMOVE_FROM_PARTICIPANTS = 5
+    REMOVE_FROM_WAIT_LIST = 6
+    REMOVE_FROM_REDUNDANCY_LIST = 7
+    MARK_RENDEZVOUS_COMPLETE = 8
+    MARK_RENDEZVOUS_CLOSED = 9
+    SYNC = 10
+    ERROR_CLOSED = 11
+    ERROR_TIMEOUT = 12
+    FINISH = 13
 
 
 class _RendezvousContext:
@@ -528,15 +567,16 @@ class _RendezvousContext:
 
 
 class _RendezvousOpExecutor(ABC):
-    """Executes rendezvous operations."""
+    """Execute rendezvous operations."""
 
     @abstractmethod
     def run(
         self,
         state_handler: Callable[[_RendezvousContext, float], _Action],
         deadline: float,
+        update_deadline: Callable[[timedelta], float] | None = None,
     ) -> None:
-        """Executes a rendezvous operation.
+        """Execute a rendezvous operation.
 
         An operation is run inside a state machine and is expected to transition
         the rendezvous from one state to another.
@@ -548,11 +588,14 @@ class _RendezvousOpExecutor(ABC):
             deadline:
                 The time, in seconds, at which the operation will be considered
                 timed-out.
+            update_deadline:
+                Function to generate a new operation deadline if the current
+                node may participate in the next rendezvous.
         """
 
 
 class _DistributedRendezvousOpExecutor(_RendezvousOpExecutor):
-    """Executes rendezvous operations using a shared state.
+    """Execute rendezvous operations using a shared state.
 
     Args:
         node:
@@ -586,7 +629,7 @@ class _DistributedRendezvousOpExecutor(_RendezvousOpExecutor):
             run_id=self._settings.run_id,
             message=message,
             node_state=node_state,
-            hostname=self._node.fqdn,
+            hostname=self._node.addr,
             pid=self._node.pid,
             local_id=self._node.local_id,
         )
@@ -595,10 +638,10 @@ class _DistributedRendezvousOpExecutor(_RendezvousOpExecutor):
         self,
         state_handler: Callable[[_RendezvousContext, float], _Action],
         deadline: float,
+        update_deadline: Callable[[timedelta], float] | None = None,
     ) -> None:
         """See base class."""
         action = None
-
         while action != _Action.FINISH:
             # Reads or writes the latest rendezvous state shared by all nodes in
             # the rendezvous. Note that our local changes might get overridden
@@ -617,7 +660,7 @@ class _DistributedRendezvousOpExecutor(_RendezvousOpExecutor):
                     )
 
                 self._record(message=msg)
-                log.debug(msg)
+                logger.debug(msg)
 
             self._state = self._state_holder.state
 
@@ -631,10 +674,10 @@ class _DistributedRendezvousOpExecutor(_RendezvousOpExecutor):
                 continue
 
             if action == _Action.ERROR_CLOSED:
-                raise RendezvousClosedError()
+                raise RendezvousClosedError
 
             if action == _Action.ERROR_TIMEOUT:
-                raise RendezvousTimeoutError()
+                raise RendezvousTimeoutError
 
             if action == _Action.SYNC:
                 # Delay the execution by one second to avoid overloading the
@@ -647,10 +690,17 @@ class _DistributedRendezvousOpExecutor(_RendezvousOpExecutor):
                     self._add_to_participants()
                 elif action == _Action.ADD_TO_WAIT_LIST:
                     self._add_to_wait_list()
+                elif action == _Action.ADD_TO_REDUNDANCY_LIST:
+                    self._add_to_redundancy_list()
                 elif action == _Action.REMOVE_FROM_PARTICIPANTS:
                     self._remove_from_participants()
                 elif action == _Action.REMOVE_FROM_WAIT_LIST:
                     self._remove_from_wait_list()
+                elif action == _Action.REMOVE_FROM_REDUNDANCY_LIST:
+                    self._remove_from_redundancy_list()
+                    # update deadline since the node may participate in rendezvous process
+                    if update_deadline:
+                        deadline = update_deadline(self._settings.timeout.join)
                 elif action == _Action.MARK_RENDEZVOUS_COMPLETE:
                     self._mark_rendezvous_complete()
                 elif action == _Action.MARK_RENDEZVOUS_CLOSED:
@@ -665,9 +715,9 @@ class _DistributedRendezvousOpExecutor(_RendezvousOpExecutor):
             f"'{self._settings.run_id}'. Pending sync."
         )
         self._record(message=msg)
-        log.debug(msg)
+        logger.debug(msg)
 
-        self._state.last_heartbeats[self._node] = datetime.utcnow()
+        self._state.last_heartbeats[self._node] = datetime.now(timezone.utc)
 
     def _add_to_participants(self) -> None:
         msg = (
@@ -675,7 +725,7 @@ class _DistributedRendezvousOpExecutor(_RendezvousOpExecutor):
             f"{self._state.round} of the rendezvous '{self._settings.run_id}'. Pending sync."
         )
         self._record(message=msg)
-        log.debug(msg)
+        logger.debug(msg)
 
         state = self._state
 
@@ -691,7 +741,9 @@ class _DistributedRendezvousOpExecutor(_RendezvousOpExecutor):
         self._keep_alive()
 
         if len(state.participants) == self._settings.min_nodes:
-            state.deadline = datetime.utcnow() + self._settings.timeout.last_call
+            state.deadline = (
+                datetime.now(timezone.utc) + self._settings.timeout.last_call
+            )
 
         if len(state.participants) == self._settings.max_nodes:
             self._mark_rendezvous_complete()
@@ -702,9 +754,23 @@ class _DistributedRendezvousOpExecutor(_RendezvousOpExecutor):
             f"{self._state.round + 1} of the rendezvous '{self._settings.run_id}'. Pending sync."
         )
         self._record(message=msg)
-        log.debug(msg)
+        logger.debug(msg)
 
+        if self._node in self._state.redundancy_list:
+            self._state.redundancy_list.remove(self._node)
         self._state.wait_list.add(self._node)
+
+        self._keep_alive()
+
+    def _add_to_redundancy_list(self) -> None:
+        msg = (
+            f"The node '{self._node}' added itself to the redundancy list of round "
+            f"{self._state.round + 1} of the rendezvous '{self._settings.run_id}'. Pending sync."
+        )
+        self._record(message=msg)
+        logger.debug(msg)
+
+        self._state.redundancy_list.add(self._node)
 
         self._keep_alive()
 
@@ -714,7 +780,7 @@ class _DistributedRendezvousOpExecutor(_RendezvousOpExecutor):
             f"{self._state.round} of the rendezvous '{self._settings.run_id}'. Pending sync."
         )
         self._record(message=msg)
-        log.debug(msg)
+        logger.debug(msg)
 
         state = self._state
 
@@ -732,9 +798,21 @@ class _DistributedRendezvousOpExecutor(_RendezvousOpExecutor):
             f"{self._state.round + 1} of the rendezvous '{self._settings.run_id}'. Pending sync."
         )
         self._record(message=msg)
-        log.debug(msg)
+        logger.debug(msg)
 
         self._state.wait_list.remove(self._node)
+
+        del self._state.last_heartbeats[self._node]
+
+    def _remove_from_redundancy_list(self) -> None:
+        msg = (
+            f"The node '{self._node}' removed itself from the redundant list of round "
+            f"{self._state.round + 1} of the rendezvous '{self._settings.run_id}'. Pending sync."
+        )
+        self._record(message=msg)
+        logger.debug(msg)
+
+        self._state.redundancy_list.remove(self._node)
 
         del self._state.last_heartbeats[self._node]
 
@@ -744,7 +822,7 @@ class _DistributedRendezvousOpExecutor(_RendezvousOpExecutor):
             f"'{self._settings.run_id}' as complete. Pending sync."
         )
         self._record(message=msg, node_state=NodeState.SUCCEEDED)
-        log.debug(msg)
+        logger.debug(msg)
 
         state = self._state
 
@@ -761,23 +839,25 @@ class _DistributedRendezvousOpExecutor(_RendezvousOpExecutor):
             "Pending sync."
         )
         self._record(message=msg, node_state=NodeState.SUCCEEDED)
-        log.debug(msg)
+        logger.debug(msg)
 
         self._state.closed = True
 
 
 def _should_keep_alive(ctx: _RendezvousContext) -> bool:
-    """Determines whether a keep-alive heartbeat should be sent."""
+    """Determine whether a keep-alive heartbeat should be sent."""
     try:
         last_heartbeat = ctx.state.last_heartbeats[ctx.node]
     except KeyError:
         return False
 
-    return last_heartbeat <= datetime.utcnow() - ctx.settings.keep_alive_interval
+    return (
+        last_heartbeat <= datetime.now(timezone.utc) - ctx.settings.keep_alive_interval
+    )
 
 
 class _RendezvousExitOp:
-    """Represents a rendezvous exit operation."""
+    """Represent a rendezvous exit operation."""
 
     def __call__(self, ctx: _RendezvousContext, deadline: float) -> _Action:
         if ctx.node in ctx.state.participants:
@@ -788,14 +868,32 @@ class _RendezvousExitOp:
 
 
 class _RendezvousJoinOp:
-    """Represents a rendezvous join operation."""
+    """Represent a rendezvous join operation."""
 
     def __call__(self, ctx: _RendezvousContext, deadline: float) -> _Action:
         state = ctx.state
 
         # A closed rendezvous means that it no longer accepts new nodes.
         if state.closed:
+            if ctx.node in state.redundancy_list:
+                msg = f"The rendezvous '{ctx.settings.run_id}' is closed, terminating pending rendezvous."
+                raise RendezvousGracefulExitError(msg)
             return _Action.ERROR_CLOSED
+
+        if ctx.node in state.redundancy_list:
+            msg = f"The node {ctx.node} is in redundancy list"
+            logger.debug(msg)
+            # don't apply the timeout logic here, since we want to allow the node to rejoin
+            if len(state.participants) == ctx.settings.max_nodes:
+                if _should_keep_alive(ctx):
+                    return _Action.KEEP_ALIVE
+                else:
+                    return _Action.SYNC
+            else:
+                # transition to waiting state that will respect timeouts.
+                msg = f"The node {ctx.node} is removed from redundancy list"
+                logger.debug(msg)
+                return _Action.REMOVE_FROM_REDUNDANCY_LIST
 
         is_participant = ctx.node in state.participants
 
@@ -830,13 +928,34 @@ class _RendezvousJoinOp:
             if len(state.participants) < ctx.settings.max_nodes:
                 if ctx.node not in state.wait_list:
                     return _Action.ADD_TO_WAIT_LIST
+            elif len(state.participants) >= ctx.settings.max_nodes:
+                if (
+                    ctx.node not in state.redundancy_list
+                    and ctx.node not in state.wait_list
+                ):
+                    return _Action.ADD_TO_REDUNDANCY_LIST
         elif is_participant:
             # If the rendezvous has enough number of participants including us,
             # check whether we have passed the rendezvous deadline. If yes,
             # complete it.
-            if len(state.participants) >= ctx.settings.min_nodes:
-                if cast(datetime, state.deadline) < datetime.utcnow():
+            if (
+                len(state.participants) >= ctx.settings.min_nodes
+                and len(state.participants) <= ctx.settings.max_nodes
+                and state.deadline is not None
+            ):
+                if state.deadline < datetime.now(timezone.utc):
+                    msg = (
+                        f"The node '{ctx.node}' marking the rendezvous complete, "
+                        f"quorum established within deadline"
+                    )
+                    logger.debug(msg)
                     return _Action.MARK_RENDEZVOUS_COMPLETE
+                else:
+                    msg = f"The node '{ctx.node}' can't complete rendezvous: deadline reached"
+                    logger.debug(msg)
+            else:
+                msg = f"The node '{ctx.node}' can't complete rendezvous: not enough participants"
+                logger.debug(msg)
         else:
             # The rendezvous is not complete yet and we are not part of it. Try
             # to join.
@@ -853,7 +972,7 @@ class _RendezvousJoinOp:
 
 
 class _RendezvousCloseOp:
-    """Represents a rendezvous close operation."""
+    """Represent a rendezvous close operation."""
 
     def __call__(self, ctx: _RendezvousContext, deadline: float) -> _Action:
         if ctx.state.closed:
@@ -864,7 +983,7 @@ class _RendezvousCloseOp:
 
 
 class _RendezvousKeepAliveOp:
-    """Represents a rendezvous keep-alive update operation."""
+    """Represent a rendezvous keep-alive update operation."""
 
     def __call__(self, ctx: _RendezvousContext, deadline: float) -> _Action:
         if _should_keep_alive(ctx):
@@ -875,7 +994,7 @@ class _RendezvousKeepAliveOp:
 
 
 class DynamicRendezvousHandler(RendezvousHandler):
-    """Represents a handler that sets up a rendezvous among a set of nodes."""
+    """Represent a handler that sets up a rendezvous among a set of nodes."""
 
     # Static
     _node_desc_generator = _NodeDescGenerator()
@@ -887,7 +1006,7 @@ class DynamicRendezvousHandler(RendezvousHandler):
     _state_holder: _RendezvousStateHolder
     _op_executor: _RendezvousOpExecutor
     _heartbeat_lock: threading.Lock
-    _keep_alive_timer: Optional[_PeriodicTimer]
+    _keep_alive_timer: _PeriodicTimer | None
 
     @classmethod
     def from_backend(
@@ -897,9 +1016,12 @@ class DynamicRendezvousHandler(RendezvousHandler):
         backend: RendezvousBackend,
         min_nodes: int,
         max_nodes: int,
-        timeout: Optional[RendezvousTimeout] = None,
+        local_addr: str | None = None,
+        timeout: RendezvousTimeout | None = None,
+        keep_alive_interval: int = 5,
+        keep_alive_max_attempt: int = 3,
     ):
-        """Creates a new :py:class:`DynamicRendezvousHandler`.
+        """Create a new :py:class:`DynamicRendezvousHandler`.
 
         Args:
             run_id:
@@ -912,19 +1034,27 @@ class DynamicRendezvousHandler(RendezvousHandler):
                 The minimum number of nodes to admit to the rendezvous.
             max_nodes:
                 The maximum number of nodes to admit to the rendezvous.
+            local_addr:
+                The local node address.
             timeout:
                 The timeout configuration of the rendezvous.
+            keep_alive_interval:
+                The amount of time a node waits before sending a heartbeat to keep
+                it alive in the rendezvous.
+            keep_alive_max_attempt:
+                The maximum number of failed heartbeat attempts after which a node
+                is considered dead.
         """
         # We associate each handler instance with a unique node descriptor.
-        node = cls._node_desc_generator.generate()
+        node = cls._node_desc_generator.generate(local_addr)
 
         settings = RendezvousSettings(
             run_id,
             min_nodes,
             max_nodes,
             timeout or RendezvousTimeout(),
-            keep_alive_interval=timedelta(seconds=5),
-            keep_alive_max_attempt=3,
+            keep_alive_interval=timedelta(seconds=keep_alive_interval),
+            keep_alive_max_attempt=keep_alive_max_attempt,
         )
 
         state_holder = _BackendRendezvousStateHolder(backend, settings)
@@ -971,40 +1101,58 @@ class DynamicRendezvousHandler(RendezvousHandler):
 
         self._keep_alive_timer = None
 
+        # Cached shared store server reference
+        self._shared_tcp_store_server: dist.Store | None = None
+
+        self._bootstrap_store_info: RendezvousStoreInfo | None = None
+
     def _record(
         self,
         message: str,
         node_state: NodeState = NodeState.RUNNING,
-        rank: Optional[int] = None,
+        rank: int | None = None,
     ) -> None:
         construct_and_record_rdzv_event(
             name=f"{self.__class__.__name__}.{get_method_name()}",
             run_id=self._settings.run_id,
             message=message,
             node_state=node_state,
-            hostname=self._this_node.fqdn,
+            hostname=self._this_node.addr,
             pid=self._this_node.pid,
             local_id=self._this_node.local_id,
             rank=rank,
         )
 
+    def _create_tcp_store_server(self, master_addr, master_port) -> dist.TCPStore:
+        return dist.TCPStore(
+            host_name=master_addr,
+            port=master_port,
+            is_master=True,
+            multi_tenant=True,
+        )
+
     @property
     def settings(self) -> RendezvousSettings:
-        """Gets the settings of the rendezvous."""
+        """Get the settings of the rendezvous."""
         return self._settings
 
     def get_backend(self) -> str:
         """See base class."""
         return self._backend_name
 
-    def next_rendezvous(self) -> Tuple[Store, int, int]:
+    @property
+    def use_agent_store(self) -> bool:
+        """See base class."""
+        return os.getenv("TORCH_DISABLE_SHARE_RDZV_TCP_STORE", "0") != "1"
+
+    def next_rendezvous(self) -> RendezvousInfo:
         """See base class."""
         msg = (
             f"The node '{self._this_node}' attempts to join the next round of the rendezvous "
             f"'{self._settings.run_id}'."
         )
         self._record(message=msg)
-        log.info(msg)
+        logger.info(msg)
 
         try:
             self._stop_heartbeats()
@@ -1019,9 +1167,8 @@ class DynamicRendezvousHandler(RendezvousHandler):
             join_op = _RendezvousJoinOp()
 
             deadline = self._get_deadline(self._settings.timeout.join)
-
             self._op_executor.run(exit_op, deadline)
-            self._op_executor.run(join_op, deadline)
+            self._op_executor.run(join_op, deadline, self._get_deadline)
 
             self._start_heartbeats()
 
@@ -1041,9 +1188,52 @@ class DynamicRendezvousHandler(RendezvousHandler):
             f"{world_size}."
         )
         self._record(message=msg, rank=rank)
-        log.info(msg)
+        logger.info(msg)
 
-        return store, rank, world_size
+        # opt-out option of TCPStore sharing
+        if os.getenv("TORCH_DISABLE_SHARE_RDZV_TCP_STORE", "0") == "1":
+            bootstrap_store_info = RendezvousStoreInfo.build(
+                rank, store, local_addr=self._this_node.addr
+            )
+            return RendezvousInfo(
+                store,
+                rank,
+                world_size,
+                bootstrap_store_info,
+            )
+
+        # This will only be hit when TCPStore sharing is enabled.
+        # Rebuild bootstrap store info when this is the first rendezvous or
+        # when the node became rank 0 but hasn't created a TCP store server
+        # yet (rank changed between rounds due to elastic membership changes).
+        if self._bootstrap_store_info is None or (
+            rank == 0 and self._shared_tcp_store_server is None
+        ):
+            server_port = 0
+            if rank == 0:
+                self._shared_tcp_store_server = self._create_tcp_store_server(
+                    self._this_node.addr, server_port
+                )
+                server_port = self._shared_tcp_store_server.port
+            self._bootstrap_store_info = RendezvousStoreInfo.build(
+                rank,
+                store,
+                local_addr=self._this_node.addr,
+                server_port=server_port,  # For non-0 rank, this is a no-op
+            )
+
+        if self._bootstrap_store_info is None:
+            raise AssertionError
+        if rank == 0:
+            if self._shared_tcp_store_server is None:
+                raise AssertionError
+
+        return RendezvousInfo(
+            store,
+            rank,
+            world_size,
+            self._bootstrap_store_info,  # type: ignore[assignment]
+        )
 
     def is_closed(self) -> bool:
         """See base class."""
@@ -1105,7 +1295,7 @@ class DynamicRendezvousHandler(RendezvousHandler):
                 f"'{self._settings.run_id}' due to an error of type {type(ex).__name__}."
             )
             self._record(message=msg, node_state=NodeState.FAILED)
-            log.warning(msg)
+            logger.warning(msg)
 
             return False
         except Exception as e:
@@ -1124,7 +1314,7 @@ class DynamicRendezvousHandler(RendezvousHandler):
 
         msg = f"The node '{self._this_node}' has closed the rendezvous '{self._settings.run_id}'."
         self._record(message=msg, node_state=NodeState.SUCCEEDED)
-        log.info(msg)
+        logger.info(msg)
 
     @staticmethod
     def _keep_alive_weak(weak_self) -> None:
@@ -1133,37 +1323,36 @@ class DynamicRendezvousHandler(RendezvousHandler):
             self._keep_alive()
 
     def _keep_alive(self) -> None:
-        self._heartbeat_lock.acquire()
+        with self._heartbeat_lock:
+            op = _RendezvousKeepAliveOp()
 
-        op = _RendezvousKeepAliveOp()
+            deadline = self._get_deadline(self._settings.timeout.heartbeat)
 
-        deadline = self._get_deadline(self._settings.timeout.heartbeat)
+            try:
+                self._op_executor.run(op, deadline)
 
-        try:
-            self._op_executor.run(op, deadline)
-
-            msg = (
-                f"The node '{self._this_node}' has sent a keep-alive heartbeat to the rendezvous "
-                f"'{self._settings.run_id}'."
-            )
-            self._record(message=msg)
-            log.debug(msg)
-        except RendezvousError as ex:
-            msg = (
-                f"The node '{self._this_node}' has failed to send a keep-alive heartbeat to the "
-                f"rendezvous '{self._settings.run_id}' due to an error of type {type(ex).__name__}."
-            )
-            self._record(message=msg, node_state=NodeState.FAILED)
-            log.warning(msg)
-        finally:
-            self._heartbeat_lock.release()
+                msg = (
+                    f"The node '{self._this_node}' has sent a keep-alive heartbeat to the rendezvous "
+                    f"'{self._settings.run_id}'."
+                )
+                self._record(message=msg)
+                logger.debug(msg)
+            except RendezvousError as ex:
+                msg = (
+                    f"The node '{self._this_node}' has failed to send a keep-alive heartbeat to the "
+                    f"rendezvous '{self._settings.run_id}' due to an error of type {type(ex).__name__}."
+                )
+                self._record(message=msg, node_state=NodeState.FAILED)
+                logger.warning(msg)
 
     def _start_heartbeats(self) -> None:
         self._keep_alive_timer = _PeriodicTimer(
             self._settings.keep_alive_interval, self._keep_alive_weak, weakref.ref(self)
         )
 
-        self._keep_alive_timer.set_name(f"RendezvousKeepAliveTimer_{self._this_node.local_id}")
+        self._keep_alive_timer.set_name(
+            f"RendezvousKeepAliveTimer_{self._this_node.local_id}"
+        )
 
         self._keep_alive_timer.start()
 
@@ -1173,21 +1362,26 @@ class DynamicRendezvousHandler(RendezvousHandler):
 
         self._keep_alive_timer.cancel()
 
-    def _get_world(self) -> Tuple[int, int]:
+    def _get_world(self) -> tuple[int, int]:
         state = self._state_holder.state
 
         return state.participants[self._this_node], len(state.participants)
 
-    def _get_store(self) -> Store:
-        key_prefix = f"torch.rendezvous.{self._settings.run_id}.{self._state_holder.state.round}"
+    def _wrap_store(self, store: Store) -> Store:
+        key_prefix = (
+            f"torch.rendezvous.{self._settings.run_id}.{self._state_holder.state.round}"
+        )
 
-        return PrefixStore(key_prefix, self._store)
+        return dist.PrefixStore(key_prefix, store)
+
+    def _get_store(self) -> Store:
+        return self._wrap_store(self._store)
 
     def _get_deadline(self, timeout: timedelta) -> float:
         return time.monotonic() + timeout.total_seconds()
 
 
-def _get_timeout(params: RendezvousParameters, key: str) -> Optional[timedelta]:
+def _get_timeout(params: RendezvousParameters, key: str) -> timedelta | None:
     timeout = params.get_as_int(key + "_timeout")
     if timeout is None:
         return None
@@ -1197,8 +1391,7 @@ def _get_timeout(params: RendezvousParameters, key: str) -> Optional[timedelta]:
 def create_handler(
     store: Store, backend: RendezvousBackend, params: RendezvousParameters
 ) -> DynamicRendezvousHandler:
-    """Creates a new :py:class:`DynamicRendezvousHandler` from the specified
-    parameters.
+    """Create a new :py:class:`DynamicRendezvousHandler` from the specified parameters.
 
     Args:
         store:
@@ -1223,13 +1416,27 @@ def create_handler(
     |                   | :py:meth:`RendezvousHandler.shutdown`. Defaults to   |
     |                   | 30 seconds.                                          |
     +-------------------+------------------------------------------------------+
+    | heartbeat         | The time, in seconds, within which a keep-alive      |
+    |                   | heartbeat is expected to complete                    |
+    +-------------------+------------------------------------------------------+
     """
     try:
         timeout = RendezvousTimeout(
             _get_timeout(params, "join"),
             _get_timeout(params, "last_call"),
             _get_timeout(params, "close"),
+            _get_timeout(params, "heartbeat"),
         )
+        keep_alive_interval = params.get_as_int("keep_alive_interval", 5)
+        if keep_alive_interval is None:
+            raise TypeError(
+                "You passed 'keep_alive_interval=None' as a rendezvous configuration option"
+            )
+        keep_alive_max_attempt = params.get_as_int("keep_alive_max_attempt", 3)
+        if keep_alive_max_attempt is None:
+            raise TypeError(
+                "You passed 'keep_alive_max_attempt=None' as a rendezvous configuration option"
+            )
 
         return DynamicRendezvousHandler.from_backend(
             params.run_id,
@@ -1237,7 +1444,10 @@ def create_handler(
             backend,
             params.min_nodes,
             params.max_nodes,
+            params.local_addr,
             timeout,
+            keep_alive_interval=keep_alive_interval,
+            keep_alive_max_attempt=keep_alive_max_attempt,
         )
     except Exception as e:
         construct_and_record_rdzv_event(

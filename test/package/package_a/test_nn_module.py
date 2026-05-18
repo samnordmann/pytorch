@@ -5,7 +5,7 @@ import torch
 
 class TestNnModule(torch.nn.Module):
     def __init__(self, nz=6, ngf=9, nc=3):
-        super(TestNnModule, self).__init__()
+        super().__init__()
         self.main = torch.nn.Sequential(
             # input is Z, going into a convolution
             torch.nn.ConvTranspose2d(nz, ngf * 8, 4, 1, 0, bias=False),
@@ -25,7 +25,7 @@ class TestNnModule(torch.nn.Module):
             torch.nn.ReLU(True),
             # state size. (ngf) x 32 x 32
             torch.nn.ConvTranspose2d(ngf, nc, 4, 2, 1, bias=False),
-            torch.nn.Tanh()
+            torch.nn.Tanh(),
             # state size. (nc) x 64 x 64
         )
 

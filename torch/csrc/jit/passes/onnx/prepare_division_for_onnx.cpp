@@ -3,8 +3,7 @@
 #include <torch/csrc/jit/ir/constants.h>
 #include <torch/csrc/jit/jit_log.h>
 
-namespace torch {
-namespace jit {
+namespace torch::jit {
 
 // onnx only supports tensors, but 1 / 2 = 0.5 and tensor(1) / tensor(2) = 0,
 // so before converting the ints to tensors we need to cast them to floats.
@@ -24,9 +23,9 @@ static void PrepareDivisionForONNXOnBlock(Block* block) {
                 subgraph->insertNode(subgraph->createNumToTensor(input))
                     ->output();
             longtensor->node()->copyMetadata(input->node());
-            auto* nonblocking = subgraph->insertConstant(0);
-            auto* cast =
-                subgraph->create(aten::_cast_Float, {longtensor, nonblocking});
+            auto* cast = subgraph->create(at::onnx::Cast, 1);
+            cast->addInput(longtensor);
+            cast->i_(attr::to, 1);
             cast->copyMetadata(*it);
             return subgraph->insertNode(cast)->output();
           });
@@ -43,5 +42,4 @@ void PrepareDivisionForONNX(const std::shared_ptr<Graph>& graph) {
   GRAPH_DUMP("After PrepareDivisionForONNX: ", graph);
 }
 
-} // namespace jit
-} // namespace torch
+} // namespace torch::jit

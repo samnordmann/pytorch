@@ -1,7 +1,6 @@
 #include <pybind11/pybind11.h>
-#include <torch/csrc/jit/backends/backend.h>
 #include <torch/csrc/jit/backends/backend_preprocess.h>
-#include <torch/csrc/jit/python/pybind_utils.h>
+#include <torch/csrc/utils/pybind.h>
 
 namespace py = pybind11;
 
@@ -25,7 +24,7 @@ namespace py = pybind11;
 // torch.tensor([[1.0, -1.0, 2.0, -2.0]]).unsqueeze(-1).unsqueeze(-1)
 //
 // In the future, preprocess will accept a dedicated object
-c10::IValue preprocess(
+static c10::IValue preprocess(
     const torch::jit::Module& mod,
     const c10::Dict<c10::IValue, c10::IValue>& method_compile_spec,
     const torch::jit::BackendDebugHandleGenerator& generate_debug_handles) {
@@ -42,7 +41,7 @@ c10::IValue preprocess(
   // Test that method_compile_spec contains the necessary keys and
   // Tensor/TensorList input
   c10::IValue inp;
-  std::string error = "";
+  std::string error;
   if (!method_compile_spec.contains("forward")) {
     error = R"(method_compile_spec does not contain the "forward" key.)";
   } else {
@@ -59,7 +58,7 @@ c10::IValue preprocess(
       }
     }
   }
-  if (error.size() != 0) {
+  if (!error.empty()) {
     throw std::runtime_error(
         error +
         "\nmethod_compile_spec should contain a Tensor or Tensor List which bundles input parameters:"
@@ -96,7 +95,7 @@ c10::IValue preprocess(
   // transform Python lists to C++ c10::List
   c10::List<at::Tensor> weights(
       py::cast<std::vector<at::Tensor>>(nnapi_processed[2]));
-  for (int i = 0; i < weights.size(); i++) {
+  for (auto i = 0U; i < weights.size(); i++) {
     weights.set(i, weights.get(i).contiguous());
   }
   c10::List<int64_t> inp_mem_fmts(

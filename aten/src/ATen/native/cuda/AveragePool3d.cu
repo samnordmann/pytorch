@@ -1,5 +1,8 @@
+#define TORCH_ASSERT_ONLY_METHOD_OPERATORS
+#include <ATen/core/Tensor.h>
 #include <ATen/AccumulateType.h>
 #include <ATen/ceil_div.h>
+#include <ATen/Dispatch.h>
 #include <ATen/native/Pool.h>
 #include <ATen/cuda/Atomic.cuh>
 #include <ATen/cuda/CUDAContext.h>
@@ -9,9 +12,16 @@
 #include <ATen/native/cuda/KernelUtils.cuh>
 #include <c10/macros/Macros.h>
 
+#ifndef AT_PER_OPERATOR_HEADERS
+#include <ATen/Functions.h>
+#include <ATen/NativeFunctions.h>
+#else
+#include <ATen/ops/avg_pool3d_native.h>
+#include <ATen/ops/avg_pool3d_backward_native.h>
+#endif
 
-namespace at {
-namespace native {
+
+namespace at::native {
 namespace {
 
 __device__ inline int min(int a, int b) {
@@ -24,7 +34,7 @@ __device__ inline int max(int a, int b) {
 
 template <typename scalar_t, typename accscalar_t>
 __global__ void avg_pool3d_cuda_update_output(
-  PackedTensorAccessor64<scalar_t, 4> input,
+  PackedTensorAccessor64<const scalar_t, 4> input,
   PackedTensorAccessor64<scalar_t, 4> output,
   int kT, int kH, int kW,
   int dT, int dH, int dW,
@@ -78,7 +88,7 @@ __global__ void avg_pool3d_cuda_update_output(
       {
         for (wi = wstart; wi < wend; ++wi)
         {
-          scalar_t val = input[slice][ti][hi][wi];
+          const scalar_t val = input[slice][ti][hi][wi];
           sum += val;
         }
       }
@@ -93,7 +103,7 @@ __global__ void avg_pool3d_cuda_update_output(
 //
 template<int KERNEL_WIDTH, typename scalar_t, typename accscalar_t>
 __global__ void avg_pool3d_cuda_update_output(
-  PackedTensorAccessor64<scalar_t, 4> input,
+  PackedTensorAccessor64<const scalar_t, 4> input,
   PackedTensorAccessor64<scalar_t, 4> output,
   int kT, int kH,
   int dT, int dH, int dW,
@@ -147,7 +157,7 @@ __global__ void avg_pool3d_cuda_update_output(
       {
         for (wi = wstart; wi < wend; ++wi)
         {
-          scalar_t val = input[slice][ti][hi][wi];
+          const scalar_t val = input[slice][ti][hi][wi];
           sum += val;
         }
       }
@@ -159,7 +169,7 @@ __global__ void avg_pool3d_cuda_update_output(
 
 template <typename scalar_t, typename accscalar_t>
 __global__ void avg_pool3d_single_backward_out_frame_stride1(
-  PackedTensorAccessor64<scalar_t, 4> gradOutput,
+  PackedTensorAccessor64<const scalar_t, 4> gradOutput,
   PackedTensorAccessor64<scalar_t, 4> gradInput,
   int kT, int kH, int kW,
   accscalar_t normFactor,
@@ -174,7 +184,7 @@ __global__ void avg_pool3d_single_backward_out_frame_stride1(
   if (iRow < gradInput.size(2) && iCol < gradInput.size(3))
   {
     accscalar_t sum = 0.0;
-    scalar_t *gOut = &gradOutput[slice][max(0, iFrame - kT + 1)]
+    const scalar_t *gOut = &gradOutput[slice][max(0, iFrame - kT + 1)]
       [max(0, iRow - kH + 1)][max(0, iCol - kW + 1)];
     int frameOffset = 0;
     for (int oFrame  = max(0, iFrame - kT + 1);
@@ -204,7 +214,7 @@ __global__ void avg_pool3d_single_backward_out_frame_stride1(
 
 template <typename scalar_t, typename accscalar_t>
 __global__ void avg_pool3d_cuda_update_grad_input_atomic(
-  PackedTensorAccessor64<scalar_t, 4> gradOutput,
+  PackedTensorAccessor64<const scalar_t, 4> gradOutput,
   PackedTensorAccessor64<scalar_t, 4> gradInput,
   int kT, int kH, int kW,
   int dT, int dH, int dW,
@@ -263,7 +273,7 @@ __global__ void avg_pool3d_cuda_update_grad_input_atomic(
 
 template <typename scalar_t, typename accscalar_t>
 __global__ void avg_pool3d_cuda_update_grad_input(
-  PackedTensorAccessor64<scalar_t, 4> gradOutput,
+  PackedTensorAccessor64<const scalar_t, 4> gradOutput,
   PackedTensorAccessor64<scalar_t, 4> gradInput,
   int kT, int kH, int kW,
   int dT, int dH, int dW,
@@ -323,7 +333,7 @@ __global__ void avg_pool3d_cuda_update_grad_input(
 #define LAUNCH_UPDATE_OUTPUT_KERNEL_WIDTH(KW) case KW:      \
   avg_pool3d_cuda_update_output<KW, scalar_t, accscalar_t>  \
     <<<grid, block, 0, at::cuda::getCurrentCUDAStream()>>>( \
-       work_input.packed_accessor64<scalar_t, 4>(),         \
+       work_input.packed_accessor64<const scalar_t, 4>(),   \
        work_output.packed_accessor64<scalar_t, 4>(),        \
        kT, kH,                                              \
        dT, dH, dW,                                          \
@@ -341,7 +351,7 @@ TORCH_IMPL_FUNC(avg_pool3d_out_cuda) (
   IntArrayRef padding,
   bool ceil_mode,
   bool count_include_pad,
-  c10::optional<int64_t> divisor_override,
+  std::optional<int64_t> divisor_override,
   const Tensor& output
 ) {
   TensorArg output_arg{ output, "output", 1 };
@@ -349,19 +359,19 @@ TORCH_IMPL_FUNC(avg_pool3d_out_cuda) (
 
   checkAllSameGPU(__func__, {output_arg, input_arg});
 
-  const int kT = safe_downcast<int, int64_t>(kernel_size[0]);
-  const int kH = kernel_size.size() == 1 ? kT : safe_downcast<int, int64_t>(kernel_size[1]);
-  const int kW = kernel_size.size() == 1 ? kT : safe_downcast<int, int64_t>(kernel_size[2]);
+  const int kT = c10::checked_convert<int>(kernel_size[0], "int");
+  const int kH = kernel_size.size() == 1 ? kT : c10::checked_convert<int>(kernel_size[1], "int");
+  const int kW = kernel_size.size() == 1 ? kT : c10::checked_convert<int>(kernel_size[2], "int");
 
-  const int dT = stride.empty() ? kT : safe_downcast<int, int64_t>(stride[0]);
+  const int dT = stride.empty() ? kT : c10::checked_convert<int>(stride[0], "int");
   const int dH = stride.empty() ? kH :
-                 stride.size() == 1 ? dT : safe_downcast<int, int64_t>(stride[1]);
+                 stride.size() == 1 ? dT : c10::checked_convert<int>(stride[1], "int");
   const int dW = stride.empty() ? kW :
-                 stride.size() == 1 ? dT : safe_downcast<int, int64_t>(stride[2]);
+                 stride.size() == 1 ? dT : c10::checked_convert<int>(stride[2], "int");
 
-  const int padT = safe_downcast<int, int64_t>(padding[0]);
-  const int padH = padding.size() == 1 ? padT : safe_downcast<int, int64_t>(padding[1]);
-  const int padW = padding.size() == 1 ? padT : safe_downcast<int, int64_t>(padding[2]);
+  const int padT = c10::checked_convert<int>(padding[0], "int");
+  const int padH = padding.size() == 1 ? padT : c10::checked_convert<int>(padding[1], "int");
+  const int padW = padding.size() == 1 ? padT : c10::checked_convert<int>(padding[2], "int");
 
   // if divisor==0 then we will ignore it
   int64_t divisor = 0;
@@ -412,7 +422,7 @@ TORCH_IMPL_FUNC(avg_pool3d_out_cuda) (
         default:
           avg_pool3d_cuda_update_output<scalar_t, accscalar_t>
             <<<grid, block, 0, at::cuda::getCurrentCUDAStream()>>>(
-                work_input.packed_accessor64<scalar_t, 4>(),
+                work_input.packed_accessor64<const scalar_t, 4>(),
                 work_output.packed_accessor64<scalar_t, 4>(),
                 kT, kH, kW,
                 dT, dH, dW,
@@ -441,7 +451,7 @@ TORCH_IMPL_FUNC(avg_pool3d_backward_out_cuda) (
   IntArrayRef padding,
   bool ceil_mode,
   bool count_include_pad,
-  c10::optional<int64_t> divisor_override,
+  std::optional<int64_t> divisor_override,
   const Tensor& gradInput
 ) {
   // See Note [Writing Nondeterministic Operations]
@@ -455,19 +465,19 @@ TORCH_IMPL_FUNC(avg_pool3d_backward_out_cuda) (
   checkAllSameGPU(__func__,
                   {gradInput_arg, gradOutput_arg, input_arg});
 
-  const int kT = safe_downcast<int, int64_t>(kernel_size[0]);
-  const int kH = kernel_size.size() == 1 ? kT : safe_downcast<int, int64_t>(kernel_size[1]);
-  const int kW = kernel_size.size() == 1 ? kT : safe_downcast<int, int64_t>(kernel_size[2]);
+  const int kT = c10::checked_convert<int>(kernel_size[0], "int");
+  const int kH = kernel_size.size() == 1 ? kT : c10::checked_convert<int>(kernel_size[1], "int");
+  const int kW = kernel_size.size() == 1 ? kT : c10::checked_convert<int>(kernel_size[2], "int");
 
-  const int dT = stride.empty() ? kT : safe_downcast<int, int64_t>(stride[0]);
+  const int dT = stride.empty() ? kT : c10::checked_convert<int>(stride[0], "int");
   const int dH = stride.empty() ? kH :
-                 stride.size() == 1 ? dT : safe_downcast<int, int64_t>(stride[1]);
+                 stride.size() == 1 ? dT : c10::checked_convert<int>(stride[1], "int");
   const int dW = stride.empty() ? kW :
-                 stride.size() == 1 ? dT : safe_downcast<int, int64_t>(stride[2]);
+                 stride.size() == 1 ? dT : c10::checked_convert<int>(stride[2], "int");
 
-  const int padT = safe_downcast<int, int64_t>(padding[0]);
-  const int padH = padding.size() == 1 ? padT : safe_downcast<int, int64_t>(padding[1]);
-  const int padW = padding.size() == 1 ? padT : safe_downcast<int, int64_t>(padding[2]);
+  const int padT = c10::checked_convert<int>(padding[0], "int");
+  const int padH = padding.size() == 1 ? padT : c10::checked_convert<int>(padding[1], "int");
+  const int padW = padding.size() == 1 ? padT : c10::checked_convert<int>(padding[2], "int");
 
   TORCH_CHECK((gradOutput.ndimension() == 4 || gradOutput.ndimension() == 5),
     "non-empty 4D or 5D (batch mode) tensor expected for gradOutput");
@@ -489,11 +499,6 @@ TORCH_IMPL_FUNC(avg_pool3d_backward_out_cuda) (
   const int64_t otime = gradOutput.size(-3);
   const int64_t oheight = gradOutput.size(-2);
   const int64_t owidth = gradOutput.size(-1);
-
-  /* XXX shape check behavior from TH */
-  const int64_t otime_for_shape_check = pooling_output_shape<int64_t>(itime, kT, padT, dT, 1, ceil_mode);
-  const int64_t oheight_for_shape_check = pooling_output_shape<int64_t>(iheight, kH, padH, dH, 1, ceil_mode);
-  const int64_t owidth_for_chape_check = pooling_output_shape<int64_t>(iwidth, kW, padW, dW, 1, ceil_mode);
 
   const bool kernelsOverlap = (dT < kT) || (dH < kH) || (dW < kW);
 
@@ -533,7 +538,7 @@ TORCH_IMPL_FUNC(avg_pool3d_backward_out_cuda) (
 
           avg_pool3d_single_backward_out_frame_stride1<scalar_t, accscalar_t>
             <<<grid, block, 0, at::cuda::getCurrentCUDAStream()>>>(
-              work_grad_output.packed_accessor64<scalar_t, 4>(),
+              work_grad_output.packed_accessor64<const scalar_t, 4>(),
               work_grad_input.packed_accessor64<scalar_t, 4>(),
               kT, kH, kW,
               1.0f/divide_factor,
@@ -563,7 +568,7 @@ TORCH_IMPL_FUNC(avg_pool3d_backward_out_cuda) (
           if (kernelsOverlap) {
             avg_pool3d_cuda_update_grad_input_atomic<scalar_t, accscalar_t>
               <<<grid, block, 0, at::cuda::getCurrentCUDAStream()>>>(
-                  work_grad_output.packed_accessor64<scalar_t, 4>(),
+                  work_grad_output.packed_accessor64<const scalar_t, 4>(),
                   work_grad_input.packed_accessor64<scalar_t, 4>(),
                   kT, kH, kW,
                   dT, dH, dW,
@@ -575,7 +580,7 @@ TORCH_IMPL_FUNC(avg_pool3d_backward_out_cuda) (
           else {
             avg_pool3d_cuda_update_grad_input<scalar_t, accscalar_t>
               <<<grid, block, 0, at::cuda::getCurrentCUDAStream()>>>(
-                  work_grad_output.packed_accessor64<scalar_t, 4>(),
+                  work_grad_output.packed_accessor64<const scalar_t, 4>(),
                   work_grad_input.packed_accessor64<scalar_t, 4>(),
                   kT, kH, kW,
                   dT, dH, dW,
@@ -594,4 +599,3 @@ TORCH_IMPL_FUNC(avg_pool3d_backward_out_cuda) (
 }
 
 } // at::native
-} // at

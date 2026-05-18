@@ -18,7 +18,7 @@ using namespace at;
       fn;                                                      \
       _passed = true;                                          \
       els;                                                     \
-    } catch (std::exception & e) {                             \
+    } catch (std::exception&) {                                \
       ASSERT_FALSE(_passed);                                   \
       catc;                                                    \
     }                                                          \
@@ -293,5 +293,13 @@ TEST(TestScalarTensor, TestScalarTensorCUDA) {
 
   if (at::hasCUDA()) {
     test(CUDA(kFloat));
+  }
+}
+
+TEST(TestScalarTensor, TestScalarTensorMPS) {
+  manual_seed(123);
+
+  if (at::hasMPS()) {
+    test(MPS(kFloat));
   }
 }

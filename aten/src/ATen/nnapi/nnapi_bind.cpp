@@ -1,21 +1,19 @@
+#include <utility>
 #include <vector>
 
-#include <ATen/ATen.h>
 #include <ATen/nnapi/nnapi_bind.h>
 #include <ATen/nnapi/nnapi_wrapper.h>
 #include <ATen/nnapi/nnapi_model_loader.h>
 #include <c10/util/irange.h>
 
-namespace torch {
-namespace nnapi {
-namespace bind {
+namespace torch::nnapi::bind {
 
 // NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
 nnapi_wrapper* nnapi;
 // NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
 nnapi_wrapper* check_nnapi;
 
-void load_platform_library() {
+static void load_platform_library() {
   static int run_once = [](){
     nnapi_wrapper_load(&nnapi, &check_nnapi);
     CAFFE_ENFORCE(nnapi);
@@ -27,20 +25,36 @@ void load_platform_library() {
   (void)run_once;
 }
 
-// NnapiCompilation functon definitions:
+// NnapiCompilation function definitions:
 
 // Could possibly call load_platform_library in constructor, but error reporting
 // can be complicated if the constructor is called during model loading.
 // Instead, delay all work until the explicit init call.
 void NnapiCompilation::init(
     at::Tensor serialized_model_tensor,
-    std::vector<at::Tensor> parameter_buffers) {
+    std::vector<at::Tensor> parameter_buffers
+) {
+  init2(
+    std::move(serialized_model_tensor),
+    std::move(parameter_buffers),
+    ANEURALNETWORKS_PREFER_SUSTAINED_SPEED,
+    false);
+}
+
+void NnapiCompilation::init2(
+    at::Tensor serialized_model_tensor,
+    const std::vector<at::Tensor>& parameter_buffers,
+    int64_t compilation_preference,
+    bool relax_f32_to_f16
+  ) {
   TORCH_CHECK(!model_, "Attempted to re-initialize NnapiCompilation.");
 
   load_platform_library();
 
   std::vector<const void*> buffers;
+  buffers.reserve(parameter_buffers.size());
   std::vector<int32_t> buffer_sizes;
+  buffer_sizes.reserve(parameter_buffers.size());
   for (auto& t : parameter_buffers) {
     TORCH_CHECK(t.is_contiguous());
     buffers.push_back(t.data_ptr());
@@ -58,10 +72,9 @@ void NnapiCompilation::init(
     ser_model_ptr,
     serialized_model_tensor.nbytes()
   };
-  TORCH_CHECK(ser_model.size() > 0);
+  TORCH_CHECK(!ser_model.empty());
 
-  // NOLINTNEXTLINE(cppcoreguidelines-init-variables)
-  ANeuralNetworksModel* model;
+  ANeuralNetworksModel* model{};
   check_nnapi->Model_create(&model);
   CAFFE_ENFORCE(model);
   model_.reset(model);
@@ -82,13 +95,15 @@ void NnapiCompilation::init(
       nullptr);
   CAFFE_ENFORCE(load_result == 0);
 
+  if (relax_f32_to_f16) {
+    check_nnapi->Model_relaxComputationFloat32toFloat16(model_.get(), true);
+  }
   check_nnapi->Model_finish(model_.get());
 
-  // NOLINTNEXTLINE(cppcoreguidelines-init-variables)
-  ANeuralNetworksCompilation* compilation;
+  ANeuralNetworksCompilation* compilation{};
   check_nnapi->Compilation_create(model_.get(), &compilation);
   // TODO: Make this configurable.
-  check_nnapi->Compilation_setPreference(compilation, ANEURALNETWORKS_PREFER_SUSTAINED_SPEED);
+  check_nnapi->Compilation_setPreference(compilation, static_cast<int32_t>(compilation_preference));
   check_nnapi->Compilation_finish(compilation);
   compilation_.reset(compilation);
 }
@@ -96,8 +111,7 @@ void NnapiCompilation::init(
 void NnapiCompilation::run(
     std::vector<at::Tensor> inputs,
     std::vector<at::Tensor> outputs) {
-  // NOLINTNEXTLINE(cppcoreguidelines-init-variables)
-  ANeuralNetworksExecution* execution;
+  ANeuralNetworksExecution* execution = nullptr;
   check_nnapi->Execution_create(compilation_.get(), &execution);
   ExecutionPtr execution_unique_ptr(execution);
 
@@ -118,7 +132,7 @@ void NnapiCompilation::run(
         t.nbytes());
   }
 
-  for (const auto i : c10::irange(outputs.size())) {
+  for (const auto i : c10::irange(static_cast<int32_t>(outputs.size()))) {
     auto& t = outputs[i];
     // TODO: Check contiguous and dtype.
     check_nnapi->Execution_setOutput(
@@ -132,10 +146,9 @@ void NnapiCompilation::run(
   check_nnapi->Execution_compute(execution);
 
   // TODO: Maybe skip this for fixed-size outputs?
-  for (const auto i : c10::irange(outputs.size())) {
+  for (const auto i : c10::irange(static_cast<int32_t>(outputs.size()))) {
     auto& t = outputs[i];
-    // NOLINTNEXTLINE(cppcoreguidelines-init-variables)
-    uint32_t rank;
+    uint32_t rank = 0;
     check_nnapi->Execution_getOutputOperandRank(execution, i, &rank);
     std::vector<uint32_t> dims(rank);
     check_nnapi->Execution_getOutputOperandDimensions(execution, i, dims.data());
@@ -163,9 +176,8 @@ void NnapiCompilation::get_operand_type(const at::Tensor& t, ANeuralNetworksOper
   if (t.scalar_type() == c10::kQUInt8) {
     TORCH_CHECK(t.is_quantized());
     operand->type = ANEURALNETWORKS_TENSOR_QUANT8_ASYMM;
-    // NOLINTNEXTLINE(cppcoreguidelines-narrowing-conversions,bugprone-narrowing-conversions)
-    operand->scale = t.q_scale();
-    operand->zeroPoint = t.q_zero_point();
+    operand->scale = static_cast<float>(t.q_scale());
+    operand->zeroPoint = static_cast<int32_t>(t.q_zero_point());
     return;
   }
   if (t.scalar_type() == c10::kInt) {
@@ -180,7 +192,6 @@ void NnapiCompilation::get_operand_type(const at::Tensor& t, ANeuralNetworksOper
       "testing with fixed scale, zero_point. Please change your ",
       "inputs if you see this in production");
     operand->type = ANEURALNETWORKS_TENSOR_QUANT16_ASYMM;
-    // NOLINTNEXTLINE(cppcoreguidelines-narrowing-conversions,bugprone-narrowing-conversions)
     operand->scale = 0.125;
     operand->zeroPoint = 0;
     return;
@@ -190,6 +201,4 @@ void NnapiCompilation::get_operand_type(const at::Tensor& t, ANeuralNetworksOper
   CAFFE_THROW("Bad dtype: " + std::to_string(static_cast<int8_t>(t.scalar_type())));
 }
 
-} // namespace bind
-} // namespace nnapi
 } // namespace torch

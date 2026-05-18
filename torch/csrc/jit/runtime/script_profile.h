@@ -9,8 +9,7 @@
 #include <torch/csrc/jit/frontend/source_ref.h>
 #include <torch/csrc/jit/ir/ir.h>
 
-namespace torch {
-namespace jit {
+namespace torch::jit {
 namespace profiling {
 
 struct Datapoint {
@@ -25,7 +24,7 @@ struct Datapoint {
 
 class TORCH_API InstructionSpan {
  public:
-  explicit InstructionSpan(Node&);
+  explicit InstructionSpan(Node& /*node*/);
   ~InstructionSpan();
   InstructionSpan(InstructionSpan&&) = delete;
   InstructionSpan& operator=(InstructionSpan&&) = delete;
@@ -33,6 +32,8 @@ class TORCH_API InstructionSpan {
  private:
   std::unique_ptr<Datapoint> datapoint_;
 };
+
+bool TORCH_API isProfilingOngoing();
 
 } // namespace profiling
 
@@ -45,8 +46,8 @@ class TORCH_API SourceStats : public CustomClassHolder {
  public:
   using LineMap = c10::Dict<int64_t, c10::intrusive_ptr<InstructionStats>>;
 
-  SourceStats(SourceRef source, LineMap lineMap)
-      : source_(std::move(source)), lineMap_(std::move(lineMap)) {}
+  SourceStats(SourceRef source, const LineMap& lineMap)
+      : source_(std::move(source)), lineMap_(lineMap) {}
 
   const SourceRef& getSourceRef() const {
     return source_;
@@ -73,6 +74,8 @@ class TORCH_API SourceStats : public CustomClassHolder {
  * scriptProfile.disable();
  * ...
  *
+ * NOTE: you cannot attach the profiler while the script is running.
+ *
  * To retrieve collected runtime data, users may call dumpStats() and do
  * arbitrary filtering on the data they want. Note that dumpStats() should
  * not be called inside a profiling section.
@@ -88,7 +91,7 @@ class TORCH_API ScriptProfile : public CustomClassHolder {
   void enable();
   void disable();
   const SourceMap& dumpStats();
-  void addDatapoint(std::shared_ptr<profiling::Datapoint>);
+  void addDatapoint(std::shared_ptr<profiling::Datapoint> /*datapoint*/);
   ~ScriptProfile() override;
 
  private:
@@ -97,5 +100,4 @@ class TORCH_API ScriptProfile : public CustomClassHolder {
   SourceMap sourceMap_;
 };
 
-} // namespace jit
-} // namespace torch
+} // namespace torch::jit

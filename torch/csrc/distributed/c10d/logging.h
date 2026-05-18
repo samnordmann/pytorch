@@ -1,4 +1,4 @@
-// Copyright (c) Facebook, Inc. and its affiliates.
+// Copyright (c) Meta Platforms, Inc. and its affiliates.
 // All rights reserved.
 //
 // This source code is licensed under the BSD-style license found in the
@@ -6,24 +6,42 @@
 
 #pragma once
 
+#include <string>
+
+#include <c10/macros/Macros.h>
+#include <c10/util/Logging.h>
 #include <fmt/format.h>
 
-#include <c10/util/Logging.h>
+namespace c10d::detail {
 
-namespace c10d {
-namespace detail {
+enum class LogLevel { Trace, Debug, Info, Warning, Error };
+
+TORCH_API bool isLogLevelEnabled(LogLevel level) noexcept;
+
 template <typename... T>
-std::string log_vformat(fmt::string_view fmt, T&&... args) {
+// NOLINTNEXTLINE(cppcoreguidelines-missing-std-forward)
+std::string formatLogMessage(fmt::string_view fmt, T&&... args) {
   return fmt::vformat(fmt, fmt::make_format_args(args...));
 }
-}  // namespace detail
-}  // namespace c10d
 
-#define C10D_ERROR(...)\
-    LOG_IF(ERROR,   FLAGS_caffe2_log_level <= 2) << c10d::detail::log_vformat(__VA_ARGS__)
+} // namespace c10d::detail
 
-#define C10D_WARNING(...)\
-    LOG_IF(WARNING, FLAGS_caffe2_log_level <= 1) << c10d::detail::log_vformat(__VA_ARGS__)
+#define C10D_ERROR(...)                                               \
+  if (c10d::detail::isLogLevelEnabled(c10d::detail::LogLevel::Error)) \
+  LOG(ERROR) << "[c10d] " << c10d::detail::formatLogMessage(__VA_ARGS__)
 
-#define C10D_INFO(...)\
-    LOG_IF(INFO,    FLAGS_caffe2_log_level <= 0) << c10d::detail::log_vformat(__VA_ARGS__)
+#define C10D_WARNING(...)                                               \
+  if (c10d::detail::isLogLevelEnabled(c10d::detail::LogLevel::Warning)) \
+  LOG(WARNING) << "[c10d] " << c10d::detail::formatLogMessage(__VA_ARGS__)
+
+#define C10D_INFO(...)                                               \
+  if (c10d::detail::isLogLevelEnabled(c10d::detail::LogLevel::Info)) \
+  LOG(INFO) << "[c10d] " << c10d::detail::formatLogMessage(__VA_ARGS__)
+
+#define C10D_DEBUG(...)                                               \
+  if (c10d::detail::isLogLevelEnabled(c10d::detail::LogLevel::Debug)) \
+  LOG(INFO) << "[c10d - debug] " << c10d::detail::formatLogMessage(__VA_ARGS__)
+
+#define C10D_TRACE(...)                                               \
+  if (c10d::detail::isLogLevelEnabled(c10d::detail::LogLevel::Trace)) \
+  LOG(INFO) << "[c10d - trace] " << c10d::detail::formatLogMessage(__VA_ARGS__)

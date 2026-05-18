@@ -1,9 +1,4 @@
 #pragma once
-#include <vector>
-#include <cstdint>
-#include <string>
-#include <unordered_map>
-#include <algorithm>
 
 #include <c10/macros/Macros.h>
 
@@ -14,6 +9,8 @@ namespace c10 {
 
 #define FORALL_NS_SYMBOLS(_)         \
   _(namespaces, prim)                \
+  _(namespaces, prims)               \
+  _(namespaces, nvprims)             \
   _(namespaces, aten)                \
   _(namespaces, cuda)                \
   _(namespaces, onnx)                \
@@ -43,12 +40,20 @@ namespace c10 {
   _(prim, FusionGroup)               \
   _(prim, CudaFusionGroup)           \
   _(prim, CudaFusionGuard)           \
+  _(prim, oneDNNFusionGroup)         \
+  _(prim, oneDNNFusionGuard)         \
   _(prim, FunctionalGraph)           \
   _(prim, add_optional)              \
   _(prim, view_copy)                 \
+  _(prim, permute_copy)              \
   _(prim, reshape_copy)              \
   _(prim, squeeze_copy)              \
+  _(prim, t_copy)                    \
+  _(prim, transpose_copy)            \
   _(prim, unsqueeze_copy)            \
+  _(prim, flatten_copy)              \
+  _(prim, expand_copy)               \
+  _(prim, expand_as_copy)            \
   _(prim, DifferentiableGraph)       \
   _(prim, TensorExprGroup)           \
   _(prim, TensorExprDynamicGroup)    \
@@ -64,6 +69,8 @@ namespace c10 {
   _(prim, PadPacked) /* onnx */      \
   _(prim, Placeholder) /* debug */   \
   _(prim, Print)                     \
+  _(prim, EmptyListLiteral)          \
+  _(prim, LegacyTypedConstructor)    \
   _(prim, PythonOp)                  \
   _(prim, IgnoredPythonOp)           \
   _(prim, Reverse)                   \
@@ -96,6 +103,7 @@ namespace c10 {
   _(prim, With)                      \
   _(prim, Enter)                     \
   _(prim, Exit)                      \
+  _(prim, IfThenElse)                \
   _(aten, Bool)                      \
   _(aten, Int)                       \
   _(aten, FloatImplicit)             \
@@ -106,7 +114,6 @@ namespace c10 {
   _(aten, Complex)                   \
   _(aten, str)                       \
   _(aten, Delete)                    \
-  _(aten, gelu_)                     \
   _(prim, device)                    \
   _(prim, dtype)                     \
   _(prim, layout)                    \
@@ -151,7 +158,11 @@ namespace c10 {
   _(aten, is_scripting)              \
   _(aten, _unwrap_optional)          \
   _(prim, fork)                      \
+  _(prim, awaitable)                 \
   _(prim, forkClosure)               \
+  _(prim, awaitableClosure)          \
+  _(prim, awaitable_nowait)          \
+  _(prim, awaitable_wait)            \
   _(prim, RaiseException)            \
   _(prim, Closure)                   \
   _(prim, CreateObject)              \
@@ -176,7 +187,6 @@ namespace c10 {
   _(aten, append)                    \
   _(aten, as_tensor)                 \
   _(aten, adaptive_avg_pool2d_backward) \
-  _(aten, dim)                       \
   _(aten, format)                    \
   _(aten, percentFormat)             \
   _(aten, __not__)                   \
@@ -213,6 +223,11 @@ namespace c10 {
   _(cuda, _current_device)           \
   _(cuda, synchronize)               \
   _(aten, has_torch_function)        \
+  _(aten, is_autocast_enabled)       \
+  _(aten, is_autocast_cpu_enabled)   \
+  _(aten, is_autocast_xla_enabled)   \
+  _(aten, get_autocast_dtype)        \
+  _(aten, is_autocast_mps_enabled)   \
   FORALL_ATEN_BASE_SYMBOLS(_)        \
   _(onnx, Add)                       \
   _(onnx, Concat)                    \
@@ -224,6 +239,8 @@ namespace c10 {
   _(onnx, Gemm)                      \
   _(onnx, LSTM)                      \
   _(onnx, MatMul)                    \
+  _(onnx, Min)                       \
+  _(onnx, Max)                       \
   _(onnx, Mul)                       \
   _(onnx, Pow)                       \
   _(onnx, RNN)                       \
@@ -245,7 +262,7 @@ namespace c10 {
   _(onnx, Less)                      \
   _(onnx, LessOrEqual)               \
   _(onnx, Not)                       \
-  _(onnx, ATen)                      \
+  _(aten, ATen)                      \
   _(onnx, Split)                     \
   _(onnx, ConstantOfShape)           \
   _(onnx, Cast)                      \
@@ -274,6 +291,9 @@ namespace c10 {
   _(onnx, Range)                     \
   _(onnx, Tile)                      \
   _(onnx, Where)                     \
+  _(onnx, Optional)                  \
+  _(onnx, OptionalGetElement)        \
+  _(onnx, OptionalHasElement)        \
   FORALL_ATTR_BASE_SYMBOLS(_)        \
   _(attr, Subgraph)                  \
   _(attr, ReverseSubgraph)           \
@@ -301,6 +321,7 @@ namespace c10 {
   _(attr, transA)                    \
   _(attr, transB)                    \
   _(attr, name)                      \
+  _(attr, module)                    \
   _(attr, beg)                       \
   _(attr, idx)                       \
   _(attr, split)                     \
@@ -312,8 +333,11 @@ namespace c10 {
   _(attr, cache_id)                  \
   _(attr, new_axis)                  \
   _(attr, warn_id)                   \
+  _(attr, output_layouts)            \
   _(attr, allowzero)                 \
-  _(attr, seen_none)
+  _(attr, seen_none)                 \
+  _(attr, overload_name)             \
+  _(attr, node_stack_idx)
 
 enum class _keys : unique_t {
     #define DEFINE_KEY(ns, s) ns##_##s,

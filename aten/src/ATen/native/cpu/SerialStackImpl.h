@@ -1,15 +1,16 @@
 // Copyright 2004-present Facebook. All Rights Reserved.
 #pragma once
 
-#include <ATen/ATen.h>
+#include <ATen/core/Tensor.h>
 
 #include <ATen/MemoryOverlap.h>
 #include <ATen/Parallel.h>
+#include <ATen/TensorIterator.h>
 #include <ATen/cpu/vec/functional.h>
 #include <ATen/cpu/vec/vec.h>
 #include <c10/util/irange.h>
 
-namespace at { namespace native { namespace detail {
+namespace at::native::detail {
 
 struct InputMeta {
   void* data_ptr;
@@ -66,7 +67,7 @@ void stack_serial_kernel_impl(Tensor& result, TensorListType tensors, int64_t di
 // - tensors dtype is Double or Float
 template <typename TensorListType>
 bool can_use_native_serial_stack_impl(Tensor& result, TensorListType tensors, int64_t dim) {
-  TORCH_CHECK(tensors.size() > 0, "expected a non-empty list of Tensors");
+  TORCH_CHECK(!tensors.empty(), "expected a non-empty list of Tensors");
   const Tensor& first_tensor = tensors[0];
   // stack dimension should be in range [0,firstTensor.dim())
   // dim == firstTensor.dim() is a valid input, but it is handled by default code path
@@ -90,7 +91,9 @@ bool can_use_native_serial_stack_impl(Tensor& result, TensorListType tensors, in
   }
 
   // check remainder of inputs
+#ifndef STRIP_ERROR_MESSAGES
   auto const &first_tensor_shape = first_tensor.sizes();
+#endif
   for (const auto i : c10::irange(1, tensors.size())) {
     auto const &tensor = tensors[i];
     TORCH_CHECK(tensors[i].sizes() == first_tensor.sizes(),
@@ -111,7 +114,7 @@ bool can_use_native_serial_stack_impl(Tensor& result, TensorListType tensors, in
   // or there is only one thread. Note that we aren't checking result.numel() here because
   // it may not have been resized and we want to defer that cost till later.
   int64_t numel_in_stack = first_tensor.numel() * tensors.size();
-  return numel_in_stack < at::internal::GRAIN_SIZE && at::get_num_threads() == 1;
+  return numel_in_stack < at::internal::GRAIN_SIZE || at::get_num_threads() == 1;
 }
 
 template <typename TensorListType, bool should_skip_overlap_check>
@@ -123,8 +126,8 @@ struct CanUseNativeSerialStack<TensorListType, false> {
     // Inputs cannot alias the output tensor
     for (const auto i : c10::irange(tensors.size())) {
       auto lap = at::get_overlap_status(result, tensors[i]);
-      TORCH_CHECK(lap != at::MemOverlapStatus::PARTIAL &&
-          lap != at::MemOverlapStatus::FULL, 0,
+      TORCH_CHECK(lap != at::MemOverlapStatus::Partial &&
+          lap != at::MemOverlapStatus::Full, 0,
           "unsupported operation: the input tensors cannot refer to any of the "
           "output memory locations. Found overlap in input tensor ", i);
     }
@@ -140,4 +143,4 @@ struct CanUseNativeSerialStack<TensorListType, true> {
   }
 };
 
-}}}  // namespace at::native::detail
+} // namespace at::native::detail

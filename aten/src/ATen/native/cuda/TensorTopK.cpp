@@ -1,11 +1,23 @@
+#define TORCH_ASSERT_ONLY_METHOD_OPERATORS
 #include <ATen/native/cuda/TensorTopK.h>
-#include <ATen/Functions.h>
-#include <ATen/NativeFunctions.h>
+
+#include <ATen/core/Tensor.h>
+#include <ATen/TensorMeta.h>
+#include <ATen/TensorUtils.h>
 #include <ATen/WrapDimUtils.h>
 #include <ATen/native/cuda/Sort.h>
 
-namespace at {
-namespace native {
+#ifndef AT_PER_OPERATOR_HEADERS
+#include <ATen/Functions.h>
+#include <ATen/NativeFunctions.h>
+#include <ATen/CUDAFunctions.h>
+#else
+#include <ATen/ops/empty_like.h>
+#include <ATen/ops/sort_cuda_dispatch.h>
+#include <ATen/ops/topk_native.h>
+#endif
+
+namespace at::native {
 
 void topk_out_with_sort(
   const Tensor& self,
@@ -13,20 +25,53 @@ void topk_out_with_sort(
   const Tensor& values,
   const Tensor& indices
 ) {
-  Tensor sorted_values, sorted_indices;
-  std::tie(sorted_values, sorted_indices) = at::native::sort_cuda(self, dim, largest);
+  auto [sorted_values, sorted_indices] = at::cuda::sort(self, /* stable= */false, dim, largest);
   values.copy_(sorted_values.narrow(dim, 0, k));
   indices.copy_(sorted_indices.narrow(dim, 0, k));
 }
 
 bool should_use_sort(const Tensor& self, int64_t dim) {
-  // This heuristics is based on the experiment in https://github.com/pytorch/pytorch/pull/68632
-  if (self.dim() == 0) return false;
-  if (self.dtype() == kBool) return false; // Bool is not support by topk
-  int64_t slice_size = self.size(dim);
-  if (slice_size == 0) return false;
-  int64_t num_slices = self.numel() / slice_size;
-  return num_slices <= 10 && slice_size >= 100000;
+#if defined(USE_ROCM)
+  if (self.dtype() == kBool) return false; // Bool sort not supported in ROCm: https://github.com/pytorch/pytorch/issues/139972
+
+  // Only use full sort for 1D contiguous large arrays
+  if (self.numel() < 10000 || self.numel() != self.size(dim)) {
+    return false;
+  }
+
+  /* Strategy: Balance between full sort and TopK selection based on size, k, and dtype
+
+  Analysis:
+  - TopK (mbtopk): O(n * radix_passes) - radix passes vary by dtype
+    - float32: 4 passes (32 bits / 8 bits per pass)
+    - bfloat16/float16: 2 passes (16 bits / 8 bits per pass)
+    - Has multi-block overhead and atomics
+    - Better for very large n with small k, especially for float32
+
+  - Full sort: O(n * log2(n))
+    - Better memory patterns and cache locality
+    - Efficient rocThrust implementation for moderate sizes
+    - Crossover depends on n, k, and dtype
+
+  Empirical thresholds (based on benchmarks):
+    For n < 500k:  Use sort (rocThrust is well-optimized for moderate sizes)
+    For n >= 500k: Dtype-aware strategy
+      - float32: Use TopK (fewer radix passes than sort comparisons)
+      - bfloat16/float16: Use sort (fewer radix passes make TopK overhead less beneficial)
+
+  For moderate sizes (10k-500k), rocThrust sort is highly optimized
+  and faster than TopK multi-block overhead */
+
+  if(self.size(dim) > 500000 && self.dtype() == at::kFloat) {
+    return false;
+  }
+  // For bfloat16/float16 with large n, sort remains competitive
+  // Use sort to avoid regression (benchmarks show sort is 15-25% faster)
+  return true;  // Use sort for bfloat16/float16
+
+#else
+  return false;
+#endif
 }
 
 TORCH_IMPL_FUNC(topk_out_cuda)
@@ -71,11 +116,11 @@ TORCH_IMPL_FUNC(topk_out_cuda)
 
       Tensor sortedIndices = at::empty_like(indices);
       Tensor sortedValues = at::empty_like(values);
-      sort_out_cuda(values, dim, largest, sortedValues, sortedIndices);
+      at::cuda::sort_outf(values, /* stable= */ false, dim, largest, sortedValues, sortedIndices);
       indices.copy_(indices.gather(dim, sortedIndices));
       values.copy_(sortedValues);
     }
   }
 }
 
-}} // namespace at::native
+} // namespace at::native

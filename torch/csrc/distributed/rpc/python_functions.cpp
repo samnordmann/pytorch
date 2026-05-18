@@ -1,6 +1,4 @@
 #include <ATen/ThreadLocalState.h>
-#include <c10/util/C++17.h>
-#include <torch/csrc/distributed/autograd/context/container.h>
 #include <torch/csrc/distributed/autograd/utils.h>
 #include <torch/csrc/distributed/rpc/message.h>
 #include <torch/csrc/distributed/rpc/python_call.h>
@@ -9,19 +7,15 @@
 #include <torch/csrc/distributed/rpc/python_resp.h>
 #include <torch/csrc/distributed/rpc/python_rpc_handler.h>
 #include <torch/csrc/distributed/rpc/rref_context.h>
-#include <torch/csrc/distributed/rpc/rref_proto.h>
 #include <torch/csrc/distributed/rpc/script_call.h>
 #include <torch/csrc/distributed/rpc/script_remote_call.h>
 #include <torch/csrc/distributed/rpc/script_resp.h>
 #include <torch/csrc/distributed/rpc/torchscript_functions.h>
 #include <torch/csrc/distributed/rpc/utils.h>
 #include <torch/csrc/jit/runtime/operator.h>
-#include <torch/csrc/utils/python_compat.h>
 #include <exception>
 
-namespace torch {
-namespace distributed {
-namespace rpc {
+namespace torch::distributed::rpc {
 
 namespace {
 
@@ -87,11 +81,11 @@ std::shared_ptr<Operator> matchBuiltinOp(
         opWithStack;
     try {
       opWithStack = torch::jit::getOpWithStack(c10OpsForSymbol, args, kwargs);
-    } catch (const std::runtime_error& e) {
+    } catch (const std::runtime_error&) {
       opWithStack = torch::jit::getOpWithStack(ops, args, kwargs);
     }
-    matchedOperator = std::get<0>(opWithStack);
-    stack = std::get<1>(opWithStack);
+    matchedOperator = std::move(std::get<0>(opWithStack));
+    stack = std::move(std::get<1>(opWithStack));
   }
 
   // We should never hit this path, since if !matchedOperator, then the last
@@ -173,7 +167,7 @@ c10::intrusive_ptr<JitFuture> toPyJitFuture(
               e.restore();
               PyErr_Clear();
               return;
-            } catch (std::exception& e) {
+            } catch (std::exception&) {
               child->setErrorIfNeeded(std::current_exception());
               return;
             }
@@ -262,14 +256,14 @@ c10::intrusive_ptr<JitFuture> pyRpcTorchscript(
         functionSchema,
         argsTuple.cast<py::args>(),
         kwargsDict.cast<py::kwargs>(),
-        c10::nullopt);
+        std::nullopt);
   }
   DCHECK(!PyGILState_Check());
   c10::intrusive_ptr<c10::ivalue::Future> fut = rpcTorchscript(
       dstWorkerName,
       qualifiedName,
       functionSchema,
-      stack,
+      std::move(stack),
       rpcTimeoutSeconds,
       isAsyncExecution);
   return fut;
@@ -409,7 +403,7 @@ PyRRef pyRemoteTorchscript(
     // Acquire GIL for py::args and py::kwargs processing.
     py::gil_scoped_acquire ag;
     stack = torch::jit::createStackForSchema(
-        functionSchema, args, kwargs, c10::nullopt);
+        functionSchema, args, kwargs, std::nullopt);
   }
   DCHECK(!PyGILState_Check());
   auto rrefPtr = remoteTorchscript(
@@ -422,6 +416,4 @@ PyRRef pyRemoteTorchscript(
   return PyRRef(rrefPtr);
 }
 
-} // namespace rpc
-} // namespace distributed
-} // namespace torch
+} // namespace torch::distributed::rpc

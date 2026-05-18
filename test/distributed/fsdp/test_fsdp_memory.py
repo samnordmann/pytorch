@@ -1,6 +1,7 @@
 # Owner(s): ["oncall: distributed"]
 
 import sys
+import unittest
 
 import torch
 import torch.nn as nn
@@ -8,14 +9,14 @@ import torch.optim as optim
 from torch import distributed as dist
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 from torch.testing._internal.common_distributed import skip_if_lt_x_gpu
-from torch.testing._internal.common_fsdp import (
-    FSDPTest,
-)
+from torch.testing._internal.common_fsdp import FSDPTest
 from torch.testing._internal.common_utils import (
-    TEST_WITH_DEV_DBG_ASAN,
     instantiate_parametrized_tests,
     parametrize,
     run_tests,
+    TEST_CUDA,
+    TEST_HPU,
+    TEST_WITH_DEV_DBG_ASAN,
 )
 from torch.utils.checkpoint import checkpoint
 
@@ -31,10 +32,14 @@ if TEST_WITH_DEV_DBG_ASAN:
     )
     sys.exit(0)
 
+device_type = acc.type if (acc := torch.accelerator.current_accelerator()) else "cpu"
+
 
 def get_cur_mem(rank, result, prefix):
     """Collect memory allocated values in a result dict in MB"""
-    result[prefix] = round(torch.cuda.memory_allocated() / 1024 / 1024)
+    if TEST_CUDA:
+        torch._C._cuda_clearCublasWorkspaces()
+    result[prefix] = round(torch.accelerator.memory_allocated() / 1024 / 1024)
 
 
 class Model(nn.Module):
@@ -86,7 +91,7 @@ class Model(nn.Module):
 
     def forward(self, x):
         if self.with_checkpoint:
-            return self.head(checkpoint(self.blocks, self.stem(x)))
+            return self.head(checkpoint(self.blocks, self.stem(x), use_reentrant=True))
         else:
             return self.head(self.blocks(self.stem(x)))
 
@@ -109,16 +114,14 @@ class TestFSDPMemory(FSDPTest):
 
     def _dist_train(self, with_checkpoint, expected, model_hidden_dim, iterations):
         gpu_id = self.rank
-        world_size = self.world_size
-
-        batch = torch.randn(size=(2, 3, 224, 224)).cuda()
+        batch = torch.randn(size=(2, 3, 224, 224)).to(device_type)
 
         model = create_model(
             with_fsdp=True,
             with_checkpoint=with_checkpoint,
             model_hidden_dim=model_hidden_dim,
         )
-        model = model.cuda()
+        model = model.to(device_type)
         model = FSDP(model)
 
         # We enable momentum so that after the first iteration, the optimizer state is added
@@ -134,7 +137,7 @@ class TestFSDPMemory(FSDPTest):
             get_cur_mem(gpu_id, results, f"iter {iteration}: after fwd")
 
             out = sum(o.sum() for o in out[0])
-            fake_loss = criterion(out, torch.tensor(0.0).cuda())
+            fake_loss = criterion(out, torch.tensor(0.0).to(device_type))
             get_cur_mem(gpu_id, results, f"iter {iteration}: after loss")
 
             fake_loss.backward()
@@ -159,6 +162,7 @@ class TestFSDPMemory(FSDPTest):
         output = cmp(results, expected)
         self.assertEqual(output, "")
 
+    @unittest.skipIf(TEST_HPU, "Memory will be different for CUDA and HPU, skipping")
     @skip_if_lt_x_gpu(2)
     @parametrize("ckpt", ["no_ckpt", "ckpt"])
     def test_fsdp_memory(self, ckpt):
@@ -167,8 +171,8 @@ class TestFSDPMemory(FSDPTest):
 
         model = create_model(
             with_fsdp=False, with_checkpoint=False, model_hidden_dim=model_hidden_dim
-        ).cuda()
-        model_size_mb = round(torch.cuda.memory_allocated() / 1024 / 1024)
+        ).to(device_type)
+        model_size_mb = round(torch.accelerator.memory_allocated() / 1024 / 1024)
         del model
 
         sharded_model_size_mb = int(model_size_mb / self.world_size)
@@ -193,8 +197,8 @@ class TestFSDPMemory(FSDPTest):
                 # sharded model size + sharded grad size + 1M temp memory
                 expected[f"iter {iteration}: after bwd"] = 2 * sharded_model_size_mb + 1
             else:
-                # after optimizer step in the first iteraiton, memory usage increased by
-                # sharded_model_size_mb becasue of increased optimizer states memory usage
+                # after optimizer step in the first iteration, memory usage increased by
+                # sharded_model_size_mb because of increased optimizer states memory usage
                 expected[f"iter {iteration}: start"] = 2 * sharded_model_size_mb + 1
                 if ckpt == "ckpt":
                     expected[f"iter {iteration}: after fwd"] = (
@@ -230,7 +234,5 @@ class TestFSDPMemory(FSDPTest):
 
 
 instantiate_parametrized_tests(TestFSDPMemory)
-
-
 if __name__ == "__main__":
     run_tests()

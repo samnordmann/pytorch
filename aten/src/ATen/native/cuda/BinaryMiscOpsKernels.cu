@@ -10,10 +10,10 @@
 // NOTE: CUDA on Windows requires that the enclosing function
 // of a __device__ lambda not have internal linkage.
 
-namespace at { namespace native {
+namespace at::native {
 
 void smooth_l1_kernel_cuda(TensorIteratorBase& iter, double beta) {
-  AT_DISPATCH_FLOATING_TYPES_AND_HALF(iter.dtype(), "smooth_l1_cuda", [&iter, beta]() {
+  AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16, iter.dtype(), "smooth_l1_cuda", [&iter, beta]() {
     scalar_t beta_val(beta);
     gpu_kernel(iter, [beta_val] GPU_LAMBDA (scalar_t a, scalar_t b) -> scalar_t {
       auto z = ::abs(a - b);
@@ -32,7 +32,7 @@ void huber_kernel_cuda(TensorIterator& iter, double delta) {
   });
 }
 
-void mse_kernel_cuda(TensorIterator& iter) {
+void mse_kernel_cuda(TensorIteratorBase& iter) {
   AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16, iter.dtype(), "mse_cuda", [&]() {
     gpu_kernel(iter, []GPU_LAMBDA(scalar_t a, scalar_t b) -> scalar_t {
       auto diff = a - b;
@@ -69,13 +69,22 @@ void xlog1py_kernel_cuda(TensorIteratorBase& iter) {
   });
 }
 
-REGISTER_DISPATCH(smooth_l1_stub, &smooth_l1_kernel_cuda);
-REGISTER_DISPATCH(huber_stub, &huber_kernel_cuda);
-REGISTER_DISPATCH(mse_stub, &mse_kernel_cuda);
-REGISTER_DISPATCH(xlogy_stub, &xlogy_kernel_cuda);
-REGISTER_DISPATCH(xlog1py_stub, &xlog1py_kernel_cuda);
+void ldexp_kernel_cuda(TensorIteratorBase& iter) {
+  AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16, iter.input_dtype(0), "ldexp_cuda", [&] {
+    gpu_kernel(iter, []GPU_LAMBDA(scalar_t x, int exp) -> scalar_t {
+      return ::ldexp(x, exp);
+    });
+  });
+}
+
+REGISTER_DISPATCH(smooth_l1_stub, &smooth_l1_kernel_cuda)
+REGISTER_DISPATCH(huber_stub, &huber_kernel_cuda)
+REGISTER_DISPATCH(mse_stub, &mse_kernel_cuda)
+REGISTER_DISPATCH(xlogy_stub, &xlogy_kernel_cuda)
+REGISTER_DISPATCH(xlog1py_stub, &xlog1py_kernel_cuda)
+REGISTER_DISPATCH(ldexp_stub, &ldexp_kernel_cuda)
 
 // DO NOT ADD ANY NEW KERNELS HERE
 // CUDA compilation times grow quickly.  It's perfectly acceptable to have a file per kernel.
 
-}} // namespace at::native
+} // namespace at::native

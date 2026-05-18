@@ -2,25 +2,22 @@
 
 #include <c10/util/irange.h>
 #include <torch/csrc/jit/jit_log.h>
-#include <torch/csrc/jit/passes/bailout_graph.h>
+#include <torch/csrc/jit/passes/add_if_then_else.h>
 #include <torch/csrc/jit/passes/batch_mm.h>
 #include <torch/csrc/jit/passes/canonicalize_graph_fuser_ops.h>
+#include <torch/csrc/jit/passes/check_strict_fusion.h>
 #include <torch/csrc/jit/passes/clear_profiling.h>
 #include <torch/csrc/jit/passes/clear_undefinedness.h>
-#include <torch/csrc/jit/passes/common_expression_hoisting.h>
 #include <torch/csrc/jit/passes/common_subexpression_elimination.h>
 #include <torch/csrc/jit/passes/constant_pooling.h>
 #include <torch/csrc/jit/passes/constant_propagation.h>
 #include <torch/csrc/jit/passes/create_autodiff_subgraphs.h>
-#include <torch/csrc/jit/passes/cuda_graph_fuser.h>
 #include <torch/csrc/jit/passes/dead_code_elimination.h>
 #include <torch/csrc/jit/passes/decompose_ops.h>
 #include <torch/csrc/jit/passes/graph_fuser.h>
-#include <torch/csrc/jit/passes/guard_elimination.h>
 #include <torch/csrc/jit/passes/inline_autodiff_subgraphs.h>
 #include <torch/csrc/jit/passes/inliner.h>
 #include <torch/csrc/jit/passes/inplace_check.h>
-#include <torch/csrc/jit/passes/insert_guards.h>
 #include <torch/csrc/jit/passes/loop_unrolling.h>
 #include <torch/csrc/jit/passes/lower_grad_of.h>
 #include <torch/csrc/jit/passes/lower_tuples.h>
@@ -34,16 +31,47 @@
 #include <torch/csrc/jit/passes/tensorexpr_fuser.h>
 #include <torch/csrc/jit/passes/update_differentiable_graph_requires_grad.h>
 #include <torch/csrc/jit/passes/utils/subgraph_utils.h>
+#include <chrono>
+#include <mutex>
+#include <optional>
 
+// clang-format off
 C10_DEFINE_bool(
     torch_jit_enable_new_executor,
     true,
-    "If this flag is set to false TorchScript will be using the legacy/original executor");
+    "If this flag is set to false TorchScript will be using the legacy/original executor")
 
 C10_DEFINE_bool(
     torch_jit_disable_warning_prints,
     false,
-    "Disables warning.warn prints in TorchScript graph");
+    "Disables warning.warn prints in TorchScript graph")
+
+C10_DEFINE_bool(
+    torch_jit_static_then_dynamic,
+    false,
+    "fuse on two static compilations then 10 dynamic")
+
+C10_DEFINE_bool(
+    torch_jit_always_dynamic,
+    false,
+    "fuse on 12 dynamic compilations")
+
+C10_DEFINE_bool(
+    torch_jit_input_independent_optimization,
+    false,
+    "If set, getPlanFor will use input-independent optimization passes only, "
+    "skipping profiling-based specializations that require runtime type/shape "
+    "information. Useful for predictor nets and AOT compilation scenarios.")
+
+C10_DEFINE_bool(
+    torch_jit_release_profiling_graph_after_optimization,
+    false,
+    "After getOptimizedPlanFor release the optimization record for reduction of memory in inference. This is aggressive memory saving, and please be cautious!")
+
+C10_DEFINE_int32(
+    torch_jit_release_profiling_graph_delay_in_seconds,
+    60,
+    "How long to wait before releasing the profiling graph after optimization is done. Only used if torch_jit_release_profiling_graph_after_optimization is set to true.")
 
 constexpr size_t kDefaultNumProfiledRuns = 1;
 constexpr size_t kDefaultBailoutDepth = 20;
@@ -51,14 +79,22 @@ constexpr size_t kDefaultBailoutDepth = 20;
 C10_DEFINE_int64(
     torch_jit_num_profiled_runs,
     kDefaultNumProfiledRuns,
-    "Number of profiling runs");
+    "Number of profiling runs")
 C10_DEFINE_int64(
     torch_jit_bailout_depth,
     kDefaultBailoutDepth,
-    "Number of re-specializations");
+    "Number of re-specializations")
 
-namespace torch {
-namespace jit {
+namespace torch::jit {
+
+namespace {
+int32_t getNowInSecs() {
+  auto currentTimePoint = std::chrono::system_clock::now();
+  auto durationSinceEpoch = std::chrono::duration_cast<std::chrono::seconds>(
+      currentTimePoint.time_since_epoch());
+  return static_cast<int32_t>(durationSinceEpoch.count());
+}
+} // namespace
 
 #if defined(C10_MOBILE)
 static std::atomic<bool> executor_mode{true};
@@ -70,30 +106,45 @@ static std::atomic<bool> profiling_mode{true};
 
 static std::mutex fusion_strategy_lock;
 
+static FusionStrategy getInitialStrategy() {
+  if (FLAGS_torch_jit_always_dynamic) {
+    return {{FusionBehavior::DYNAMIC, 12}};
+  }
+  FusionStrategy mixed = {
+      {FusionBehavior::STATIC, 2}, {FusionBehavior::DYNAMIC, 10}};
+  if (FLAGS_torch_jit_static_then_dynamic) {
+    return mixed;
+  }
 // TODO remove ifdef
 #ifdef FBCODE_CAFFE2
-static FusionStrategy fusion_strategy = {{FusionBehavior::STATIC, 20}};
+  return {{FusionBehavior::STATIC, 20}};
 #else
-static FusionStrategy fusion_strategy = {
-    {FusionBehavior::STATIC, 2},
-    {FusionBehavior::DYNAMIC, 10}};
+  return mixed;
 #endif
+}
+
+// defer initial value so that we can load in gflags
+static std::optional<FusionStrategy> fusion_strategy = std::nullopt;
 
 FusionStrategy getFusionStrategy() {
   std::lock_guard<std::mutex> guard(fusion_strategy_lock);
-  FusionStrategy strategy = fusion_strategy;
-  return strategy;
+  if (fusion_strategy == std::nullopt) {
+    fusion_strategy = getInitialStrategy();
+  }
+  return *fusion_strategy;
 }
 
 FusionStrategy setFusionStrategy(FusionStrategy& strategy) {
   std::lock_guard<std::mutex> guard(fusion_strategy_lock);
-  auto old_strategy = fusion_strategy;
+  if (fusion_strategy == std::nullopt) {
+    fusion_strategy = getInitialStrategy();
+  }
+  FusionStrategy old_strategy = *fusion_strategy;
   fusion_strategy = strategy;
   return old_strategy;
 }
 
 static std::atomic<size_t> num_profiled_runs{kDefaultNumProfiledRuns};
-static std::atomic<size_t> bailout_depth{kDefaultBailoutDepth};
 
 std::atomic<bool>& getProfilingMode() {
   return profiling_mode;
@@ -153,7 +204,7 @@ static bool needsGradientInProfilingMode(Block* b) {
 // differentiable graph. Autodiff will inspect these properties and prune
 // off gradients that aren't required
 // `requires_grad` properties from `dnode->outputs()` will also be transferred
-static C10_UNUSED void setRequiresGradOnDiffGraph(Node* dnode) {
+[[maybe_unused]] static void setRequiresGradOnDiffGraph(Node* dnode) {
   auto gi = dnode->g(attr::Subgraph)->inputs();
   for (size_t i = 0; i < dnode->inputs().size(); i++) {
     if (auto ty = dnode->input(i)->type()->cast<TensorType>()) {
@@ -218,7 +269,7 @@ static C10_UNUSED void setRequiresGradOnDiffGraph(Node* dnode) {
   }
 }
 
-bool guardDifferentiableGraph(Node* dnode) {
+static bool guardDifferentiableGraph(Node* dnode) {
   auto gi = dnode->g(attr::Subgraph)->inputs();
   bool all_inputs_seen = true;
   for (const auto i : c10::irange(gi.size())) {
@@ -275,15 +326,16 @@ bool guardDifferentiableGraph(Node* dnode) {
     // we inline the differentiable graph as a fallback
     // ideally we would set this up for re-profiling
     UpdateDifferentiableGraphRequiresGrad(
-        dnode->g(attr::Subgraph), c10::nullopt);
+        dnode->g(attr::Subgraph), std::nullopt);
     SubgraphUtils::unmergeSubgraph(dnode);
     return false;
   }
 }
 
 void runNooptPassPipeline(std::shared_ptr<Graph>& graph) {
-  GRAPH_DEBUG(
-      "Before LowerGradOf (beginning of runNooptPassPipeline)\n", *graph);
+  GRAPH_DEBUG("Before Inliner (beginning of runNooptPassPipeline)\n", *graph);
+  Inline(*graph);
+  GRAPH_DEBUG("After Inline, Before NoGrad\n", *graph);
   LowerGradOf(*graph);
   GRAPH_DEBUG("After LowerGradOf, before RemoveExpands\n", *graph);
   RemoveExpands(graph);
@@ -295,27 +347,13 @@ void runNooptPassPipeline(std::shared_ptr<Graph>& graph) {
       "After EliminateDeadCode (end of runNooptPassPipeline)\n", *graph);
 }
 
-void runPreAutodiffPassPipeline(std::shared_ptr<Graph>& graph) {
+static void runPreAutodiffPassPipeline(std::shared_ptr<Graph>& graph) {
   GRAPH_DEBUG(
       "Before InsertGuards (beginning of runPreAutodiffPassPipeline)\n",
       *graph);
 
-  if (tensorExprFuserEnabled() || RegisterCudaFuseGraph::isRegistered()) {
-    // With TE fuser or nvfuser, we don't generate bailouts
-    LowerGradOf(*graph);
-    GRAPH_DEBUG("After LowerGradOf, before specializeAutogradZero\n", *graph);
-  } else {
-    InsertGuards(graph);
-    GRAPH_DEBUG("After InsertGuards, before LowerGradOf\n", *graph);
-    LowerGradOf(*graph);
-    GRAPH_DEBUG("After LowerGradOf, before EliminateRedundantGuards\n", *graph);
-    EliminateRedundantGuards(graph);
-    GRAPH_DEBUG(
-        "After EliminateRedundantGuards, before InsertBailOuts\n", *graph);
-    InsertBailOuts(graph);
-    GRAPH_DEBUG(
-        "After InsertBailOuts, before specializeAutogradZero\n", *graph);
-  }
+  LowerGradOf(*graph);
+  GRAPH_DEBUG("After LowerGradOf, before specializeAutogradZero\n", *graph);
 
   specializeAutogradZero(graph);
   GRAPH_DEBUG("After specializeAutogradZero\n", *graph);
@@ -364,31 +402,28 @@ void runPreAutodiffPassPipeline(std::shared_ptr<Graph>& graph) {
 
     EliminateCommonSubexpression(graph);
     GRAPH_DEBUG(
-        "After EliminateCommonSubexpression, before HoistCommonExpression\n",
-        *graph);
-    HoistCommonExpression(graph);
-    GRAPH_DEBUG("After HoistCommonExpression, before CheckInplace\n", *graph);
+        "After EliminateCommonSubexpression, before CheckInplace\n", *graph);
     CheckInplace(graph);
   }
   GRAPH_DEBUG(
       "After CheckInplace (end of runPreAutodiffPassPipeline)\n", *graph);
 }
 
-FusionBehavior getCurrentBehavior(size_t remaining_depth) {
+FusionBehavior ProfilingGraphExecutorImpl::getCurrentBehavior(
+    size_t remaining_depth) {
   size_t curr_depth = 0;
-  auto curr_strategy = getFusionStrategy();
-  for (int i = static_cast<int>(curr_strategy.size()) - 1; i >= 0; i--) {
-    curr_depth += curr_strategy[i].second;
+  for (int i = static_cast<int>(fusion_strategy_.size()) - 1; i >= 0; i--) {
+    curr_depth += fusion_strategy_[i].second;
     if (remaining_depth <= curr_depth) {
-      return curr_strategy[i].first;
+      return fusion_strategy_[i].first;
     }
   }
   // should never get here
-  TORCH_WARN("Stratgy changed mid-invocation, NYI");
+  TORCH_WARN("Strategy changed mid-invocation, NYI");
   return FusionBehavior::STATIC;
 }
 
-void runNoGradOptimizations(
+void ProfilingGraphExecutorImpl::runNoGradOptimizations(
     std::shared_ptr<Graph>& graph,
     size_t remaining_bailout_depth) {
   GRAPH_DEBUG(
@@ -425,15 +460,8 @@ void runNoGradOptimizations(
       auto min_size = getFusionGroupInlining() ? 2 : 1;
       bool dyn_shapes = getCurrentBehavior(remaining_bailout_depth) ==
           FusionBehavior::DYNAMIC;
-      FuseTensorExprs(graph, min_size, /*composed_op*/ false, dyn_shapes);
-      GRAPH_DEBUG(
-          "After Fusion, before RemoveTensorTypeSpecializations\n", *graph);
-
-      // Wipe tensor type info from the IR
-      RemoveTensorTypeSpecializations(graph);
-      GRAPH_DEBUG(
-          "After RemoveTensorTypeSpecializations, before customPostPasses\n",
-          *graph);
+      FuseTensorExprs(graph, min_size, /* composed op*/ false, dyn_shapes);
+      GRAPH_DEBUG("After Fusion, before customPostPasses\n", *graph);
     } else {
       // Rewrite subgraphs with many MMs into expressions that batch them.
       BatchMM(graph);
@@ -447,9 +475,13 @@ void runNoGradOptimizations(
     for (const auto& passPair : getCustomPostPasses()) {
       passPair.first(graph);
     }
+    GRAPH_DEBUG(
+        "After customPostPasses, before RemoveTensorTypeSpecializations \n",
+        *graph);
+    RemoveTensorTypeSpecializations(graph);
+    GRAPH_DEBUG("After RemoveTensorTypeSpecializations\n", *graph);
   }
-  GRAPH_DEBUG(
-      "After customPostPasses (end of runNoGradOptimizations)\n", *graph);
+  GRAPH_DEBUG("End of runNoGradOptimizations\n");
 }
 
 void ProfilingGraphExecutorImpl::runProfilingOptimizations(
@@ -548,11 +580,7 @@ void ProfilingGraphExecutorImpl::runProfilingInsensitiveOptimizations(
   DecomposeOps(graph);
   GRAPH_DEBUG("After DecomposeOps, before ConstantPropagation\n", *graph);
   ConstantPropagation(graph);
-  GRAPH_DEBUG(
-      "After ConstantPropagation, before HoistCommonExpression\n", *graph);
-  HoistCommonExpression(graph);
-  GRAPH_DEBUG(
-      "After EliminateCommonSubexpression, before ElimiateDeadCode\n", *graph);
+  GRAPH_DEBUG("After ConstantPropagation, before EliminateDeadCode\n", *graph);
   EliminateDeadCode(graph);
   GRAPH_DEBUG(
       "After EliminateDeadCode, before EliminateCommonSubexpression\n", *graph);
@@ -576,15 +604,27 @@ void ProfilingGraphExecutorImpl::runProfilingInsensitiveOptimizations(
 ProfilingGraphExecutorImpl::ProfilingGraphExecutorImpl(
     const std::shared_ptr<Graph>& graph,
     std::string function_name)
-    : GraphExecutorImplBase(graph, std::move(function_name)) {}
+    : GraphExecutorImplBase(graph, std::move(function_name)) {
+  fusion_strategy_ = getFusionStrategy();
+}
+
+size_t ProfilingGraphExecutorImpl::getInstantiatedBailoutDepth() {
+  // Initialize bailout_depth from command-line flag.
+  size_t depth = 0;
+  for (const auto& pair : fusion_strategy_) {
+    depth += pair.second;
+  }
+  return depth;
+}
 
 const ExecutionPlan& ProfilingGraphExecutorImpl::getOptimizedPlanFor(
     Stack& stack,
-    size_t remaining_bailout_depth) {
+    std::optional<size_t> remaining_bailout_depth) {
   GRAPH_DEBUG("Running ProfilingGraphExecutorImpl ", this);
 
+  // TODO: instantiate simple executor when getProfilingMode() is false
   // no opt mode
-  if (!getGraphExecutorOptimize()) {
+  if (!getGraphExecutorOptimize() || !getProfilingMode()) {
     if (!fallback_plan_) {
       auto copy = graph->copy();
       GRAPH_DEBUG(
@@ -604,7 +644,11 @@ const ExecutionPlan& ProfilingGraphExecutorImpl::getOptimizedPlanFor(
   // getPlanFor(remaining_bailout_depth) is corrected and persisted by the Code
   // object in interpreter.
   if (!remaining_bailout_depth_.has_value() || !tensorExprFuserEnabled()) {
-    remaining_bailout_depth_ = remaining_bailout_depth;
+    if (remaining_bailout_depth.has_value()) {
+      remaining_bailout_depth_ = *remaining_bailout_depth;
+    } else {
+      remaining_bailout_depth_ = getInstantiatedBailoutDepth();
+    }
   }
 
   // simple executor
@@ -613,27 +657,23 @@ const ExecutionPlan& ProfilingGraphExecutorImpl::getOptimizedPlanFor(
     runProfilingInsensitiveOptimizations(copy);
     GRAPH_DUMP("Optimized SimpleExecutor Graph: ", copy);
     optimized_plan_ = ExecutionPlan(copy, function_name_);
+    time_optimized_plan_created_ = getNowInSecs();
     return *optimized_plan_;
   }
 
+  bool profiling_record_created_in_this_call = false;
   // if a profiling graph hasn't been created yet
   if (!pr_) {
     auto copy = graph->copy();
     runProfilingInsensitiveOptimizations(copy);
     pr_ = ProfilingRecord::instrumentGraph(copy);
+    profiling_record_created_in_this_call = true;
     // `InsertProfileNodesForSpecializeAutogradZero` profiles a definition vs a
     // use and it doesn't expect any profile nodes between a graph input and its
     // consumer, `aten::_grad_sum_to_size`. This means we need to run it first,
     // before any other pass that could insert `prim::iprofile_value` node on
     // `aten::_grad_sum_to_size` input.
     InsertProfileNodesForSpecializeAutogradZero(pr_.get());
-    // `InsertProfileNodesForCUDAFuser` inserts profile node for non-tensor
-    // value
-#ifndef C10_MOBILE
-    if (RegisterCudaFuseGraph::isRegistered()) {
-      torch::jit::fuser::cuda::InsertProfileNodesForCUDAFuser(pr_.get());
-    }
-#endif
     GRAPH_DUMP("Profiled Graph: ", pr_->graph());
     profiling_plan_ = ExecutionPlan(pr_->graph(), function_name_);
     // fall-through
@@ -650,24 +690,89 @@ const ExecutionPlan& ProfilingGraphExecutorImpl::getOptimizedPlanFor(
   // replaces a fallback graph inserted by
   // specialize_autogradzero if one exists
   replaceFallbackGraphWithFallbackFunction(copy->block());
+  runFinalOptimizations(copy);
+  CheckStrictFusion(copy);
   GRAPH_DUMP("Optimized Graph: ", copy);
-  optimized_plan_ =
-      ExecutionPlan(copy, function_name_, *remaining_bailout_depth_);
+  optimized_plan_ = ExecutionPlan(copy, function_name_);
+  time_optimized_plan_created_ = getNowInSecs();
+  // If the profiled graph was created in this call, then we can release it
+  // right.
+  if (FLAGS_torch_jit_release_profiling_graph_after_optimization &&
+      profiling_record_created_in_this_call) {
+    clearTheGraphCompilationIntermediateGraphs();
+  }
   return *optimized_plan_;
 }
 
 const ExecutionPlan& ProfilingGraphExecutorImpl::getPlanFor(
     Stack& stack,
-    size_t remaining_bailout_depth) {
+    std::optional<size_t> remaining_bailout_depth) {
   std::lock_guard<std::mutex> lock(compile_mutex);
 
   // IMPORTANT: This is a hot path of calling a torchscript function. Try not to
   // add any code above this.
   if (optimized_plan_) {
+    if (FLAGS_torch_jit_release_profiling_graph_after_optimization &&
+        !is_graph_extra_memory_released_) {
+      int32_t now = getNowInSecs();
+      if ((now - time_optimized_plan_created_) >
+          FLAGS_torch_jit_release_profiling_graph_delay_in_seconds) {
+        clearTheGraphCompilationIntermediateGraphs();
+      }
+    }
+    return *optimized_plan_;
+  }
+  if (FLAGS_torch_jit_input_independent_optimization) {
+    return getInputIndependentPlanImpl();
+  }
+  // if depth is not set, use
+  return getOptimizedPlanFor(stack, remaining_bailout_depth);
+}
+
+const ExecutionPlan& ProfilingGraphExecutorImpl::getInputIndependentPlan() {
+  std::lock_guard<std::mutex> lock(compile_mutex);
+  return getInputIndependentPlanImpl();
+}
+
+const ExecutionPlan&
+ProfilingGraphExecutorImpl::getInputIndependentPlanImpl() {
+  if (optimized_plan_) {
     return *optimized_plan_;
   }
 
-  return getOptimizedPlanFor(stack, remaining_bailout_depth);
+  auto copy = graph->copy();
+  if (!getGraphExecutorOptimize() || !getProfilingMode()) {
+    LowerGradOf(*copy);
+    RemoveExpands(copy);
+  } else {
+    // Run all input-independent optimizations. This includes
+    // runProfilingInsensitiveOptimizations (inlining, constant propagation,
+    // CSE, peephole, etc.) followed by runPreAutodiffPassPipeline which adds
+    // loop unrolling, list mutation removal, and additional rounds of
+    // peephole + constant propagation. Profiling-dependent passes (type
+    // specialization, fusion, autodiff guards) are skipped since they
+    // require runtime type/shape information from actual inputs.
+    runProfilingInsensitiveOptimizations(copy);
+    runPreAutodiffPassPipeline(copy);
+
+    // Run additional input-independent passes from runNoGradOptimizations
+    // and runFinalOptimizations. These operate on graph structure (node
+    // patterns, alias analysis) and do not require profiled type/shape info.
+    // Skipped: RemoveProfileNodesAndSpecializeTypes, FuseTensorExprs,
+    // FuseGraph (these need profiled tensor types for specialization/fusion).
+    for (const auto& passPair : getCustomPrePasses()) {
+      passPair.first(copy);
+    }
+    BatchMM(copy);
+    for (const auto& passPair : getCustomPostPasses()) {
+      passPair.first(copy);
+    }
+    AddIfThenElseOp(copy);
+    EliminateDeadCode(copy);
+  }
+  optimized_plan_ = ExecutionPlan(copy, function_name_);
+  time_optimized_plan_created_ = getNowInSecs();
+  return *optimized_plan_;
 }
 
 GraphExecutorState ProfilingGraphExecutorImpl::getDebugState() {
@@ -678,7 +783,7 @@ GraphExecutorState ProfilingGraphExecutorImpl::getDebugState() {
   return state;
 }
 
-Node* insertFallbackFunctionCall(
+static Node* insertFallbackFunctionCall(
     Graph* graph,
     GraphFunction* func,
     ArrayRef<Value*> inputs) {
@@ -699,7 +804,7 @@ Node* insertFallbackFunctionCall(
   return fun_unpack_tuple;
 }
 
-GraphFunction* createFallbackPathFunction(
+static GraphFunction* createFallbackPathFunction(
     Block* b,
     const std::string& function_name) {
   auto value_map = [](Value* v) { return v; };
@@ -749,5 +854,32 @@ void ProfilingGraphExecutorImpl::replaceFallbackGraphWithFallbackFunction(
   }
 }
 
-} // namespace jit
-} // namespace torch
+void ProfilingGraphExecutorImpl::runFinalOptimizations(
+    std::shared_ptr<Graph>& graph) {
+  AddIfThenElseOp(graph);
+}
+
+void ProfilingGraphExecutorImpl::debugFlushCompilationCache() {
+  std::lock_guard<std::mutex> lock(compile_mutex);
+  pr_.reset();
+  fallback_plan_.reset();
+  profiling_plan_.reset();
+  optimized_plan_.reset();
+  // prevent memory leaks
+  fallback_functions_.clear();
+  remaining_bailout_depth_.reset();
+  // TODO - would be nice to have it initialized in subsequent use
+  fusion_strategy_ = getFusionStrategy();
+  time_optimized_plan_created_ = 0;
+  is_graph_extra_memory_released_ = false;
+}
+
+void ProfilingGraphExecutorImpl::clearTheGraphCompilationIntermediateGraphs() {
+  is_graph_extra_memory_released_ = true;
+  profiling_plan_.reset();
+  fallback_plan_.reset();
+  graph.reset();
+  pr_.reset();
+}
+
+} // namespace torch::jit

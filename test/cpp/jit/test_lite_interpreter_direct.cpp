@@ -410,10 +410,8 @@ TEST(LiteInterpreterDirectTest, GetRuntimeOperatorsVersion) {
  * build/run does).
  */
 TEST(LiteInterpreterDirectTest, GetByteCodeVersion) {
-  std::string filePath(__FILE__);
   auto test_model_file_v4 =
-      filePath.substr(0, filePath.find_last_of("/\\") + 1);
-  test_model_file_v4.append("script_module_v4.ptl");
+      resolveTestDataFile(__FILE__, "script_module_v4.ptl");
 
   auto version_v4 = _get_model_bytecode_version(test_model_file_v4);
   AT_ASSERT(version_v4 == 4);
@@ -471,7 +469,7 @@ TEST(LiteInterpreterDirectTest, FindWrongMethodName) {
   )");
   CompilationOptions options;
   mobile::Module bc = jitModuleToMobile(m, options);
-  ASSERT_TRUE(bc.find_method("forward") == c10::nullopt);
+  ASSERT_TRUE(bc.find_method("forward") == std::nullopt);
 }
 
 TEST(LiteInterpreterDirectTest, FindAndRunMethod) {
@@ -494,7 +492,7 @@ TEST(LiteInterpreterDirectTest, FindAndRunMethod) {
   for (int i = 0; i < 3; ++i) {
     auto bcinputs = inputs;
     auto method = bc.find_method("add_it");
-    AT_ASSERT(method != c10::nullopt);
+    AT_ASSERT(method != std::nullopt);
     res = (*method)(std::move(bcinputs));
   }
 

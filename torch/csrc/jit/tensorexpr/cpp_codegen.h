@@ -3,9 +3,7 @@
 #include <torch/csrc/jit/tensorexpr/codegen.h>
 #include <torch/csrc/jit/tensorexpr/ir_printer.h>
 
-namespace torch {
-namespace jit {
-namespace tensorexpr {
+namespace torch::jit::tensorexpr {
 
 class CppVarNameRewriter;
 
@@ -28,38 +26,38 @@ class TORCH_API CppPrinter : public IRPrinter {
   using IRPrinter::visit;
 
   // Binary expressions.
-  void visit(ModPtr) override;
-  void visit(MaxPtr) override;
-  void visit(MinPtr) override;
+  void visit(const ModPtr& /*v*/) override;
+  void visit(const MaxPtr& /*v*/) override;
+  void visit(const MinPtr& /*v*/) override;
 
   // Conditional expressions.
-  void visit(CompareSelectPtr) override;
-  void visit(IfThenElsePtr) override;
+  void visit(const CompareSelectPtr& /*v*/) override;
+  void visit(const IfThenElsePtr& /*v*/) override;
 
   // Tensor operations.
-  void visit(AllocatePtr) override;
-  void visit(FreePtr) override;
-  void visit(LoadPtr) override;
-  void visit(StorePtr) override;
+  void visit(const AllocatePtr& /*v*/) override;
+  void visit(const FreePtr& /*v*/) override;
+  void visit(const LoadPtr& /*v*/) override;
+  void visit(const StorePtr& /*v*/) override;
 
   // Casts.
-  void visit(CastPtr) override;
-  void visit(BitCastPtr) override;
+  void visit(const CastPtr& /*v*/) override;
+  void visit(const BitCastPtr& /*v*/) override;
 
   // Calls.
-  void visit(IntrinsicsPtr) override;
-  void visit(ExternalCallPtr) override;
+  void visit(const IntrinsicsPtr& /*v*/) override;
+  void visit(const ExternalCallPtr& /*v*/) override;
 
   // Vars.
-  void visit(LetPtr) override;
-  void visit(VarPtr) override;
+  void visit(const LetPtr& /*v*/) override;
+  void visit(const VarPtr& /*v*/) override;
 
   // Vector data types.
-  void visit(RampPtr) override;
-  void visit(BroadcastPtr) override;
+  void visit(const RampPtr& /*v*/) override;
+  void visit(const BroadcastPtr& /*v*/) override;
 
  private:
-  int lane_;
+  int lane_{0};
   std::unordered_map<VarPtr, ExprPtr> vector_vars_;
 };
 
@@ -97,6 +95,4 @@ class TORCH_API CppCodeGen : public CodeGen {
   std::unique_ptr<CppVarNameRewriter> var_name_rewriter_;
 };
 
-} // namespace tensorexpr
-} // namespace jit
-} // namespace torch
+} // namespace torch::jit::tensorexpr

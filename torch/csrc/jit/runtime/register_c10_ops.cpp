@@ -1,13 +1,8 @@
-#include <ATen/core/ATenOpList.h>
 #include <ATen/core/dispatch/Dispatcher.h>
 #include <ATen/record_function.h>
-#include <torch/csrc/jit/frontend/tracer.h>
-#include <torch/csrc/jit/ir/ir.h>
 #include <torch/csrc/jit/runtime/operator.h>
-#include <unordered_set>
 
-namespace torch {
-namespace jit {
+namespace torch::jit {
 
 namespace {
 
@@ -54,7 +49,7 @@ Registerer& registerer() {
 }
 
 // global instance to run its constructor on startup
-C10_UNUSED Registerer& dummy = registerer();
+[[maybe_unused]] Registerer& dummy = registerer();
 
 } // namespace
 
@@ -62,5 +57,4 @@ void ensure_c10_registerer_defined() {
   registerer();
 }
 
-} // namespace jit
-} // namespace torch
+} // namespace torch::jit

@@ -1,9 +1,5 @@
-#include <ATen/core/jit_type.h>
-#include <c10/util/irange.h>
 
 #include <torch/csrc/jit/ir/ir.h>
-#include <torch/csrc/jit/ir/subgraph_matcher.h>
-#include <torch/csrc/jit/passes/constant_pooling.h>
 #include <torch/csrc/jit/passes/fold_conv_bn.h>
 #include <torch/csrc/jit/passes/freeze_module.h>
 #include <torch/csrc/jit/passes/fuse_linear.h>
@@ -15,8 +11,7 @@
 #include <torch/csrc/jit/passes/subgraph_rewrite.h>
 #include <torch/csrc/jit/runtime/graph_executor_impl.h>
 
-namespace torch {
-namespace jit {
+namespace torch::jit {
 
 namespace {
 
@@ -240,31 +235,12 @@ void metalFusePrePackedConvWithClamp(script::Module& module) {
   fuseHardtanhWithPackedOps(graph);
 }
 
-void metalInsertCopyOps(script::Module& module) {
-  auto graph = module.get_method("forward").graph();
-  auto&& outputs = graph->outputs();
-  for (const auto i : c10::irange(outputs.size())) {
-    Value* output = outputs[i];
-    auto namedValue = NamedValue("", output);
-    if (namedValue.type()->kind() == TypeKind::TensorType) {
-      // find the insertion point
-      WithInsertPoint ip(output->node()->next());
-      Value* replaced_output = graph->insert(
-          Symbol::fromQualString("metal::copy_to_host"), {namedValue});
-      // replaced the output
-      graph->block()->replaceOutput(i, replaced_output);
-    }
-  }
-  SubgraphRewriter rewriter;
-  rewriter.runOnGraph(graph);
-}
-
-void metalRemoveMutation(script::Module& module) {
+static void metalRemoveMutation(script::Module& module) {
   auto graph = module.get_method("forward").graph();
   RemoveTensorMutation(graph);
 }
 
-void metalRunCanonicalOptimizations(script::Module& module) {
+static void metalRunCanonicalOptimizations(script::Module& module) {
   auto graph = module.get_method("forward").graph();
   runOptimization(graph, false /* no loop unrolling */);
 }
@@ -288,5 +264,4 @@ script::Module metalOptimizeForMobile(
   return cloned_module;
 }
 
-} // namespace jit
-} // namespace torch
+} // namespace torch::jit

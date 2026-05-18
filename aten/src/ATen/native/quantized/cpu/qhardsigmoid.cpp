@@ -1,16 +1,22 @@
-#include <ATen/ATen.h>
-#include <ATen/NativeFunctions.h>
-#include <torch/library.h>
-#include <ATen/quantized/Quantizer.h>
-#include <ATen/native/quantized/cpu/quantized_ops.h>
+#define TORCH_ASSERT_ONLY_METHOD_OPERATORS
+#include <ATen/core/Tensor.h>
+#include <ATen/Context.h>
+#include <ATen/native/quantized/cpu/QuantizedOps.h>
 #include <ATen/native/quantized/cpu/init_qnnpack.h>
-#include <ATen/native/quantized/cpu/qnnpack_utils.h>
+#include <ATen/native/quantized/cpu/QnnpackUtils.h>
 #include <caffe2/utils/threadpool/pthreadpool-cpp.h>
+
+#ifndef AT_PER_OPERATOR_HEADERS
+#include <ATen/Functions.h>
+#include <ATen/NativeFunctions.h>
+#else
+#include <ATen/ops/_empty_affine_quantized.h>
+#include <ATen/ops/hardsigmoid_native.h>
+#endif
 
 #include <algorithm>
 
-namespace at {
-namespace native {
+namespace at::native {
 
 DEFINE_DISPATCH(qhardsigmoid_stub);
 
@@ -60,7 +66,7 @@ Tensor qnnpack_hardsigmoid(Tensor input) {
   const pytorch_qnnp_status setupStatus = pytorch_qnnp_setup_hardsigmoid_nc_q8(
     hardsigmoid_op,
     input_contig.size(0), // batch size
-    (uint8_t*)input_contig.data_ptr<c10::quint8>(), // input data
+    reinterpret_cast<const uint8_t*>(input_contig.const_data_ptr<c10::quint8>()), // input data
     num_elems, // input stride
     (uint8_t*)qy.data_ptr<c10::quint8>(), // output data
     num_elems); // output stride
@@ -102,4 +108,4 @@ Tensor& hardsigmoid_out_quantized_cpu(const Tensor& qx, Tensor& result) {
   return result;
 }
 
-}}  // namespace at::native
+}  // namespace at::native

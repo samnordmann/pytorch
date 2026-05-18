@@ -1,3 +1,4 @@
+# mypy: allow-untyped-defs
 import collections
 import copyreg
 import io
@@ -11,6 +12,8 @@ import torch
 import torch.distributed as dist
 from torch._C._distributed_rpc import _get_current_rpc_agent
 
+
+__all__ = ["RPCExecMode", "serialize", "deserialize", "PythonUDF", "RemoteException"]
 
 # Thread local tensor tables to store tensors while pickling torch.Tensor
 # objects
@@ -102,8 +105,8 @@ class _InternalRPCPickler:
         # user picklers could have different initialization function from _InternalRPCPickler,
         # but all the user picklers should call serialize() and use _rref_reducer to pickle rref
         # in python. also, when _internal_rpc_pickler is imported to rpc/api.py, rpc.RRef is not
-        # compiled yet, it is not good place to acces rpc.RRef inside _InternalRPCPickler constructor,
-        # so puting rref's dispatch table here
+        # compiled yet, it is not good place to access rpc.RRef inside _InternalRPCPickler constructor,
+        # so putting rref's dispatch table here
         #
         # The return value of a `rpc.remote(..)` call is type of `rpc.PyRRef`.
         # The deserialized RRef object on an RPC receiver side is type of `rpc.PyRRef`.
@@ -119,7 +122,7 @@ class _InternalRPCPickler:
             p.dispatch_table[obj.__class__] = self._script_module_reducer  # type: ignore[index]
 
         # Install customized picklers.
-        for class_name in self._class_reducer_dict.keys():
+        for class_name in self._class_reducer_dict:
             p.dispatch_table[class_name] = self._class_reducer_dict[class_name]  # type: ignore[index]
 
         # save _thread_local_tensor_tables.send_tables if it is in nested call
@@ -167,6 +170,8 @@ class _InternalRPCPickler:
             callee modules."""
             )
             ret = AttributeError(except_str)
+            # Ensure the stack trace gets preserved
+            ret.__cause__ = e
 
         # restore _thread_local_tensor_tables.recv_tables if return
         # from nested call, otherwise clean up the table
@@ -215,7 +220,20 @@ def _run_function(python_udf):
 
 def _handle_exception(result):
     if isinstance(result, RemoteException):
-        raise result.exception_type(result.msg.encode("utf-8").decode("unicode_escape"))
+        exception_msg = result.msg.encode("utf-8").decode("unicode_escape")
+        # We wrap exception re-creation here in case some exception classes
+        # cannot be constructed directly from a string.
+        exc = None
+        try:
+            exc = result.exception_type(exception_msg)
+        except BaseException as e:
+            raise RuntimeError(
+                f"Failed to create original exception type. Error msg was {str(e)}"
+                f" Original exception on remote side was {exception_msg}"
+            ) from e
+
+        if exc is not None:
+            raise exc
 
 
 def _build_rpc_profiling_key(
@@ -234,11 +252,8 @@ def _build_rpc_profiling_key(
     Returns:
         String representing profiling key
     """
-    profile_key = "rpc_{rpc_type}#{func_name}({current_worker} -> {dst_worker})".format(
-        rpc_type=exec_type.value,
-        func_name=func_name,
-        current_worker=current_worker_name,
-        dst_worker=dst_worker_name,
+    profile_key = (
+        f"rpc_{exec_type.value}#{func_name}({current_worker_name} -> {dst_worker_name})"
     )
     return profile_key
 
@@ -259,10 +274,9 @@ def _start_record_function(exec_type, func_name, current_worker_name, dest_worke
     Returns:
         An instance of `torch.autograd._RecordFunction`.
     """
-    assert torch.autograd._profiler_enabled(), "Autograd profiler should be enabled."
-    profile_key = "rpc_{}#{}({} -> {})".format(
-        exec_type.value, str(func_name), current_worker_name, dest_worker_name
-    )
+    if not torch.autograd._profiler_enabled():
+        raise AssertionError("Autograd profiler should be enabled.")
+    profile_key = f"rpc_{exec_type.value}#{str(func_name)}({current_worker_name} -> {dest_worker_name})"
     rf = torch.autograd._RecordFunction()  # type: ignore[attr-defined]
     torch.autograd._run_before_callbacks(rf, profile_key)  # type: ignore[attr-defined]
     return rf

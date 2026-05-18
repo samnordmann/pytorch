@@ -1,10 +1,8 @@
 #include <torch/csrc/jit/passes/insert_guards.h>
 #include <torch/csrc/jit/runtime/profiling_record.h>
 #include <memory>
-#include <unordered_set>
 
-namespace torch {
-namespace jit {
+namespace torch::jit {
 
 struct GuardInserter {
   GuardInserter(std::shared_ptr<Graph> graph) : graph_(std::move(graph)) {}
@@ -48,5 +46,4 @@ void InsertGuards(std::shared_ptr<Graph> graph) {
   gi.run();
 }
 
-} // namespace jit
-} // namespace torch
+} // namespace torch::jit

@@ -1,24 +1,52 @@
+from __future__ import annotations
+
 import collections
 import operator
-from functools import reduce
 from collections.abc import Mapping
+from functools import reduce
+from typing import TYPE_CHECKING, TypeVar
 
-__all__ = ('merge', 'merge_with', 'valmap', 'keymap', 'itemmap',
-           'valfilter', 'keyfilter', 'itemfilter',
-           'assoc', 'dissoc', 'assoc_in', 'update_in', 'get_in')
 
-def _get_factory(f, kwargs):
-    factory = kwargs.pop('factory', dict)
+if TYPE_CHECKING:
+    from collections.abc import Callable, Iterable
+
+_K = TypeVar("_K")
+_V = TypeVar("_V")
+_K2 = TypeVar("_K2")
+_V2 = TypeVar("_V2")
+_T = TypeVar("_T")
+
+
+__all__ = [
+    "merge",
+    "merge_with",
+    "valmap",
+    "keymap",
+    "itemmap",
+    "valfilter",
+    "keyfilter",
+    "itemfilter",
+    "assoc",
+    "dissoc",
+    "assoc_in",
+    "update_in",
+    "get_in",
+]
+
+
+def _get_factory(f: Callable[..., object], kwargs: dict[str, object]) -> type:
+    factory: type = kwargs.pop("factory", dict)  # type: ignore[assignment]
     if kwargs:
-        raise TypeError("{}() got an unexpected keyword argument "
-                        "'{}'".format(f.__name__, kwargs.popitem()[0]))
+        raise TypeError(
+            f"{f.__name__}() got an unexpected keyword argument '{kwargs.popitem()[0]}'"
+        )
     return factory
 
 
-def merge(*dicts, **kwargs):
-    """ Merge a collection of dictionaries
+def merge(*dicts: Mapping[object, object], **kwargs: object) -> object:
+    """Merge a collection of dictionaries
 
-    >>> merge({1: 'one'}, {2: 'two'})
+    >>> merge({1: "one"}, {2: "two"})
     {1: 'one', 2: 'two'}
 
     Later dictionaries have precedence
@@ -39,8 +67,10 @@ def merge(*dicts, **kwargs):
     return rv
 
 
-def merge_with(func, *dicts, **kwargs):
-    """ Merge dictionaries and apply function to combined values
+def merge_with(
+    func: Callable[..., object], *dicts: Mapping[object, object], **kwargs: object
+) -> object:
+    """Merge dictionaries and apply function to combined values
 
     A key may occur in more than one dict, and all values mapped from the key
     will be passed to the function as a list, such as func([val1, val2, ...]).
@@ -68,8 +98,10 @@ def merge_with(func, *dicts, **kwargs):
     return valmap(func, result, factory)
 
 
-def valmap(func, d, factory=dict):
-    """ Apply function to values of dictionary
+def valmap(
+    func: Callable[[_V], _V2], d: Mapping[_K, _V], factory: type = dict
+) -> dict[_K, _V2]:
+    """Apply function to values of dictionary
 
     >>> bills = {"Alice": [20, 15, 30], "Bob": [10, 35]}
     >>> valmap(sum, bills)  # doctest: +SKIP
@@ -84,8 +116,10 @@ def valmap(func, d, factory=dict):
     return rv
 
 
-def keymap(func, d, factory=dict):
-    """ Apply function to keys of dictionary
+def keymap(
+    func: Callable[[_K], _K2], d: Mapping[_K, _V], factory: type = dict
+) -> dict[_K2, _V]:
+    """Apply function to keys of dictionary
 
     >>> bills = {"Alice": [20, 15, 30], "Bob": [10, 35]}
     >>> keymap(str.lower, bills)  # doctest: +SKIP
@@ -100,8 +134,10 @@ def keymap(func, d, factory=dict):
     return rv
 
 
-def itemmap(func, d, factory=dict):
-    """ Apply function to items of dictionary
+def itemmap(
+    func: Callable[[tuple[_K, _V]], object], d: Mapping[_K, _V], factory: type = dict
+) -> dict[object, object]:
+    """Apply function to items of dictionary
 
     >>> accountids = {"Alice": 10, "Bob": 20}
     >>> itemmap(reversed, accountids)  # doctest: +SKIP
@@ -116,8 +152,10 @@ def itemmap(func, d, factory=dict):
     return rv
 
 
-def valfilter(predicate, d, factory=dict):
-    """ Filter items in dictionary by value
+def valfilter(
+    predicate: Callable[[_V], bool], d: Mapping[_K, _V], factory: type = dict
+) -> dict[_K, _V]:
+    """Filter items in dictionary by value
 
     >>> iseven = lambda x: x % 2 == 0
     >>> d = {1: 2, 2: 3, 3: 4, 4: 5}
@@ -136,8 +174,10 @@ def valfilter(predicate, d, factory=dict):
     return rv
 
 
-def keyfilter(predicate, d, factory=dict):
-    """ Filter items in dictionary by key
+def keyfilter(
+    predicate: Callable[[_K], bool], d: Mapping[_K, _V], factory: type = dict
+) -> dict[_K, _V]:
+    """Filter items in dictionary by key
 
     >>> iseven = lambda x: x % 2 == 0
     >>> d = {1: 2, 2: 3, 3: 4, 4: 5}
@@ -156,8 +196,10 @@ def keyfilter(predicate, d, factory=dict):
     return rv
 
 
-def itemfilter(predicate, d, factory=dict):
-    """ Filter items in dictionary by item
+def itemfilter(
+    predicate: Callable[[tuple[_K, _V]], bool], d: Mapping[_K, _V], factory: type = dict
+) -> dict[_K, _V]:
+    """Filter items in dictionary by item
 
     >>> def isvalid(item):
     ...     k, v = item
@@ -180,14 +222,16 @@ def itemfilter(predicate, d, factory=dict):
     return rv
 
 
-def assoc(d, key, value, factory=dict):
-    """ Return a new dict with new key value pair
+def assoc(
+    d: Mapping[_K, _V], key: object, value: object, factory: type = dict
+) -> dict[_K, _V]:
+    """Return a new dict with new key value pair
 
     New dict has d[key] set to value. Does not modify the initial dictionary.
 
-    >>> assoc({'x': 1}, 'x', 2)
+    >>> assoc({"x": 1}, "x", 2)
     {'x': 2}
-    >>> assoc({'x': 1}, 'y', 3)   # doctest: +SKIP
+    >>> assoc({"x": 1}, "y", 3)  # doctest: +SKIP
     {'x': 1, 'y': 3}
     """
     d2 = factory()
@@ -196,23 +240,23 @@ def assoc(d, key, value, factory=dict):
     return d2
 
 
-def dissoc(d, *keys, **kwargs):
-    """ Return a new dict with the given key(s) removed.
+def dissoc(d: Mapping[object, object], *keys: object, **kwargs: object) -> object:
+    """Return a new dict with the given key(s) removed.
 
     New dict has d[key] deleted for each supplied key.
     Does not modify the initial dictionary.
 
-    >>> dissoc({'x': 1, 'y': 2}, 'y')
+    >>> dissoc({"x": 1, "y": 2}, "y")
     {'x': 1}
-    >>> dissoc({'x': 1, 'y': 2}, 'y', 'x')
+    >>> dissoc({"x": 1, "y": 2}, "y", "x")
     {}
-    >>> dissoc({'x': 1}, 'y') # Ignores missing keys
+    >>> dissoc({"x": 1}, "y")  # Ignores missing keys
     {'x': 1}
     """
     factory = _get_factory(dissoc, kwargs)
     d2 = factory()
 
-    if len(keys) < len(d) * .6:
+    if len(keys) < len(d) * 0.6:
         d2.update(d)
         for key in keys:
             if key in d2:
@@ -225,14 +269,20 @@ def dissoc(d, *keys, **kwargs):
     return d2
 
 
-def assoc_in(d, keys, value, factory=dict):
-    """ Return a new dict with new, potentially nested, key value pair
+def assoc_in(
+    d: Mapping[object, object],
+    keys: Iterable[object],
+    value: object,
+    factory: type = dict,
+) -> object:
+    """Return a new dict with new, potentially nested, key value pair
 
-    >>> purchase = {'name': 'Alice',
-    ...             'order': {'items': ['Apple', 'Orange'],
-    ...                       'costs': [0.50, 1.25]},
-    ...             'credit card': '5555-1234-1234-1234'}
-    >>> assoc_in(purchase, ['order', 'costs'], [0.25, 1.00]) # doctest: +SKIP
+    >>> purchase = {
+    ...     "name": "Alice",
+    ...     "order": {"items": ["Apple", "Orange"], "costs": [0.50, 1.25]},
+    ...     "credit card": "5555-1234-1234-1234",
+    ... }
+    >>> assoc_in(purchase, ["order", "costs"], [0.25, 1.00])  # doctest: +SKIP
     {'credit card': '5555-1234-1234-1234',
      'name': 'Alice',
      'order': {'costs': [0.25, 1.00], 'items': ['Apple', 'Orange']}}
@@ -240,8 +290,14 @@ def assoc_in(d, keys, value, factory=dict):
     return update_in(d, keys, lambda x: value, value, factory)
 
 
-def update_in(d, keys, func, default=None, factory=dict):
-    """ Update value in a (potentially) nested dictionary
+def update_in(
+    d: Mapping[object, object],
+    keys: Iterable[object],
+    func: Callable[..., object],
+    default: object = None,
+    factory: type = dict,
+) -> object:
+    """Update value in a (potentially) nested dictionary
 
     inputs:
     d - dictionary on which to operate
@@ -256,14 +312,15 @@ def update_in(d, keys, func, default=None, factory=dict):
     specified by the keys, with the innermost value set to func(default).
 
     >>> inc = lambda x: x + 1
-    >>> update_in({'a': 0}, ['a'], inc)
+    >>> update_in({"a": 0}, ["a"], inc)
     {'a': 1}
 
-    >>> transaction = {'name': 'Alice',
-    ...                'purchase': {'items': ['Apple', 'Orange'],
-    ...                             'costs': [0.50, 1.25]},
-    ...                'credit card': '5555-1234-1234-1234'}
-    >>> update_in(transaction, ['purchase', 'costs'], sum) # doctest: +SKIP
+    >>> transaction = {
+    ...     "name": "Alice",
+    ...     "purchase": {"items": ["Apple", "Orange"], "costs": [0.50, 1.25]},
+    ...     "credit card": "5555-1234-1234-1234",
+    ... }
+    >>> update_in(transaction, ["purchase", "costs"], sum)  # doctest: +SKIP
     {'credit card': '5555-1234-1234-1234',
      'name': 'Alice',
      'purchase': {'costs': 1.75, 'items': ['Apple', 'Orange']}}
@@ -271,7 +328,7 @@ def update_in(d, keys, func, default=None, factory=dict):
     >>> # updating a value when k0 is not in d
     >>> update_in({}, [1, 2, 3], str, default="bar")
     {1: {2: {3: 'bar'}}}
-    >>> update_in({1: 'foo'}, [2, 3, 4], inc, 0)
+    >>> update_in({1: "foo"}, [2, 3, 4], inc, 0)
     {1: 'foo', 2: {3: {4: 1}}}
     """
     ks = iter(keys)
@@ -282,7 +339,7 @@ def update_in(d, keys, func, default=None, factory=dict):
 
     for key in ks:
         if k in d:
-            d = d[k]
+            d = d[k]  # pyrefly: ignore[bad-assignment]
             dtemp = factory()
             dtemp.update(d)
         else:
@@ -298,8 +355,13 @@ def update_in(d, keys, func, default=None, factory=dict):
     return rv
 
 
-def get_in(keys, coll, default=None, no_default=False):
-    """ Returns coll[i0][i1]...[iX] where [i0, i1, ..., iX]==keys.
+def get_in(
+    keys: Iterable[object],
+    coll: object,
+    default: object = None,
+    no_default: bool = False,
+) -> object:
+    """Returns coll[i0][i1]...[iX] where [i0, i1, ..., iX]==keys.
 
     If coll[i0][i1]...[iX] cannot be found, returns ``default``, unless
     ``no_default`` is specified, then it raises KeyError or IndexError.
@@ -307,20 +369,21 @@ def get_in(keys, coll, default=None, no_default=False):
     ``get_in`` is a generalization of ``operator.getitem`` for nested data
     structures such as dictionaries and lists.
 
-    >>> transaction = {'name': 'Alice',
-    ...                'purchase': {'items': ['Apple', 'Orange'],
-    ...                             'costs': [0.50, 1.25]},
-    ...                'credit card': '5555-1234-1234-1234'}
-    >>> get_in(['purchase', 'items', 0], transaction)
+    >>> transaction = {
+    ...     "name": "Alice",
+    ...     "purchase": {"items": ["Apple", "Orange"], "costs": [0.50, 1.25]},
+    ...     "credit card": "5555-1234-1234-1234",
+    ... }
+    >>> get_in(["purchase", "items", 0], transaction)
     'Apple'
-    >>> get_in(['name'], transaction)
+    >>> get_in(["name"], transaction)
     'Alice'
-    >>> get_in(['purchase', 'total'], transaction)
-    >>> get_in(['purchase', 'items', 'apple'], transaction)
-    >>> get_in(['purchase', 'items', 10], transaction)
-    >>> get_in(['purchase', 'total'], transaction, 0)
+    >>> get_in(["purchase", "total"], transaction)
+    >>> get_in(["purchase", "items", "apple"], transaction)
+    >>> get_in(["purchase", "items", 10], transaction)
+    >>> get_in(["purchase", "total"], transaction, 0)
     0
-    >>> get_in(['y'], {}, no_default=True)
+    >>> get_in(["y"], {}, no_default=True)
     Traceback (most recent call last):
         ...
     KeyError: 'y'
@@ -330,13 +393,18 @@ def get_in(keys, coll, default=None, no_default=False):
         operator.getitem
     """
     try:
-        return reduce(operator.getitem, keys, coll)
+        return reduce(
+            operator.getitem,
+            keys,  # pyrefly: ignore[bad-argument-type]
+            coll,  # pyrefly: ignore[bad-argument-type]
+        )
     except (KeyError, IndexError, TypeError):
         if no_default:
             raise
         return default
 
-def getter(index):
+
+def getter(index: object) -> Callable[..., object]:
     if isinstance(index, list):
         if len(index) == 1:
             index = index[0]
@@ -348,10 +416,11 @@ def getter(index):
     else:
         return operator.itemgetter(index)
 
-def groupby(key, seq):
-    """ Group a collection by a key function
 
-    >>> names = ['Alice', 'Bob', 'Charlie', 'Dan', 'Edith', 'Frank']
+def groupby(key: object, seq: Iterable[object]) -> dict[object, list[object]]:
+    """Group a collection by a key function
+
+    >>> names = ["Alice", "Bob", "Charlie", "Dan", "Edith", "Frank"]
     >>> groupby(len, names)  # doctest: +SKIP
     {3: ['Bob', 'Dan'], 5: ['Alice', 'Edith', 'Frank'], 7: ['Charlie']}
 
@@ -361,9 +430,14 @@ def groupby(key, seq):
 
     Non-callable keys imply grouping on a member.
 
-    >>> groupby('gender', [{'name': 'Alice', 'gender': 'F'},
-    ...                    {'name': 'Bob', 'gender': 'M'},
-    ...                    {'name': 'Charlie', 'gender': 'M'}]) # doctest:+SKIP
+    >>> groupby(
+    ...     "gender",
+    ...     [
+    ...         {"name": "Alice", "gender": "F"},
+    ...         {"name": "Bob", "gender": "M"},
+    ...         {"name": "Charlie", "gender": "M"},
+    ...     ],
+    ... )  # doctest:+SKIP
     {'F': [{'gender': 'F', 'name': 'Alice'}],
      'M': [{'gender': 'M', 'name': 'Bob'},
            {'gender': 'M', 'name': 'Charlie'}]}
@@ -378,15 +452,16 @@ def groupby(key, seq):
     d = collections.defaultdict(lambda: [].append)  # type: ignore[var-annotated]
     for item in seq:
         d[key(item)](item)
-    rv = {}
+    rv: dict[object, list[object]] = {}
     for k, v in d.items():
-        rv[k] = v.__self__  # type: ignore[var-annotated, attr-defined]
+        rv[k] = v.__self__  # type: ignore[attr-defined]
     return rv
 
-def first(seq):
-    """ The first element in a sequence
 
-    >>> first('ABC')
+def first(seq: Iterable[_T]) -> _T:
+    """The first element in a sequence
+
+    >>> first("ABC")
     'A'
     """
     return next(iter(seq))

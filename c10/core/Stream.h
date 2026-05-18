@@ -1,6 +1,13 @@
 #pragma once
 
 #include <c10/core/Device.h>
+#include <c10/core/DeviceType.h>
+#include <c10/macros/Export.h>
+#include <c10/util/Exception.h>
+#include <cstddef>
+#include <cstdint>
+#include <functional>
+#include <ostream>
 
 namespace c10 {
 
@@ -13,6 +20,12 @@ namespace c10 {
 /// guarantee that StreamId 0 is always a valid stream, and corresponds
 /// to some sort of "default" stream.
 using StreamId = int64_t;
+
+struct C10_API StreamData3 {
+  StreamId stream_id;
+  DeviceIndex device_index;
+  DeviceType device_type;
+};
 
 // NB: I decided not to call the above StreamIndex to avoid confusion with
 // DeviceIndex.  This way, you access device index with index(), and stream id
@@ -69,14 +82,15 @@ class C10_API Stream final {
   /// should use the provided APIs to get a stream.  In particular,
   /// we don't require backends to give any guarantees about non-zero
   /// StreamIds; they are welcome to allocate in whatever way they like.
-  explicit Stream(Unsafe, Device device, StreamId id)
+  explicit Stream(Unsafe /*unused*/, Device device, StreamId id)
       : device_(device), id_(id) {}
 
   /// Construct the default stream of a Device.  The default stream is
   /// NOT the same as the current stream; default stream is a fixed stream
   /// that never changes, whereas the current stream may be changed by
   /// StreamGuard.
-  explicit Stream(Default, Device device) : device_(device), id_(0) {}
+  explicit Stream(Default /*unused*/, Device device)
+      : device_(device), id_(0) {}
 
   bool operator==(const Stream& other) const noexcept {
     return this->device_ == other.device_ && this->id_ == other.id_;
@@ -98,6 +112,11 @@ class C10_API Stream final {
     return id_;
   }
 
+  // Returns an opaque, backend-specific handle to the underlying stream.
+  // The handle is non-owning and its concrete type is backend-defined
+  // (e.g., a CUDA stream or a SYCL queue).
+  void* native_handle() const;
+
   // Enqueues a wait instruction in the stream's work queue.
   // This instruction is a no-op unless the event is marked
   // for recording. In that case the stream stops processing
@@ -115,6 +134,10 @@ class C10_API Stream final {
   // on this stream has completed running on the device.
   void synchronize() const;
 
+  // Return the stream is currently recording work for graph capture. True while
+  // the stream is in capture mode, false otherwise.
+  bool is_capturing() const;
+
   // The purpose of this function is to more conveniently permit binding
   // of Stream to and from Python.  Without packing, I have to setup a whole
   // class with two fields (device and stream id); with packing I can just
@@ -122,47 +145,25 @@ class C10_API Stream final {
   //
   // The particular way we pack streams into a uint64_t is considered an
   // implementation detail and should not be relied upon.
-  uint64_t pack() const noexcept {
-    // Are you here because this static assert failed?  Make sure you ensure
-    // that the bitmasking code below is updated accordingly!
-    static_assert(sizeof(DeviceType) == 1, "DeviceType is not 8-bit");
-    static_assert(sizeof(DeviceIndex) == 1, "DeviceIndex is not 8-bit");
-    static_assert(sizeof(StreamId) == 8, "StreamId is not 64-bit");
+  uint64_t hash() const noexcept {
     // Concat these together into a 64-bit integer
-    // See Note [Hazard when concatenating signed integers]
-    uint64_t bits = static_cast<uint64_t>(static_cast<uint8_t>(device_type()))
-            << 56 |
-        static_cast<uint64_t>(static_cast<uint8_t>(device_index())) << 48 |
+    uint64_t bits = static_cast<uint64_t>(device_type()) << 56 |
+        static_cast<uint64_t>(device_index()) << 48 |
         // Remove the sign extension part of the 64-bit address because
         // the id might be used to hold a pointer.
         (static_cast<uint64_t>(id()) & ((1ull << 48) - 1));
-    TORCH_INTERNAL_ASSERT(
-        static_cast<DeviceIndex>((bits >> 48) & 0xFFull) == device_index(),
-        "DeviceIndex is not correctly packed");
-    TORCH_INTERNAL_ASSERT(
-        static_cast<DeviceType>((bits >> 56)) == device_type(),
-        "DeviceType is not correctly packed");
-    // Re-extend the sign of stream_id for checking
-    uint64_t mask = (1ull << 47);
-    TORCH_INTERNAL_ASSERT(
-        static_cast<StreamId>(((bits & 0xFFFFFFFFFFFFull) ^ mask) - mask) ==
-            id(),
-        "DeviceType is not correctly packed");
     return bits;
   }
 
-  static Stream unpack(uint64_t bits) {
-    // Re-extend the sign of stream_id
-    uint64_t mask = (1ull << 47);
-    const auto stream_id =
-        (static_cast<StreamId>(bits & 0xFFFFFFFFFFFFull) ^ mask) - mask;
-    bits >>= 48;
-    const auto device_index = static_cast<DeviceIndex>(bits & 0xFFull);
-    bits >>= 8;
-    const auto device_type = static_cast<DeviceType>(bits);
+  struct StreamData3 pack3() const {
+    return {id(), device_index(), device_type()};
+  }
+
+  static Stream unpack3(
+      StreamId stream_id,
+      DeviceIndex device_index,
+      DeviceType device_type) {
     TORCH_CHECK(isValidDeviceType(device_type));
-    // Unfortunately, we can't check if the StreamId is valid here; it
-    // will be checked upon first use.
     return Stream(UNSAFE, Device(device_type, device_index), stream_id);
   }
 
@@ -179,7 +180,7 @@ namespace std {
 template <>
 struct hash<c10::Stream> {
   size_t operator()(c10::Stream s) const noexcept {
-    return std::hash<uint64_t>{}(s.pack());
+    return std::hash<uint64_t>{}(s.hash());
   }
 };
 } // namespace std

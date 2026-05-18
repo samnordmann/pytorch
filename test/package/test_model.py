@@ -8,6 +8,7 @@ import torch
 from torch.package import PackageExporter, PackageImporter, sys_importer
 from torch.testing._internal.common_utils import IS_FBCODE, IS_SANDCASTLE, run_tests
 
+
 try:
     from torchvision.models import resnet18
 
@@ -23,6 +24,10 @@ except ImportError:
     from common import PackageTestCase
 
 
+@skipIf(
+    True,
+    "Does not work with recent torchvision, see https://github.com/pytorch/pytorch/issues/81115",
+)
 @skipIfNoTorchVision
 class ModelTest(PackageTestCase):
     """End-to-end tests packaging an entire model."""
@@ -54,7 +59,7 @@ class ModelTest(PackageTestCase):
         self.assertEqual(r2(input), ref)
 
         # functions exist also to get at the private modules in each package
-        torchvision = i.import_module("torchvision")
+        torchvision = i.import_module("torchvision")  # noqa: F841
 
         f2 = BytesIO()
         # if we are doing transfer learning we might want to re-save
@@ -87,14 +92,13 @@ class ModelTest(PackageTestCase):
 
     @skipIfNoTorchVision
     def test_model_save(self):
-
         # This example shows how you might package a model
         # so that the creator of the model has flexibility about
         # how they want to save it but the 'server' can always
         # use the same API to load the package.
 
-        # The convension is for each model to provide a
-        # 'model' package with a 'load' function that actual
+        # The convention is for each model to provide a
+        # 'model' package with a 'load' function that actually
         # reads the model out of the archive.
 
         # How the load function is implemented is up to the
@@ -119,7 +123,7 @@ class ModelTest(PackageTestCase):
                 import torch_package_importer as resources
 
                 # server knows to call model.load() to get the model,
-                # maybe in the future it passes options as arguments by convension
+                # maybe in the future it passes options as arguments by convention
                 def load():
                     return resources.load_pickle('model', 'pickled')
                 """

@@ -4,21 +4,10 @@ import sys
 from itertools import product
 
 import torch
-from torch.distributed._shard import (
-    sharded_tensor,
-    _shard_tensor,
-)
-from torch.distributed._shard.sharding_spec import (
-    EnumerableShardingSpec,
-    ShardMetadata,
-)
-from torch.testing._internal.common_distributed import (
-    requires_nccl,
-    skip_if_lt_x_gpu,
-)
-from torch.testing._internal.common_utils import (
-    TEST_WITH_DEV_DBG_ASAN,
-)
+from torch.distributed._shard import _shard_tensor, sharded_tensor
+from torch.distributed._shard.sharding_spec import EnumerableShardingSpec, ShardMetadata
+from torch.testing._internal.common_distributed import requires_nccl, skip_if_lt_x_gpu
+from torch.testing._internal.common_utils import run_tests, TEST_WITH_DEV_DBG_ASAN
 from torch.testing._internal.distributed._shard.sharded_tensor import (
     ShardedTensorTestBase,
     with_comms,
@@ -26,6 +15,7 @@ from torch.testing._internal.distributed._shard.sharded_tensor import (
 from torch.testing._internal.distributed._shard.sharded_tensor._test_st_common import (
     _chunk_sharding_specs_list_for_test,
 )
+
 
 if TEST_WITH_DEV_DBG_ASAN:
     print(
@@ -44,6 +34,9 @@ class TestReshard(ShardedTensorTestBase):
         st.reshard(reshard_spec)
         self.assertEqual(1, len(st.local_shards()))
         self.assertEqual(1, len(st_compare.local_shards()))
+        st_compare._metadata.shards_metadata.sort(
+            key=lambda metadata: metadata.placement.rank()
+        )
         self.assertEqual(st._metadata, st_compare._metadata)
         self.assertEqual(st.local_tensor(), st_compare.local_tensor())
         self.assertEqual(
@@ -95,3 +88,7 @@ class TestReshard(ShardedTensorTestBase):
             NotImplementedError, "Only single local shard supported for reshard."
         ):
             st.reshard(reshard_spec)
+
+
+if __name__ == "__main__":
+    run_tests()

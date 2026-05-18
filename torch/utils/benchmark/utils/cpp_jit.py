@@ -5,7 +5,7 @@ import re
 import shutil
 import textwrap
 import threading
-from typing import Any, List, Optional
+from typing import Any
 
 import torch
 from torch.utils.benchmark.utils._stubs import CallgrindModuleType, TimeitModuleType
@@ -29,12 +29,13 @@ SOURCE_ROOT = os.path.split(os.path.abspath(__file__))[0]
 #   ````
 # `setup` and `stmt` do not change, so we can reuse the executable from the
 # first pass through the loop.
-_BUILD_ROOT: Optional[str] = None
+_BUILD_ROOT: str | None = None
 
 def _get_build_root() -> str:
     global _BUILD_ROOT
     if _BUILD_ROOT is None:
         _BUILD_ROOT = _make_temp_dir(prefix="benchmark_utils_jit_build")
+        # pyrefly: ignore [missing-argument]
         atexit.register(shutil.rmtree, _BUILD_ROOT)
     return _BUILD_ROOT
 
@@ -63,12 +64,16 @@ def _get_build_root() -> str:
 #   analysis and the shims no longer justify their maintenance and code
 #   complexity costs) back testing paths will be removed.
 
-CXX_FLAGS: Optional[List[str]]
+CXX_FLAGS: list[str] | None
 if hasattr(torch.__config__, "_cxx_flags"):
     try:
         CXX_FLAGS = torch.__config__._cxx_flags().strip().split()
         if CXX_FLAGS is not None and "-g" not in CXX_FLAGS:
             CXX_FLAGS.append("-g")
+        # remove "-W" flags to allow build benchmarks
+        # with a relaxed constraint of compiler versions
+        if CXX_FLAGS is not None:
+            CXX_FLAGS = list(filter(lambda x: not x.startswith("-W"), CXX_FLAGS))
 
     except RuntimeError:
         # We are in FBCode.
@@ -77,14 +82,14 @@ else:
     # FIXME: Remove when back testing is no longer required.
     CXX_FLAGS = ["-O2", "-fPIC", "-g"]
 
-EXTRA_INCLUDE_PATHS: List[str] = [os.path.join(SOURCE_ROOT, "valgrind_wrapper")]
+EXTRA_INCLUDE_PATHS: list[str] = [os.path.join(SOURCE_ROOT, "valgrind_wrapper")]
 CONDA_PREFIX = os.getenv("CONDA_PREFIX")
 if CONDA_PREFIX is not None:
     # Load will automatically search /usr/include, but not conda include.
     EXTRA_INCLUDE_PATHS.append(os.path.join(CONDA_PREFIX, "include"))
 
 
-COMPAT_CALLGRIND_BINDINGS: Optional[CallgrindModuleType] = None
+COMPAT_CALLGRIND_BINDINGS: CallgrindModuleType | None = None
 def get_compat_bindings() -> CallgrindModuleType:
     with LOCK:
         global COMPAT_CALLGRIND_BINDINGS
@@ -133,7 +138,7 @@ def _compile_template(
         os.makedirs(build_dir, exist_ok=True)
 
         src_path = os.path.join(build_dir, "timer_src.cpp")
-        with open(src_path, "wt") as f:
+        with open(src_path, "w") as f:
             f.write(src)
 
     # `cpp_extension` has its own locking scheme, so we don't need our lock.
@@ -150,19 +155,21 @@ def _compile_template(
 
 def compile_timeit_template(*, stmt: str, setup: str, global_setup: str) -> TimeitModuleType:
     template_path: str = os.path.join(SOURCE_ROOT, "timeit_template.cpp")
-    with open(template_path, "rt") as f:
+    with open(template_path) as f:
         src: str = f.read()
 
     module = _compile_template(stmt=stmt, setup=setup, global_setup=global_setup, src=src, is_standalone=False)
-    assert isinstance(module, TimeitModuleType)
+    if not isinstance(module, TimeitModuleType):
+        raise AssertionError("compiled module is not a TimeitModuleType")
     return module
 
 
 def compile_callgrind_template(*, stmt: str, setup: str, global_setup: str) -> str:
     template_path: str = os.path.join(SOURCE_ROOT, "valgrind_wrapper", "timer_callgrind_template.cpp")
-    with open(template_path, "rt") as f:
+    with open(template_path) as f:
         src: str = f.read()
 
     target = _compile_template(stmt=stmt, setup=setup, global_setup=global_setup, src=src, is_standalone=True)
-    assert isinstance(target, str)
+    if not isinstance(target, str):
+        raise AssertionError("compiled target path is not a string")
     return target

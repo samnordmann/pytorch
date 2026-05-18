@@ -5,6 +5,23 @@
 #include <torch/csrc/jit/runtime/interpreter.h>
 #include <torch/csrc/jit/testing/file_check.h>
 
+#include <filesystem>
+
+// Resolve a test data file path relative to a source file's directory.
+// Falls back to the executable's directory when the source tree is absent
+// (e.g. when running from an installed wheel in CI).
+static inline std::string resolveTestDataFile(
+    const char* sourceFile,
+    const char* relative) {
+  std::string srcDir(sourceFile);
+  srcDir = srcDir.substr(0, srcDir.find_last_of("/\\") + 1);
+  auto candidate = srcDir + relative;
+  if (std::filesystem::exists(candidate))
+    return candidate;
+  auto exeDir = std::filesystem::read_symlink("/proc/self/exe").parent_path();
+  return (exeDir / relative).string();
+}
+
 namespace {
 static inline void trim(std::string& s) {
   s.erase(s.begin(), std::find_if(s.begin(), s.end(), [](unsigned char ch) {
@@ -17,37 +34,33 @@ static inline void trim(std::string& s) {
           [](unsigned char ch) { return !std::isspace(ch); })
           .base(),
       s.end());
-  for (int64_t i = 0; i < s.size(); ++i) {
-    if (s[i] == '\n') {
+  for (size_t i = 0; i < s.size(); ++i) {
+    while (i < s.size() && s[i] == '\n') {
       s.erase(i, 1);
-      i--;
     }
   }
-  for (int64_t i = 0; i < s.size(); ++i) {
+  for (size_t i = 0; i < s.size(); ++i) {
     if (s[i] == ' ') {
-      for (int64_t j = i + 1; j < s.size(); j++) {
-        if (s[j] == ' ') {
-          s.erase(j, 1);
-          j--;
-        } else {
-          break;
-        }
+      while (i + 1 < s.size() && s[i + 1] == ' ') {
+        s.erase(i + 1, 1);
       }
     }
   }
 }
 } // namespace
 
-#define ASSERT_THROWS_WITH_MESSAGE(statement, substring)              \
-  try {                                                               \
-    (void)statement;                                                  \
-    FAIL();                                                           \
-  } catch (const std::exception& e) {                                 \
-    std::string substring_s(substring);                               \
-    trim(substring_s);                                                \
-    auto exception_string = std::string(e.what());                    \
-    trim(exception_string);                                           \
-    ASSERT_NE(exception_string.find(substring_s), std::string::npos); \
+#define ASSERT_THROWS_WITH_MESSAGE(statement, substring)             \
+  try {                                                              \
+    (void)statement;                                                 \
+    FAIL();                                                          \
+  } catch (const std::exception& e) {                                \
+    std::string substring_s(substring);                              \
+    trim(substring_s);                                               \
+    auto exception_string = std::string(e.what());                   \
+    trim(exception_string);                                          \
+    ASSERT_NE(exception_string.find(substring_s), std::string::npos) \
+        << " Error was: \n"                                          \
+        << exception_string;                                         \
   }
 
 namespace torch {

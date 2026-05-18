@@ -27,8 +27,7 @@
 #include <utility>
 #include <vector>
 
-namespace torch {
-namespace jit {
+namespace torch::jit {
 
 void packGradient(const Gradient& gradient, Node* dnode);
 bool needsGradient(const std::shared_ptr<const Graph>& graph);
@@ -79,7 +78,12 @@ struct GraphExecutorImplBase {
 
   virtual const ExecutionPlan& getPlanFor(
       Stack& stack,
-      size_t remaining_bailout_depth) = 0;
+      std::optional<size_t> remaining_bailout_depth = std::nullopt) = 0;
+  // Returns an optimized execution plan without requiring input arguments.
+  // Runs input-independent optimization passes (e.g. inlining, constant
+  // propagation, peephole, CSE) but skips profiling-based specializations
+  // that require runtime type/shape information.
+  virtual const ExecutionPlan& getInputIndependentPlan() = 0;
   virtual GraphExecutorState getDebugState() = 0;
   virtual ~GraphExecutorImplBase() = default;
 
@@ -111,5 +115,4 @@ struct GraphExecutorImplBase {
   std::mutex compile_mutex;
 };
 
-} // namespace jit
-} // namespace torch
+} // namespace torch::jit

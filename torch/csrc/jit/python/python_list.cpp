@@ -4,10 +4,10 @@
 #include <pybind11/pytypes.h>
 #include <torch/csrc/jit/python/pybind_utils.h>
 #include <torch/csrc/jit/python/python_list.h>
+#include <torch/csrc/utils/pybind.h>
 #include <stdexcept>
 
-namespace torch {
-namespace jit {
+namespace torch::jit {
 
 IValue ScriptListIterator::next() {
   if (iter_ == end_) {
@@ -63,7 +63,7 @@ void initScriptListBindings(PyObject* module) {
       .def(py::init([](py::list list) {
         TypePtr type = nullptr;
 
-        if (list.size() > 0) {
+        if (!list.empty()) {
           // If the source list is nonempty, try to infer its type.
           auto inferred_type = tryToInferType(list);
 
@@ -96,7 +96,7 @@ void initScriptListBindings(PyObject* module) {
       .def(
           "__len__",
           [](const std::shared_ptr<ScriptList>& self) {
-            return toPyObject(self->len());
+            return toPyObject(static_cast<int64_t>(self->len()));
           })
       .def(
           "__contains__",
@@ -104,7 +104,7 @@ void initScriptListBindings(PyObject* module) {
             try {
               return toPyObject(self->contains(
                   toIValue(std::move(elem), self->type()->getElementType())));
-            } catch (const py::cast_error& e) {
+            } catch (const py::cast_error&) {
               throw py::type_error();
             }
           })
@@ -115,7 +115,7 @@ void initScriptListBindings(PyObject* module) {
             try {
               auto value = self->getItem(idx);
               return toPyObject(value);
-            } catch (const std::out_of_range& e) {
+            } catch (const std::out_of_range&) {
               throw py::index_error();
             }
           },
@@ -134,9 +134,9 @@ void initScriptListBindings(PyObject* module) {
 
             auto seq = std::make_shared<ScriptList>(self->type());
 
-            for (const auto i : c10::irange(slicelength)) {
-              (void)i; // Suppress unused variable warning
-              seq->append(self->getItem(start));
+            for ([[maybe_unused]] const auto i [[maybe_unused]] :
+                 c10::irange(slicelength)) {
+              seq->append(self->getItem(static_cast<ptrdiff_t>(start)));
               start += step;
             }
 
@@ -151,9 +151,9 @@ void initScriptListBindings(PyObject* module) {
               self->setItem(
                   idx,
                   toIValue(std::move(value), self->type()->getElementType()));
-            } catch (const std::out_of_range& e) {
+            } catch (const std::out_of_range&) {
               throw py::index_error();
-            } catch (const py::cast_error& e) {
+            } catch (const py::cast_error&) {
               throw py::type_error();
             }
           })
@@ -177,8 +177,9 @@ void initScriptListBindings(PyObject* module) {
             for (const auto i : c10::irange(slicelength)) {
               try {
                 self->setItem(
-                    start, toIValue(value[i], self->type()->getElementType()));
-              } catch (const py::cast_error& e) {
+                    static_cast<ptrdiff_t>(start),
+                    toIValue(value[i], self->type()->getElementType()));
+              } catch (const py::cast_error&) {
                 throw py::type_error();
               }
               start += step;
@@ -190,7 +191,7 @@ void initScriptListBindings(PyObject* module) {
              ScriptList::diff_type idx) {
             try {
               self->delItem(idx);
-            } catch (const std::out_of_range& e) {
+            } catch (const std::out_of_range&) {
               throw py::index_error();
             }
           })
@@ -206,7 +207,7 @@ void initScriptListBindings(PyObject* module) {
               return self->count(
                   toIValue(std::move(value), self->type()->getElementType()));
 
-            } catch (const py::cast_error& e) {
+            } catch (const py::cast_error&) {
               throw py::type_error();
             }
           })
@@ -216,7 +217,7 @@ void initScriptListBindings(PyObject* module) {
             try {
               return self->remove(
                   toIValue(std::move(value), self->type()->getElementType()));
-            } catch (const py::cast_error& e) {
+            } catch (const py::cast_error&) {
               throw py::type_error();
             }
           })
@@ -226,7 +227,7 @@ void initScriptListBindings(PyObject* module) {
             try {
               return self->append(
                   toIValue(std::move(value), self->type()->getElementType()));
-            } catch (const py::cast_error& e) {
+            } catch (const py::cast_error&) {
               throw py::type_error();
             }
           })
@@ -238,7 +239,7 @@ void initScriptListBindings(PyObject* module) {
           [](const std::shared_ptr<ScriptList>& self, py::list list) {
             try {
               self->extend(toIValue(std::move(list), self->type()));
-            } catch (const py::cast_error& e) {
+            } catch (const py::cast_error&) {
               throw py::type_error();
             }
           })
@@ -254,7 +255,7 @@ void initScriptListBindings(PyObject* module) {
                     py::reinterpret_borrow<py::object>(obj),
                     self->type()->getElementType()));
               }
-            } catch (const py::cast_error& e) {
+            } catch (const py::cast_error&) {
               throw py::type_error();
             }
 
@@ -278,7 +279,7 @@ void initScriptListBindings(PyObject* module) {
               self->insert(
                   toIValue(std::move(obj), self->type()->getElementType()),
                   idx);
-            } catch (const py::cast_error& e) {
+            } catch (const py::cast_error&) {
               throw py::type_error();
             }
           })
@@ -289,7 +290,7 @@ void initScriptListBindings(PyObject* module) {
           [](py::list list) { // __setstate__
             TypePtr type = nullptr;
 
-            if (list.size() > 0) {
+            if (!list.empty()) {
               // If the source list is nonempty, try to infer its type.
               auto inferred_type = tryToInferType(list);
 
@@ -312,5 +313,4 @@ void initScriptListBindings(PyObject* module) {
           }));
 }
 
-} // namespace jit
-} // namespace torch
+} // namespace torch::jit

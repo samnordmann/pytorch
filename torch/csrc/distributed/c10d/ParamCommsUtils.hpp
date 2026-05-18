@@ -1,46 +1,68 @@
 #pragma once
 
-#include <string>
-#include <vector>
+#include <ATen/core/ivalue.h>
+#include <ATen/record_function.h>
 #include <c10/macros/Macros.h>
 #include <c10/util/ThreadLocalDebugInfo.h>
-#include <ATen/record_function.h>
-#include <ATen/core/ivalue.h>
+#include <string>
+#include <tuple>
+#include <vector>
 
 namespace torch {
 
-extern TORCH_API const std::string kParamCommsCallName;
-
-class TORCH_API ParamCommsDebugInfo
-    : public c10::DebugInfoBase {
-
+class TORCH_API ParamCommsDebugInfo : public c10::DebugInfoBase {
  public:
   ParamCommsDebugInfo() = default;
   ParamCommsDebugInfo(
-    int rank,
-    std::string&& colName,
-    int inSize,
-    int outSize,
-    at::ScalarType dType,
-    std::vector<int64_t> inSplitSizes,
-    std::vector<int64_t> outSplitSizes);
+      std::tuple<std::string, std::string> pgName,
+      int rank,
+      std::string&& collName,
+      int64_t inNelems,
+      int64_t outNelems,
+      at::ScalarType dType,
+      std::vector<int64_t> inSplitSizes,
+      std::vector<int64_t> outSplitSizes,
+      int globalRankStart,
+      int globalRankStride,
+      int worldSize,
+      bool isAsynchronizedOp = true);
 
   ~ParamCommsDebugInfo() override = default;
+
+  const std::string getProcessGroupName() const {
+    return std::get<0>(pgName_);
+  }
+
+  const std::string getProcessGroupDesc() const {
+    return std::get<1>(pgName_);
+  }
 
   int getRank() const {
     return rank_;
   }
 
-  const std::string getColumnName() const {
-    return columnName_;
+  int getWorldSize() const {
+    return worldSize_;
   }
 
-  int getInMessageSize() const {
-    return inMessageSize_;
+  int getGlobalRankStart() const {
+    return globalRankStart_;
   }
 
-  int getOutMessageSize() const {
-    return outMessageSize_;
+  int getGlobalRankStride() const {
+    return globalRankStride_;
+  }
+
+  const std::string getCollectiveName() const {
+    return collectiveName_;
+  }
+
+  int64_t getInMessageNelems() const {
+    return inMessageNelems_;
+  }
+
+  int64_t getOutMessageNelems() const {
+    return outMessageNelems_;
   }
 
   at::ScalarType getDType() const {
@@ -55,27 +77,179 @@ class TORCH_API ParamCommsDebugInfo
     return outputSplitSizes_;
   }
 
+  const std::vector<int64_t>& getGroupRanks() const {
+    return groupRanks_;
+  }
+
+  bool isAsynchronizedOp() const {
+    return isAsynchronizedOp_;
+  }
+
+  int64_t getSequenceNumber() const {
+    return sequenceNumber_;
+  }
+
+  bool getIsP2P() const {
+    return isP2P_;
+  }
+
+  void setSequenceInfo(int64_t seqNum, bool isP2P) {
+    sequenceNumber_ = seqNum;
+    isP2P_ = isP2P;
+  }
+
  private:
+  std::tuple<std::string, std::string> pgName_; // <group_name, group_desc>
   int rank_{};
-  std::string columnName_;
-  int inMessageSize_{};
-  int outMessageSize_{};
+  int worldSize_{};
+  std::string collectiveName_;
+  int64_t inMessageNelems_{};
+  int64_t outMessageNelems_{};
   at::ScalarType dType_ = at::kByte;
   std::vector<int64_t> inputSplitSizes_;
   std::vector<int64_t> outputSplitSizes_;
+  int globalRankStart_{};
+  int globalRankStride_{};
+  std::vector<int64_t> groupRanks_;
+  bool isAsynchronizedOp_{};
+  int64_t sequenceNumber_{-1};
+  bool isP2P_{false};
 };
 
+// Helper to set sequence info from tuple-typed seq arguments (NCCL backend).
+// No-op fallback for backends that pass non-tuple seq types (e.g., XPU/XCCL).
+template <typename A, typename B>
+inline void maybeSetSequenceInfo(
+    const std::shared_ptr<ParamCommsDebugInfo>& info,
+    const std::tuple<A, B>& seq) {
+  info->setSequenceInfo(std::get<0>(seq), std::get<1>(seq));
+}
 
-#define RECORD_PARAM_COMMS(rank, colName, inSize, outSize, dType, inSplitSizes, outSplitSizes) \
-  auto paramCommsInfo = std::make_shared<torch::ParamCommsDebugInfo>( \
-    rank, \
-    colName, \
-    inSize, \
-    outSize, \
-    dType, \
-    inSplitSizes, \
-    outSplitSizes); \
+template <typename T>
+inline void maybeSetSequenceInfo(
+    const std::shared_ptr<ParamCommsDebugInfo>&,
+    const T&) {}
+
+#define RECORD_PARAM_COMMS(                                                    \
+    seq,                                                                       \
+    pgName,                                                                    \
+    rank,                                                                      \
+    collName,                                                                  \
+    inNelems,                                                                  \
+    outNelems,                                                                 \
+    dType,                                                                     \
+    inSplitSizes,                                                              \
+    outSplitSizes,                                                             \
+    globalRankStart,                                                           \
+    globalRankStride,                                                          \
+    worldSize)                                                                 \
+  auto paramCommsInfo = std::make_shared<torch::ParamCommsDebugInfo>(          \
+      pgName,                                                                  \
+      rank,                                                                    \
+      collName,                                                                \
+      inNelems,                                                                \
+      outNelems,                                                               \
+      dType,                                                                   \
+      inSplitSizes,                                                            \
+      outSplitSizes,                                                           \
+      globalRankStart,                                                         \
+      globalRankStride,                                                        \
+      worldSize,                                                               \
+      false);                                                                  \
+  torch::maybeSetSequenceInfo(paramCommsInfo, seq);                            \
   c10::DebugInfoGuard g(c10::DebugInfoKind::PARAM_COMMS_INFO, paramCommsInfo); \
-  RECORD_FUNCTION(torch::kParamCommsCallName, std::vector<c10::IValue>());
+  std::initializer_list<const c10::IValue> paramList = {                       \
+      seq,                                                                     \
+      pgName,                                                                  \
+      rank,                                                                    \
+      collName,                                                                \
+      inSplitSizes,                                                            \
+      outSplitSizes,                                                           \
+      globalRankStart,                                                         \
+      globalRankStride,                                                        \
+      worldSize,                                                               \
+      false};                                                                  \
+  c10::ArrayRef<const c10::IValue> paramInputs(paramList);                     \
+  RECORD_FUNCTION(at::kParamCommsCallName, paramInputs);
 
+#define RECORD_PARAM_COMMS_DATA(         \
+    seq,                                 \
+    pgName,                              \
+    InputTensors,                        \
+    OutputTensors,                       \
+    rank,                                \
+    collName,                            \
+    inNelems,                            \
+    outNelems,                           \
+    dType,                               \
+    inSplitSizes,                        \
+    outSplitSizes,                       \
+    globalRankStart,                     \
+    globalRankStride,                    \
+    worldSize)                           \
+  RECORD_PARAM_COMMS_DATA_WITH_ASYNC_OP( \
+      seq,                               \
+      pgName,                            \
+      InputTensors,                      \
+      OutputTensors,                     \
+      rank,                              \
+      collName,                          \
+      inNelems,                          \
+      outNelems,                         \
+      dType,                             \
+      inSplitSizes,                      \
+      outSplitSizes,                     \
+      globalRankStart,                   \
+      globalRankStride,                  \
+      worldSize,                         \
+      true);
+
+#define RECORD_PARAM_COMMS_DATA_WITH_ASYNC_OP(                                 \
+    seq,                                                                       \
+    pgName,                                                                    \
+    InputTensors,                                                              \
+    OutputTensors,                                                             \
+    rank,                                                                      \
+    collName,                                                                  \
+    inNelems,                                                                  \
+    outNelems,                                                                 \
+    dType,                                                                     \
+    inSplitSizes,                                                              \
+    outSplitSizes,                                                             \
+    globalRankStart,                                                           \
+    globalRankStride,                                                          \
+    worldSize,                                                                 \
+    isAsyncOp)                                                                 \
+  auto paramCommsInfo = std::make_shared<torch::ParamCommsDebugInfo>(          \
+      pgName,                                                                  \
+      rank,                                                                    \
+      collName,                                                                \
+      inNelems,                                                                \
+      outNelems,                                                               \
+      dType,                                                                   \
+      inSplitSizes,                                                            \
+      outSplitSizes,                                                           \
+      globalRankStart,                                                         \
+      globalRankStride,                                                        \
+      worldSize,                                                               \
+      isAsyncOp);                                                              \
+  torch::maybeSetSequenceInfo(paramCommsInfo, seq);                            \
+  c10::DebugInfoGuard g(c10::DebugInfoKind::PARAM_COMMS_INFO, paramCommsInfo); \
+  std::initializer_list<const c10::IValue> paramList = {                       \
+      c10::IValue(InputTensors),                                               \
+      seq,                                                                     \
+      pgName,                                                                  \
+      rank,                                                                    \
+      collName,                                                                \
+      inSplitSizes,                                                            \
+      outSplitSizes,                                                           \
+      globalRankStart,                                                         \
+      globalRankStride,                                                        \
+      worldSize,                                                               \
+      isAsyncOp};                                                              \
+  c10::ArrayRef<const c10::IValue> paramInputs(paramList);                     \
+  RECORD_FUNCTION_WITH_INPUTS_OUTPUTS(                                         \
+      at::kParamCommsCallName,                                                 \
+      paramInputs,                                                             \
+      std::vector<c10::IValue>(1, c10::IValue(OutputTensors)));
 } // namespace torch

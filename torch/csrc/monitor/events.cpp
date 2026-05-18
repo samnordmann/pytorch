@@ -2,12 +2,9 @@
 
 #include <algorithm>
 #include <mutex>
-#include <sstream>
-#include <unordered_set>
 #include <vector>
 
-namespace torch {
-namespace monitor {
+namespace torch::monitor {
 
 namespace {
 class EventHandlers {
@@ -35,13 +32,13 @@ class EventHandlers {
   }
 
   static EventHandlers& get() noexcept {
-    static EventHandlers ehs;
+    static auto ehs = EventHandlers();
     return ehs;
   }
 
  private:
-  std::mutex mu_{};
-  std::vector<std::shared_ptr<EventHandler>> handlers_{};
+  std::mutex mu_;
+  std::vector<std::shared_ptr<EventHandler>> handlers_;
 };
 } // namespace
 
@@ -57,5 +54,4 @@ void unregisterEventHandler(const std::shared_ptr<EventHandler>& p) {
   EventHandlers::get().unregisterEventHandler(p);
 }
 
-} // namespace monitor
-} // namespace torch
+} // namespace torch::monitor

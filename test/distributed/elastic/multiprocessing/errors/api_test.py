@@ -14,7 +14,7 @@ from torch.distributed.elastic.multiprocessing.errors import (
     ProcessFailure,
     record,
 )
-from torch.distributed.elastic.multiprocessing.errors.error_handler import _write_error
+from torch.distributed.elastic.multiprocessing.errors.error_handler import ErrorHandler
 
 
 class SentinelError(Exception):
@@ -29,6 +29,13 @@ def raise_exception_fn():
 
 
 @record
+def raise_system_exit_exception_fn(exit_code: int = 1):
+    exp = SystemExit()
+    exp.code = exit_code
+    raise exp
+
+
+@record
 def good_fn():
     print("hello world")
 
@@ -36,18 +43,20 @@ def good_fn():
 @record
 def raise_child_failure_error_fn(name, child_error_file=""):
     if child_error_file:
-        _write_error(SentinelError("foobar"), child_error_file)
+        with mock.patch.dict(os.environ, {"TORCHELASTIC_ERROR_FILE": child_error_file}):
+            ErrorHandler().record_exception(SentinelError("foobar"))
     pf = ProcessFailure(local_rank=0, pid=997, exitcode=1, error_file=child_error_file)
     raise ChildFailedError(name, {0: pf})
 
 
 def read_resource_file(resource_file: str) -> str:
-    with open(os.path.join(os.path.dirname(__file__), resource_file), "r") as fp:
+    with open(os.path.join(os.path.dirname(__file__), resource_file)) as fp:
         return "".join(fp.readlines())
 
 
 class ApiTest(unittest.TestCase):
     def setUp(self):
+        super().setUp()
         self.test_dir = tempfile.mkdtemp(prefix=self.__class__.__name__)
         self.test_error_file = os.path.join(self.test_dir, "error.json")
 
@@ -64,7 +73,10 @@ class ApiTest(unittest.TestCase):
             )
 
     def failure_with_error_file(self, exception):
-        _write_error(exception, self.test_error_file)
+        with mock.patch.dict(
+            os.environ, {"TORCHELASTIC_ERROR_FILE": self.test_error_file}
+        ):
+            ErrorHandler().record_exception(exception)
         return ProcessFailure(
             local_rank=0, pid=997, exitcode=1, error_file=self.test_error_file
         )
@@ -165,11 +177,26 @@ class ApiTest(unittest.TestCase):
             with self.assertRaises(SentinelError):
                 raise_exception_fn()
 
-        with open(self.test_error_file, "r") as fp:
+        with open(self.test_error_file) as fp:
             err = json.load(fp)
             self.assertIsNotNone(err["message"]["message"])
             self.assertIsNotNone(err["message"]["extraInfo"]["py_callstack"])
             self.assertIsNotNone(err["message"]["extraInfo"]["timestamp"])
+
+    def test_record_system_exit(self):
+        with mock.patch.dict(os.environ, {}):
+            raise_system_exit_exception_fn(exit_code=0)
+
+        # no error file should have been generated
+        self.assertFalse(os.path.isfile(self.test_error_file))
+
+    def test_record_system_exit_erronr(self):
+        with mock.patch.dict(os.environ, {}):
+            with self.assertRaises(SystemExit):
+                raise_system_exit_exception_fn()
+
+        # no error file should have been generated
+        self.assertFalse(os.path.isfile(self.test_error_file))
 
     def test_record_no_error_file(self):
         with mock.patch.dict(os.environ, {}):
@@ -199,9 +226,11 @@ class ApiTest(unittest.TestCase):
                 raise_child_failure_error_fn("trainer", trainer_error_file)
             pf = cm.exception.get_first_failure()[1]
             # compare worker error file with reply file and overridden error code
-            expect = json.load(open(pf.error_file, "r"))
+            with open(pf.error_file) as f:
+                expect = json.load(f)
             expect["message"]["errorCode"] = pf.exitcode
-            actual = json.load(open(self.test_error_file, "r"))
+            with open(self.test_error_file) as f:
+                actual = json.load(f)
             self.assertTrue(
                 json.dumps(expect, sort_keys=True),
                 json.dumps(actual, sort_keys=True),
@@ -219,3 +248,10 @@ class ApiTest(unittest.TestCase):
             # it SHOULD re-raise ChildFailedError for any upstream system
             # to handle it.
             self.assertFalse(os.path.isfile(self.test_error_file))
+
+    def test_child_failed_error_signal_name_in_message(self):
+        pf = self.failure_without_error_file(exitcode=-signal.SIGSEGV)
+        ex = ChildFailedError("trainer.par", {0: pf})
+        error_msg = str(ex)
+        self.assertIn("(SIGSEGV)", error_msg)
+        self.assertIn(f"exitcode  : {-signal.SIGSEGV}", error_msg)

@@ -4,9 +4,7 @@
 
 #include <limits>
 
-namespace torch {
-namespace distributed {
-namespace rpc {
+namespace torch::distributed::rpc {
 
 namespace {
 
@@ -17,7 +15,7 @@ c10::ivalue::TupleElements toIValues(const Message& message, MessageType type) {
       type,
       ", but got ",
       message.type());
-  auto payload = static_cast<const char*>(message.payload().data());
+  auto payload = message.payload().data();
   auto payload_size = message.payload().size();
 
   auto value = jit::unpickle(
@@ -89,7 +87,7 @@ std::unique_ptr<ScriptRRefFetchCall> ScriptRRefFetchCall::fromMessage(
           id <= std::numeric_limits<worker_id_t>::max(),
       "ScriptRRefFetchCall fromWorkerId exceeds worker_id_t limit.")
   return std::make_unique<ScriptRRefFetchCall>(
-      worker_id_t(id), RRefId::fromIValue(values[0]));
+      static_cast<worker_id_t>(id), RRefId::fromIValue(values[0]));
 }
 
 c10::intrusive_ptr<Message> PythonRRefFetchCall::toMessageImpl() && {
@@ -111,7 +109,7 @@ std::unique_ptr<PythonRRefFetchCall> PythonRRefFetchCall::fromMessage(
           id <= std::numeric_limits<worker_id_t>::max(),
       "PythonRRefFetchCall fromWorkerId exceeds worker_id_t limit.")
   return std::make_unique<PythonRRefFetchCall>(
-      worker_id_t(id), RRefId::fromIValue(values[0]));
+      static_cast<worker_id_t>(id), RRefId::fromIValue(values[0]));
 }
 
 const std::vector<at::IValue>& RRefFetchRet::values() {
@@ -142,8 +140,7 @@ std::unique_ptr<RRefUserDelete> RRefUserDelete::fromMessage(
     const Message& message) {
   auto pair =
       ForkMessageBase::fromMessage(message, MessageType::RREF_USER_DELETE);
-  return std::make_unique<RRefUserDelete>(
-      RRefUserDelete(pair.first, pair.second));
+  return std::make_unique<RRefUserDelete>(pair.first, pair.second);
 }
 
 std::unique_ptr<RemoteRet> RemoteRet::fromMessage(const Message& message) {
@@ -189,6 +186,4 @@ std::unique_ptr<RRefAck> RRefAck::fromMessage(const Message& message) {
   return std::make_unique<RRefAck>();
 }
 
-} // namespace rpc
-} // namespace distributed
-} // namespace torch
+} // namespace torch::distributed::rpc

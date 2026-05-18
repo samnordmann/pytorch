@@ -1,8 +1,9 @@
+#define TORCH_ASSERT_ONLY_METHOD_OPERATORS
 #define _USE_MATH_DEFINES
 
 #include <math.h>
 
-#include <ATen/ATen.h>
+#include <ATen/core/Tensor.h>
 #include <ATen/DeviceGuard.h>
 #include <ATen/Dispatch.h>
 #include <ATen/native/cuda/ForeachFunctors.cuh>
@@ -12,7 +13,7 @@
 
 
 namespace {
-// Thin wrapper around https://docs.nvidia.com/cuda/cuda-math-api/group__CUDA__MATH__SINGLE.html#group__CUDA__MATH__SINGLE_1g57a3c8313f570282a1a7bcc78743b08e,
+// Thin wrapper around https://docs.nvidia.com/cuda/cuda-math-api/cuda_math_api/group__CUDA__MATH__SINGLE.html,
 // to ensure the Cuda math library's isfinite is actually what gets called in
 // _amp_non_finite_check_and_unscale_cuda_'s gpu_kernel lambda.
 //
@@ -34,8 +35,7 @@ static __host__ __device__ __forceinline__ int isfinite_ensure_cuda_math(float v
 }
 }
 
-namespace at {
-namespace native {
+namespace at::native {
 
 namespace {
 // Single-tensor fallback for _amp_foreach_non_finite_check_and_unscale_cuda_.
@@ -56,8 +56,8 @@ void _amp_non_finite_check_and_unscale_cuda_(Tensor& scaled_grad,
     iter.dtype(),
     "_amp_non_finite_check_and_unscale_cuda",
     [&iter, &found_inf, &inv_scale] {
-      auto* found_inf_ptr = found_inf.data_ptr<float>();
-      auto* inv_scale_ptr = inv_scale.data_ptr<float>();
+      auto* found_inf_ptr = found_inf.mutable_data_ptr<float>();
+      auto* inv_scale_ptr = inv_scale.const_data_ptr<float>();
 
       using opmath_t = at::opmath_type<scalar_t>;
 
@@ -151,8 +151,8 @@ void _amp_foreach_non_finite_check_and_unscale_cuda_(TensorList scaled_grads,
     tensor_lists[0][0].scalar_type(),
     "_amp_foreach_non_finite_check_and_unscale_cuda",
     [&tensor_lists, &found_inf, &inv_scale] {
-      auto* found_inf_ptr = found_inf.data_ptr<float>();
-      auto* inv_scale_ptr = inv_scale.data_ptr<float>();
+      auto* found_inf_ptr = found_inf.mutable_data_ptr<float>();
+      auto* inv_scale_ptr = inv_scale.const_data_ptr<float>();
 
       using opmath_t = at::opmath_type<scalar_t>;
 
@@ -180,7 +180,7 @@ void _amp_foreach_non_finite_check_and_unscale_cuda_(TensorList scaled_grads,
 // The scale factor is maintained and updated on the GPU to avoid synchronization.
 __global__ void amp_update_scale_cuda_kernel(float* current_scale,
                                              int* growth_tracker,
-                                             float* found_inf,
+                                             const float* found_inf,
                                              double growth_factor,
                                              double backoff_factor,
                                              int growth_interval)
@@ -193,7 +193,11 @@ __global__ void amp_update_scale_cuda_kernel(float* current_scale,
     // so growth_tracker is incremented before comparing to growth_interval.
     auto successful = (*growth_tracker) + 1;
     if (successful == growth_interval) {
-      *current_scale = (*current_scale)*growth_factor;
+      auto new_scale = static_cast<float>((*current_scale)*growth_factor);
+      // Do not grow the scale past fp32 bounds to inf.
+      if (isfinite_ensure_cuda_math(new_scale)) {
+          *current_scale = new_scale;
+      }
       *growth_tracker = 0;
     } else {
       *growth_tracker = successful;
@@ -234,9 +238,9 @@ Tensor& _amp_update_scale_cuda_(Tensor& current_scale,
   TORCH_CHECK(found_inf.scalar_type() == at::ScalarType::Float, "found_inf must be a float tensor.");
 
   amp_update_scale_cuda_kernel<<<1, 1, 0, at::cuda::getCurrentCUDAStream()>>>(
-    current_scale.data_ptr<float>(),
-    growth_tracker.data_ptr<int>(),
-    found_inf.data_ptr<float>(),
+    current_scale.mutable_data_ptr<float>(),
+    growth_tracker.mutable_data_ptr<int>(),
+    found_inf.const_data_ptr<float>(),
     growth_factor,
     backoff_factor,
     growth_interval);
@@ -245,4 +249,4 @@ Tensor& _amp_update_scale_cuda_(Tensor& current_scale,
   return current_scale;
 }
 
-}} // namespace at::native
+} // namespace at::native

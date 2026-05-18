@@ -29,15 +29,15 @@ def define_targets(rules):
                 "typeid.h",
             ],
         ),
-        # This library uses flags and registration. Do not let the
-        # linker remove them.
-        alwayslink = True,
         linkstatic = True,
         local_defines = ["C10_BUILD_MAIN_LIB"],
         visibility = ["//visibility:public"],
         deps = [
-            "@fmt",
+            ":bit_cast",
+            "//torch/headeronly:torch_headeronly",
             "//c10/macros",
+            "@fmt",
+            "@moodycamel//:moodycamel",
         ] + rules.select({
             "//c10:using_gflags": ["@com_github_gflags_gflags//:gflags"],
             "//conditions:default": [],
@@ -45,6 +45,30 @@ def define_targets(rules):
             "//c10:using_glog": ["@com_github_glog//:glog"],
             "//conditions:default": [],
         }),
+        linkopts = rules.select({
+            "@bazel_tools//src/conditions:windows": [],
+            "//conditions:default": ["-ldl"],
+        }),
+        # This library uses flags and registration. Do not let the
+        # linker remove them.
+        alwayslink = True,
+    )
+
+    rules.cc_library(
+        name = "bit_cast",
+        hdrs = ["bit_cast.h"],
+        visibility = ["//:__subpackages__"],
+        deps = [
+            "//c10/macros",
+        ],
+    )
+
+    rules.cc_library(
+        name = "ssize",
+        hdrs = ["ssize.h"],
+        linkstatic = True,
+        visibility = ["//:__subpackages__"],
+        deps = [":base"],
     )
 
     rules.cc_library(
@@ -61,12 +85,32 @@ def define_targets(rules):
         ],
     )
 
+    rules.cc_library(
+        name = "base_headers",
+        hdrs = rules.glob(
+            ["*.h"],
+            exclude = [
+                "bit_cast.h",
+                "ssize.h",
+            ],
+        ),
+        deps = [
+            "//torch/headeronly:torch_headeronly",
+        ],
+        visibility = ["//visibility:public"],
+    )
+
     rules.filegroup(
         name = "headers",
         srcs = rules.glob(
             ["*.h"],
             exclude = [
+                "bit_cast.h",
+                "ssize.h",
             ],
         ),
-        visibility = ["//c10:__pkg__"],
+        visibility = [
+            "//:__pkg__",
+            "//c10:__pkg__",
+        ],
     )

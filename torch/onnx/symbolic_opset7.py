@@ -1,47 +1,8 @@
-from torch.onnx.symbolic_helper import _block_list_in_opset
+"""Backward compatibility module for torch.onnx.symbolic_opset7."""
 
-import torch.onnx.symbolic_opset9 as sym_opset9
-
-import warnings
+from __future__ import annotations
 
 
-# Note [ONNX operators that are added/updated from opset 7 to opset 8]
-# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-# New operators:
-#   Expand
-#
-# Updated operators:
-#   Min, Max, Sum, Mean: supports multidirectional broadcasting.
-#   MaxPool: added optional indices output.
-#   Scan
+__all__: list[str] = []
 
-block_listed_operators = [
-    "scan", "expand", "expand_as", "meshgrid",
-    "adaptive_max_pool1d", "adaptive_max_pool2d", "adaptive_max_pool3d",
-    "max_pool1d_with_indices", "max_pool2d_with_indices", "max_pool3d_with_indices"
-]
-
-
-# NOTE: max, min, sum, mean: broadcasting is not supported in opset 7.
-# torch.max (same for torch.min) actually has two interfaces smashed together:
-# torch.max(x, dim, keepdim) and torch.max(x, y)
-def max(g, self, dim_or_y=None, keepdim=None):
-    # torch.max(input, other)
-    if keepdim is None and dim_or_y is not None:
-        warnings.warn("Multidirectional broadcasting is not supported in opset 7. "
-                      "This might cause the onnx model to be incorrect, if inputs to max operators "
-                      "have different shapes")
-    return sym_opset9.max(g, self, dim_or_y, keepdim)
-
-
-def min(g, self, dim_or_y=None, keepdim=None):
-    # torch.min(input, other)
-    if keepdim is None and dim_or_y is not None:
-        warnings.warn("Multidirectional broadcasting is not supported in opset 7. "
-                      "This might cause the onnx model to be incorrect, if inputs to min operators "
-                      "have different shapes")
-    return sym_opset9.min(g, self, dim_or_y, keepdim)
-
-
-for block_listed_op in block_listed_operators:
-    vars()[block_listed_op] = _block_list_in_opset(block_listed_op)
+from torch.onnx._internal.torchscript_exporter.symbolic_opset7 import *  # noqa: F403

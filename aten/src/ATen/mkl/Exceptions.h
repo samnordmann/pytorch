@@ -5,23 +5,18 @@
 #include <sstream>
 #include <mkl_dfti.h>
 #include <mkl_spblas.h>
+#include <c10/util/Exception.h>
 
-namespace at { namespace native {
+namespace at::native {
 
 static inline void MKL_DFTI_CHECK(MKL_INT status)
 {
-  if (status && !DftiErrorClass(status, DFTI_NO_ERROR)) {
-    std::ostringstream ss;
-    ss << "MKL FFT error: " << DftiErrorMessage(status);
-    throw std::runtime_error(ss.str());
-  }
+  TORCH_CHECK(!status || DftiErrorClass(status, DFTI_NO_ERROR), "MKL FFT error: ", DftiErrorMessage(status));
 }
 
-}}  // namespace at::native
+}  // namespace at::native
 
-namespace at {
-namespace mkl {
-namespace sparse {
+namespace at::mkl::sparse {
 static inline const char* _mklGetErrorString(sparse_status_t status) {
   if (status == SPARSE_STATUS_SUCCESS) {
     return "SPARSE_STATUS_SUCCESS";
@@ -46,9 +41,7 @@ static inline const char* _mklGetErrorString(sparse_status_t status) {
   }
   return "<unknown>";
 }
-} // namespace sparse
-} // namespace mkl
-} // namespace at
+} // namespace at::mkl::sparse
 
 #define TORCH_MKLSPARSE_CHECK(EXPR)                 \
   do {                                              \
@@ -58,4 +51,15 @@ static inline const char* _mklGetErrorString(sparse_status_t status) {
         "MKL error: ",                              \
         at::mkl::sparse::_mklGetErrorString(__err), \
         " when calling `" #EXPR "`");               \
+  } while (0)
+
+#define TORCH_MKLSPARSE_CHECK_SUCCESS_OR_INVALID(status, function_name) \
+  do {                                                   \
+    sparse_status_t __status = (status);                 \
+    TORCH_CHECK(                                         \
+        __status == SPARSE_STATUS_SUCCESS ||             \
+            __status == SPARSE_STATUS_INVALID_VALUE,     \
+        "MKL error: ",                                   \
+        at::mkl::sparse::_mklGetErrorString(__status),   \
+        " when calling `" function_name "`");            \
   } while (0)

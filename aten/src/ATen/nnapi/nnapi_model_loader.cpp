@@ -21,8 +21,7 @@
 #define NNAPI_CHECK(res) CAFFE_ENFORCE(res == ANEURALNETWORKS_NO_ERROR, "NNAPI returned error: ", res)
 
 
-namespace caffe2 {
-namespace nnapi {
+namespace caffe2::nnapi {
 
 namespace {
 
@@ -78,7 +77,7 @@ typedef struct _SerializedModel {
  * Get the physically stored size of a value.  All values are padded out
  * to a multiple of 4 bytes to ensure the next value is 4-byte aligned.
  */
-static uint32_t value_physical_size(uint32_t len) {
+uint32_t value_physical_size(uint32_t len) {
   uint32_t phys = len;
   if (len % 4 == 0) {
     return len;
@@ -97,9 +96,9 @@ int load_nnapi_model(
     size_t num_buffers,
     const void** buffer_ptrs,
     int32_t* buffer_sizes,
-    size_t num_memories,
-    ANeuralNetworksMemory** memories,
-    int32_t* memory_sizes,
+    size_t /*num_memories*/,
+    ANeuralNetworksMemory** /*memories*/,
+    int32_t* /*memory_sizes*/,
     int32_t* out_input_count,
     int32_t* out_output_count,
     size_t* out_bytes_consumed) {
@@ -162,8 +161,7 @@ int load_nnapi_model(
     operand.scale = operands[i].scale;
     operand.zeroPoint = operands[i].zero_point;
     operand.dimensionCount = operands[i].dimension_count;
-    // NOLINTNEXTLINE(modernize-use-nullptr)
-    operand.dimensions = operands[i].dimension_count ? (const uint32_t*)next_pointer : NULL;
+    operand.dimensions = operands[i].dimension_count ? (const uint32_t*)next_pointer : nullptr;
 
     next_pointer += 4 * operands[i].dimension_count;
     CAFFE_ENFORCE(next_pointer <= end_of_buf);
@@ -175,10 +173,8 @@ int load_nnapi_model(
   for (const auto i : c10::irange(ser_model->value_count)) {
     uint32_t len = values[i].source_length;
     const uint8_t* stored_pointer = next_pointer;
-    // NOLINTNEXTLINE(modernize-use-nullptr)
-    const void* value_pointer = NULL;
-    // NOLINTNEXTLINE(cppcoreguidelines-init-variables)
-    size_t value_length;
+    const void* value_pointer = nullptr;
+    size_t value_length = 0;
 
     switch ((SourceType)values[i].source_type) {
       case SOURCE_IMMEDIATE:
@@ -207,8 +203,7 @@ int load_nnapi_model(
         CAFFE_ENFORCE(false, "Unknown source type: ", values[i].source_type);
     }
 
-    // NOLINTNEXTLINE(modernize-use-nullptr)
-    CAFFE_ENFORCE(value_pointer != NULL);
+    CAFFE_ENFORCE(value_pointer != nullptr);
 
     next_pointer += value_physical_size(len);
     CAFFE_ENFORCE(next_pointer <= end_of_buf);
@@ -260,12 +255,11 @@ int load_nnapi_model(
   // TODO: Maybe eliminate required_size and just rely on next_pointer for bounds checking.
   CAFFE_ENFORCE(next_pointer <= end_of_buf);
   CAFFE_ENFORCE(next_pointer == (const uint8_t*)serialized_model + required_size);
-  // NOLINTNEXTLINE(modernize-use-nullptr)
-  if (out_bytes_consumed != NULL) {
+  if (out_bytes_consumed != nullptr) {
     *out_bytes_consumed = next_pointer - (const uint8_t*)serialized_model;
   }
 
   return 0;
 }
 
-}} // namespace caffe2::nnapi
+} // namespace caffe2::nnapi

@@ -1,5 +1,7 @@
 #include <gtest/gtest.h>
 
+#include <filesystem>
+
 #include <test/cpp/jit/test_utils.h>
 
 #include <ATen/core/qualified_name.h>
@@ -13,7 +15,7 @@
 namespace torch {
 namespace jit {
 
-static constexpr c10::string_view moduleInterfaceSrc = R"JIT(
+static constexpr std::string_view moduleInterfaceSrc = R"JIT(
 class OneInterface(ModuleInterface):
     def one(self, x: Tensor, y: Tensor) -> Tensor:
         pass
@@ -53,10 +55,15 @@ TEST(ModuleAPITest, MethodRunAsync) {
   //     r2 = torch.jit.fork(torch.mm, torch.rand(100,100),torch.rand(100,100))
   //     return r1.wait() + r2.wait()
   // )");
-  std::string filePath(__FILE__);
-  auto testModelFile = filePath.substr(0, filePath.find_last_of("/\\") + 1);
-  // borrow model file from TEST(GraphExecutorTest, runAsync_executor)
-  testModelFile.append("test_interpreter_async.pt");
+  auto testModelFile = []() -> std::string {
+    std::string dir(__FILE__);
+    dir = dir.substr(0, dir.find_last_of("/\\") + 1);
+    auto candidate = dir + "test_interpreter_async.pt";
+    if (std::filesystem::exists(candidate))
+      return candidate;
+    auto exeDir = std::filesystem::read_symlink("/proc/self/exe").parent_path();
+    return (exeDir / "test_interpreter_async.pt").string();
+  }();
   auto m = load(testModelFile);
 
   auto counter = 0;
@@ -66,7 +73,7 @@ TEST(ModuleAPITest, MethodRunAsync) {
     mtx.lock();
     ++counter;
     mtx.unlock();
-    at::launch(move(f));
+    at::launch(std::move(f));
   };
 
   auto method = m.get_method("forward");
@@ -77,7 +84,7 @@ TEST(ModuleAPITest, MethodRunAsync) {
 
   future->wait();
 
-  // expect 2 forks and 2 wait callbacks being excuted on provided taskLauncher
+  // expect 2 forks and 2 wait callbacks being executed on provided taskLauncher
   // but ivalue::Future would be marked completed and release wait before
   // finishing all callbacks
   ASSERT_GE(counter, 2);
@@ -254,10 +261,10 @@ TEST(ModuleAPITest, DeepCopyString) {
   m.setattr(attr1, str);
   auto copied = m.deepcopy();
   auto original_str = str;
-  ASSERT_EQ(copied.attr(attr1).toString()->string(), original_str);
+  ASSERT_EQ(copied.attr(attr1).toStringRef(), original_str);
   // check string mutation is not reflected in the copied module
   str += "str";
-  ASSERT_EQ(copied.attr(attr1).toString()->string(), original_str);
+  ASSERT_EQ(copied.attr(attr1).toStringRef(), original_str);
 }
 
 TEST(ModuleAPITest, DeepCopyEnum) {
@@ -424,6 +431,23 @@ TEST(ModuleAPITest, OfiFreezesTraining) {
   auto frozen_mod = torch::jit::optimize_for_inference(m);
   forward_g = frozen_mod.get_method("forward").graph();
   testing::FileCheck().check_not("GetAttr")->run(*forward_g);
+}
+
+TEST(ModuleAPITest, OfiFreezesNoForward) {
+  Module m("m");
+  m.register_parameter("foo", torch::ones({}), false);
+  m.define(R"(
+    def bar(self, x, b : int = 4):
+      return self.foo + x + b
+  )");
+  m.eval();
+
+  // OFI is called without the presence of forward methods
+  auto frozen_mod =
+      torch::jit::optimize_for_inference(m, std::vector<std::string>{"bar"});
+  ASSERT_EQ(
+      m.run_method("bar", torch::ones({})).toTensor().item<float>(),
+      frozen_mod.run_method("bar", torch::ones({})).toTensor().item<float>());
 }
 
 TEST(ModuleAPITest, To_CUDA) {

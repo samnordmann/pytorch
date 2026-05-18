@@ -2,6 +2,7 @@
 
 #include <iostream>
 #include <random>
+#include <c10/core/SymInt.h>
 // define constants like M_PI and C keywords for MSVC
 #ifdef _MSC_VER
 #ifndef _USE_MATH_DEFINES
@@ -12,17 +13,27 @@
 #include <ATen/ATen.h>
 #include <ATen/Dispatch.h>
 
+// We intentionally test self assignment/move in this file, suppress warnings
+// on them
+#ifndef _MSC_VER
+#pragma GCC diagnostic ignored "-Wpragmas"
+#pragma GCC diagnostic ignored "-Wunknown-warning-option"
+#pragma GCC diagnostic ignored "-Wself-move"
+#endif
+
+#ifdef __clang__
+#pragma clang diagnostic ignored "-Wself-assign-overloaded"
+#endif
+
 using std::cout;
 using namespace at;
 
-constexpr auto Float = ScalarType::Float;
-
 template<typename scalar_type>
 struct Foo {
-  static void apply(Tensor a, Tensor b) {
+  static void apply(Tensor a, [[maybe_unused]] Tensor b) {
     scalar_type s = 1;
     std::stringstream ss;
-    ss << "hello, dispatch: " << a.toString() << s << "\n";
+    ss << "hello, dispatch: " << a.toString() << s << '\n';
     auto data = (scalar_type*)a.data_ptr();
     (void)data;
   }
@@ -62,8 +73,8 @@ TEST(TestScalar, TestScalar) {
   Scalar bar = 3.0;
   Half h = bar.toHalf();
   Scalar h2 = h;
-  cout << "H2: " << h2.toDouble() << " " << what.toFloat() << " "
-       << bar.toDouble() << " " << what.isIntegral(false) << "\n";
+  cout << "H2: " << h2.toDouble() << ' ' << what.toFloat() << ' '
+       << bar.toDouble() << ' ' << what.isIntegral(false) << '\n';
   auto gen = at::detail::getDefaultCPUGenerator();
   {
     // See Note [Acquire lock when using random generators]
@@ -71,10 +82,9 @@ TEST(TestScalar, TestScalar) {
     // NOLINTNEXTLINE(cppcoreguidelines-avoid-goto,hicpp-avoid-goto)
     ASSERT_NO_THROW(gen.set_current_seed(std::random_device()()));
   }
-  auto&& C = at::globalContext();
   if (at::hasCUDA()) {
     auto t2 = zeros({4, 4}, at::kCUDA);
-    cout << &t2 << "\n";
+    cout << &t2 << '\n';
   }
   auto t = ones({4, 4});
 
@@ -119,7 +129,7 @@ TEST(TestScalar, TestScalar) {
       std::stringstream ss;
       // NOLINTNEXTLINE(cppcoreguidelines-avoid-goto,hicpp-avoid-goto)
       ASSERT_NO_THROW(
-          ss << "hello, dispatch" << x.toString() << s << "\n");
+          ss << "hello, dispatch" << x.toString() << s << '\n');
       auto data = (scalar_t*)x.data_ptr();
       (void)data;
     });
@@ -179,4 +189,5 @@ TEST(TestScalar, TestFormatting) {
   ASSERT_EQ("false", format(Scalar(false)));
   ASSERT_EQ("(2,3.1)", format(Scalar(c10::complex<double>(2.0, 3.1))));
   ASSERT_EQ("(2,3.1)", format(Scalar(c10::complex<float>(2.0, 3.1))));
+  ASSERT_EQ("4", format(Scalar(Scalar(4).toSymInt())));
 }

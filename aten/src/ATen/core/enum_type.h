@@ -2,6 +2,8 @@
 
 #include <ATen/core/ivalue.h>
 
+#include <utility>
+
 namespace c10 {
 
 struct EnumType;
@@ -16,6 +18,7 @@ struct TORCH_API EnumType : public NamedType {
       TypePtr value,
       std::vector<EnumNameValue> enum_names_values,
       std::weak_ptr<::torch::jit::CompilationUnit> cu) {
+    C10_DIAGNOSTIC_PUSH_AND_IGNORED_IF_DEFINED("-Wswitch-enum")
     switch (value->kind()) {
       case TypeKind::IntType:
       case TypeKind::FloatType:
@@ -26,11 +29,13 @@ struct TORCH_API EnumType : public NamedType {
             std::move(enum_names_values),
             std::move(cu)));
       default:
-        AT_ERROR(
+        TORCH_CHECK(
+            false,
             "Cannot create Enum with value type '",
             value->str(),
             "', only int, float and string are supported");
     }
+    C10_DIAGNOSTIC_POP()
   }
 
   std::string str() const override {
@@ -47,7 +52,7 @@ struct TORCH_API EnumType : public NamedType {
 
   bool equals(const Type& rhs) const override {
     if (auto* enum_rhs = rhs.castRaw<EnumType>()) {
-      return name().value() == enum_rhs->name().value() &&
+      return name().has_value() && name() == enum_rhs->name() &&
           *getValueType() == *(enum_rhs->getValueType()) &&
           this->compilation_unit() == enum_rhs->compilation_unit();
     }
@@ -62,7 +67,8 @@ struct TORCH_API EnumType : public NamedType {
     return cu;
   }
 
-  const QualifiedName qualifiedClassName() const {
+  const QualifiedName& qualifiedClassName() const {
+    // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
     return name().value();
   }
 
@@ -83,12 +89,11 @@ struct TORCH_API EnumType : public NamedType {
       : NamedType(TypeKind::EnumType, std::move(qualified_class_name)),
         value_type_(std::move(value_type)),
         enum_names_values_(std::move(enum_names_values)),
-        cu_(cu) {}
+        cu_(std::move(cu)) {}
 
   std::string annotation_str_impl(
-      TypePrinter printer = nullptr) const override {
-    const auto& n = name().value();
-    return n.qualifiedName();
+      [[maybe_unused]] const TypePrinter& printer = nullptr) const override {
+    return qualifiedClassName().qualifiedName();
   }
 
   TypePtr value_type_;

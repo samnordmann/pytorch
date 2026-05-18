@@ -1,22 +1,19 @@
 #pragma once
 
 #include <ATen/ATen.h>
+#include <ATen/Utils.h>
 #include <torch/csrc/jit/codegen/fuser/partition_desc.h>
 #include <torch/csrc/jit/codegen/fuser/tensor_desc.h>
-#include <torch/csrc/utils/disallow_copy.h>
 
 #include <cstdint>
 #include <string>
 #include <vector>
 
-namespace torch {
-namespace jit {
-namespace fuser {
+namespace torch::jit::fuser {
 
 struct FusedKernel {
-  TH_DISALLOW_COPY_AND_ASSIGN(FusedKernel);
+  AT_DISALLOW_COPY_AND_ASSIGN(FusedKernel);
 
-  // NOLINTNEXTLINE(cppcoreguidelines-pro-type-member-init)
   FusedKernel(
       std::string name,
       std::string code,
@@ -43,7 +40,7 @@ struct FusedKernel {
   // CUDA code), and the remainder are pointers to the TensorInfo<T> structs
   // that compiled code uses to load Tensor data.
   // launch_with_tensors handles packing at::Tensors into this arguments array.
-  // CPU code uses the same convension so that launch_with_tensors can be
+  // CPU code uses the same convention so that launch_with_tensors can be
   // shared.
   virtual void launch_raw(const uint32_t numel, std::vector<void*>& arguments)
       const = 0;
@@ -98,6 +95,4 @@ struct FusedKernel {
   const bool has_random_;
 };
 
-} // namespace fuser
-} // namespace jit
-} // namespace torch
+} // namespace torch::jit::fuser

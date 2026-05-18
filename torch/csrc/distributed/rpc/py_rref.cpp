@@ -9,16 +9,14 @@
 #include <torch/csrc/jit/python/module_python.h>
 #include <torch/csrc/jit/python/pybind_utils.h>
 
-namespace torch {
-namespace distributed {
-namespace rpc {
+namespace torch::distributed::rpc {
 
 /////////////////////  Pickle/Unpickle Helplers ////////////////////////////
 
 namespace {
 
 py::tuple toPyTuple(const RRefForkData& rrefForkData) {
-  // add GIL as it is contructing a py::object
+  // add GIL as it is constructing a py::object
   pybind11::gil_scoped_acquire ag;
   return py::make_tuple(
       rrefForkData.ownerId_,
@@ -56,7 +54,7 @@ RRefForkData fromPyTuple(const py::tuple& pyTuple) {
 TypePtr tryInferTypeWithTypeHint(
     const py::object& value,
     const py::object& type_hint) {
-  // If the py::object to be contained by the RRef is a ScripModule, we enforce
+  // If the py::object to be contained by the RRef is a ScriptModule, we enforce
   // users to specify its ModuleInterface type.
   if (auto module = jit::as_module(value)) {
     TORCH_CHECK(
@@ -88,12 +86,14 @@ TypePtr tryInferTypeWithTypeHint(
   // Check if value is an instance of a ScriptClass. If not, skip type inference
   // because it will try to script the class that value is in instance of, and
   // this should be avoided.
-  py::bool_ can_compile = py::module::import("torch._jit_internal")
-                              .attr("can_compile_class")(value.get_type());
+  py::bool_ can_compile =
+      py::module::import("torch._jit_internal")
+          .attr("can_compile_class")(py::type::handle_of(value));
 
   if (py::cast<bool>(can_compile)) {
-    py::object existing_ty = py::module::import("torch.jit._state")
-                                 .attr("_get_script_class")(value.get_type());
+    py::object existing_ty =
+        py::module::import("torch.jit._state")
+            .attr("_get_script_class")(py::type::handle_of(value));
 
     if (existing_ty.is_none()) {
       return PyObjectType::get();
@@ -101,7 +101,7 @@ TypePtr tryInferTypeWithTypeHint(
   }
 
   // NB: `jit::tryToInferType(..)` infers types including ScriptClass, but
-  // excluding ScripModule.
+  // excluding ScriptModule.
   jit::InferredType type_inferred = jit::tryToInferType(value);
   if (type_inferred.success()) {
     // If we could infer the type from the pyobject, we create
@@ -119,7 +119,7 @@ TypePtr tryInferTypeWithTypeHint(
 ///////////////////////////  PyRRef  //////////////////////////////////
 
 PyRRef::PyRRef(c10::intrusive_ptr<RRef> rref)
-    : rref_(std::move(rref)), profilingFuture_(c10::nullopt) {
+    : rref_(std::move(rref)), profilingFuture_(std::nullopt) {
   TORCH_CHECK(rref_, "PyRRef must not wrap nullptr");
   C10_LOG_API_USAGE_ONCE("torch.distributed.rref");
 }
@@ -139,8 +139,10 @@ PyRRef::PyRRef(const py::object& value, const py::object& type_hint)
         return rref;
       }()) {}
 
+// NOLINTNEXTLINE(bugprone-exception-escape)
 PyRRef::~PyRRef() {
   if (type_.has_value()) {
+    pybind11::gil_scoped_acquire ag;
     (*type_).dec_ref();
     // explicitly setting PyObject* to nullptr to prevent py::object's dtor to
     // decref on the PyObject again.
@@ -319,7 +321,7 @@ void PyRRef::backwardOwnerRRef(
     py::object obj = torch::jit::toPyObject(value);
     try {
       value = torch::jit::toIValue(obj, c10::TensorType::get());
-    } catch (py::cast_error& e) {
+    } catch (py::cast_error&) {
       TORCH_CHECK(false, "RRef should contain a tensor for .backward()");
     }
   }
@@ -362,6 +364,4 @@ void PyRRef::backward(
   }
 }
 
-} // namespace rpc
-} // namespace distributed
-} // namespace torch
+} // namespace torch::distributed::rpc

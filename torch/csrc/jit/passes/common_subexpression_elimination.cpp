@@ -5,10 +5,7 @@
 #include <torch/csrc/jit/ir/node_hashing.h>
 #include <torch/csrc/jit/jit_log.h>
 
-#include <unordered_map>
-
-namespace torch {
-namespace jit {
+namespace torch::jit {
 namespace {
 
 struct CommonSubexpressionEliminator {
@@ -126,5 +123,4 @@ bool EliminateCommonSubexpression(const std::shared_ptr<Graph>& graph) {
   CommonSubexpressionEliminator cse(graph);
   return cse.run([](Node*) { return nullptr; });
 }
-} // namespace jit
-} // namespace torch
+} // namespace torch::jit

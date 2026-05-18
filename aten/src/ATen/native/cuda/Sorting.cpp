@@ -1,15 +1,32 @@
+#define TORCH_ASSERT_ONLY_METHOD_OPERATORS
 #include <ATen/native/cuda/Sorting.h>
-#include <ATen/NativeFunctions.h>
-#include <ATen/NamedTensorUtils.h>
+#include <ATen/core/Tensor.h>
+#include <ATen/core/NamedTensor.h>
+#include <ATen/Context.h>
+#include <ATen/TensorUtils.h>
 #include <ATen/MemoryOverlap.h>
+#include <ATen/WrapDimUtils.h>
 #include <ATen/cuda/CUDAContext.h>
 #include <ATen/cuda/detail/TensorInfo.cuh>
+
 #include <ATen/native/SortingUtils.h>
 #include <ATen/native/ReduceOpsUtils.h>
 
+#ifndef AT_PER_OPERATOR_HEADERS
+#include <ATen/Functions.h>
+#include <ATen/NativeFunctions.h>
+#else
+#include <ATen/ops/full.h>
+#include <ATen/ops/kthvalue_native.h>
+#include <ATen/ops/median_native.h>
+#include <ATen/ops/nanmedian_native.h>
+#include <ATen/ops/where.h>
+#include <ATen/ops/rsub.h>
+#include <ATen/ops/div.h>
+#include <ATen/ops/index.h>
+#endif
 
-namespace at {
-namespace native {
+namespace at::native {
 namespace {
 
 std::tuple<Tensor&, Tensor&> kthvalue_out_impl_cuda(
@@ -25,6 +42,12 @@ std::tuple<Tensor&, Tensor&> kthvalue_out_impl_cuda(
 
   TORCH_CHECK(k >= 1 && k <= slicesize,
               "kthvalue(): selected number k out of range for dimension ", dim);
+
+  TORCH_CHECK(
+      slicesize <= std::numeric_limits<int32_t>::max(),
+      "kthvalue(): dimension ", dim, " is too large (", slicesize,
+      "). The current CUDA implementation supports dimension sizes up to ",
+      std::numeric_limits<int32_t>::max());
 
   at::assert_no_overlap(self, values);
 
@@ -132,8 +155,8 @@ Tensor median_impl(const Tensor& self, bool ignore_nan) {
     return at::where(sorted[-1].isnan(), sorted[-1], sorted[k]);
   } else {
     // For torch.nanmedian return the middle element among the non-nan values
-    int64_t k = ((size - 1) - sorted.isnan().sum().item<int64_t>()) / 2;
-    return sorted[k].clone();  // Clone so we aren't keeping `sorted` alive
+    Tensor k = at::div(at::rsub(sorted.isnan().sum(), (size - 1)), 2).to(kLong);
+    return at::index(sorted, {k});
   }
 }
 
@@ -146,10 +169,6 @@ std::tuple<Tensor&, Tensor&> kthvalue_out_cuda(
     bool keepdim,
     Tensor& values,
     Tensor& indices) {
-  // See note [Writing Nondeterministic Operations]
-  // If there are duplicate elements of the kth value, the procedure for choosing which
-  // of the duplicates to use for the indices output is nondeterministic.
-  at::globalContext().alertNotDeterministic("kthvalue CUDA");
   auto result = [&]() {
     NoNamesGuard guard;
     // `kthvalue_out_impl_cuda` expects contiguous in input `self`.
@@ -190,5 +209,4 @@ Tensor nanmedian_cuda(const Tensor& self) {
   return median_impl(self, /*ignore_nan=*/true);
 }
 
-} // namespace native
-} // namespace at
+} // namespace at::native

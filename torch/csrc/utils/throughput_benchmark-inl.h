@@ -7,12 +7,13 @@
 #include <torch/csrc/jit/python/pybind_utils.h>
 #include <torch/csrc/utils/pybind.h>
 
-#include <aten/src/ATen/Parallel.h>
+#include <ATen/Parallel.h>
+#include <ATen/autocast_mode.h>
+#include <c10/core/GradMode.h>
+#include <c10/core/impl/LocalDispatchKeySet.h>
 #include <c10/util/irange.h>
 
-namespace torch {
-namespace throughput_benchmark {
-namespace detail {
+namespace torch::throughput_benchmark::detail {
 
 template <class Input, class Output, class Model>
 BenchmarkExecutionStats BenchmarkHelper<Input, Output, Model>::benchmark(
@@ -41,7 +42,8 @@ BenchmarkExecutionStats BenchmarkHelper<Input, Output, Model>::benchmark(
     for (const auto thread_id : c10::irange(config.num_calling_threads)) {
       // Just in case we generate num_iters inputs for each of the threads
       // This was if one thread does all the work we will be fine
-      for (int i = 0; i < config.num_iters + config.num_warmup_iters; ++i) {
+      for (const auto i [[maybe_unused]] :
+           c10::irange(config.num_iters + config.num_warmup_iters)) {
         thread_inputs[thread_id].push_back(cloneInput(inputs_[dist(engine)]));
       }
       input_iters[thread_id] = 0;
@@ -59,10 +61,31 @@ BenchmarkExecutionStats BenchmarkHelper<Input, Output, Model>::benchmark(
   std::vector<std::thread> callers;
 
   callers.reserve(config.num_calling_threads);
+
+  static constexpr auto& DEVICES = at::autocast::_AUTOCAST_SUPPORTED_DEVICES;
+  std::array<bool, DEVICES.size()> autocast_enabled;
+  std::array<at::ScalarType, DEVICES.size()> autocast_dtype;
+  for (size_t i = 0; i < DEVICES.size(); i++) {
+    autocast_enabled[i] = at::autocast::is_autocast_enabled(DEVICES[i]);
+    autocast_dtype[i] = at::autocast::get_autocast_dtype(DEVICES[i]);
+  }
+  bool autocast_cache_enabled = at::autocast::is_autocast_cache_enabled();
+  bool tls_grad_enabled = c10::GradMode::is_enabled();
+  c10::impl::LocalDispatchKeySet tls_key_set =
+      c10::impl::tls_local_dispatch_key_set();
+
   for (const auto thread_id : c10::irange(config.num_calling_threads)) {
     callers.emplace_back([&, thread_id]() {
       // We use conditional variable as a barrier to make sure each thread
       // performs required warmeup iterations before we start measuring
+      c10::GradMode::set_enabled(tls_grad_enabled);
+      c10::impl::_force_tls_local_dispatch_key_set(tls_key_set);
+      for (size_t i = 0; i < DEVICES.size(); i++) {
+        at::autocast::set_autocast_enabled(DEVICES[i], autocast_enabled[i]);
+        at::autocast::set_autocast_dtype(DEVICES[i], autocast_dtype[i]);
+      }
+      at::autocast::set_autocast_cache_enabled(autocast_cache_enabled);
+
       for (const auto j : c10::irange(config.num_warmup_iters)) {
         (void)j;
         runOnce(std::move(thread_inputs[thread_id][input_iters[thread_id]]));
@@ -90,7 +113,6 @@ BenchmarkExecutionStats BenchmarkHelper<Input, Output, Model>::benchmark(
         LOG(INFO) << "Shutting down forward thread " << thread_id
                   << ". Total number of finished threads: " << finished;
       }
-
     });
   }
 
@@ -108,7 +130,8 @@ BenchmarkExecutionStats BenchmarkHelper<Input, Output, Model>::benchmark(
     if (!config.profiler_output_path.empty()) {
       LOG(INFO) << "Using Autograd profiler. Trace will be saved to "
                 << config.profiler_output_path;
-      profiler_guard = std::make_unique<RecordProfile>(config.profiler_output_path);
+      profiler_guard =
+          std::make_unique<RecordProfile>(config.profiler_output_path);
     }
     LOG(INFO) << "Starting threads";
     start = true;
@@ -145,6 +168,4 @@ BenchmarkExecutionStats BenchmarkHelper<Input, Output, Model>::benchmark(
   return stats;
 }
 
-} // namespace detail
-} // namespace throughput_benchmark
-} // namespace torch
+} // namespace torch::throughput_benchmark::detail

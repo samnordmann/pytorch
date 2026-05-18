@@ -1,8 +1,7 @@
 #include <caffe2/utils/threadpool/pthreadpool-cpp.h>
 #include <caffe2/utils/threadpool/thread_pool_guard.h>
+#include <caffe2/utils/threadpool/ThreadPool.h>
 #include <c10/util/Exception.h>
-
-#include <atomic>
 
 namespace {
 // After fork, the child process inherits the data-structures of the parent
@@ -30,6 +29,11 @@ size_t PThreadPool::get_thread_count() const {
 }
 
 void PThreadPool::set_thread_count(const size_t thread_count) {
+  // No need to do anything if the count is same
+  if (thread_count == get_thread_count()) {
+    return;
+  }
+
   std::lock_guard<std::mutex> lock{mutex_};
 
   // As it stands, pthreadpool is an entirely data parallel framework with no
@@ -77,13 +81,10 @@ void PThreadPool::run(
       0u);
 }
 
-// Forward declaration
-size_t getDefaultNumThreads();
-
-PThreadPool* pthreadpool() {
+PThreadPool* pthreadpool(size_t thread_count) {
   static auto threadpool =
-    std::make_unique<PThreadPool>(getDefaultNumThreads());
-#if !(defined(WIN32)) && !(defined(__XROS__))
+    std::make_unique<PThreadPool>(thread_count);
+#if !(defined(WIN32))
   static std::once_flag flag;
   std::call_once(flag, []() {
     pthread_atfork(nullptr, nullptr, child_atfork);
@@ -98,6 +99,10 @@ PThreadPool* pthreadpool() {
     }
   }
   return threadpool.get();
+}
+
+PThreadPool* pthreadpool() {
+  return pthreadpool(getDefaultNumThreads());
 }
 
 pthreadpool_t pthreadpool_() {

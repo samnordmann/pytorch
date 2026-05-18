@@ -1,7 +1,7 @@
 #include <torch/csrc/jit/passes/remove_inplace_ops.h>
+#include <iostream>
 
-namespace torch {
-namespace jit {
+namespace torch::jit {
 namespace {
 static const std::unordered_map<NodeKind, NodeKind> inPlaceToOutOfPlace = {
     {aten::add_, aten::add},
@@ -117,16 +117,16 @@ void ImplicitCastForBinaryInplaceOps(Block* b) {
       if ((shape_node->kind() == prim::NumToTensor) &&
           (shape_node->inputs().at(0)->node()->kind() == aten::size)) {
         std::cerr
-            << "In-place op on output of tensor.shape. See https://pytorch.org/docs/master/onnx.html#"
+            << "In-place op on output of tensor.shape. See https://pytorch.org/docs/main/onnx.html#"
             << "avoid-inplace-operations-when-using-tensor-shape-in-tracing-mode"
-            << std::endl;
+            << '\n';
       }
 
       TensorTypePtr firstInp_tensor =
           originalInputs.at(0)->type()->cast<TensorType>();
       TensorTypePtr secondInp_tensor =
           originalInputs.at(1)->type()->cast<TensorType>();
-      if (!(firstInp_tensor) || !(secondInp_tensor) ||
+      if (!firstInp_tensor || !secondInp_tensor ||
           !(firstInp_tensor->scalarType().has_value())) {
         continue;
       }
@@ -143,5 +143,4 @@ void RemoveInplaceOps(const std::shared_ptr<Graph>& graph) {
   ImplicitCastForBinaryInplaceOps(graph->block());
   RemoveInplaceOps(graph->block());
 }
-} // namespace jit
-} // namespace torch
+} // namespace torch::jit

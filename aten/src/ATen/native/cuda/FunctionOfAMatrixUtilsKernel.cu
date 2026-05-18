@@ -1,11 +1,13 @@
+#define TORCH_ASSERT_NO_OPERATORS
 #include <ATen/native/FunctionOfAMatrixUtils.h>
 
+#include <ATen/Dispatch.h>
 #include <ATen/native/cuda/Loops.cuh>
 #include <ATen/cuda/detail/OffsetCalculator.cuh>
 #include <ATen/cuda/Atomic.cuh>
 #include <ATen/cuda/CUDAContext.h>
 
-namespace at { namespace native {
+namespace at::native {
 
 namespace {
 
@@ -107,6 +109,6 @@ void _compute_linear_combination_cuda_kernel(
 
 }
 
-REGISTER_DISPATCH(_compute_linear_combination_stub, &_compute_linear_combination_cuda_kernel);
+REGISTER_DISPATCH(_compute_linear_combination_stub, &_compute_linear_combination_cuda_kernel)
 
-}} // namespace at::native
+} // namespace at::native

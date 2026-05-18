@@ -6,15 +6,35 @@
 #include <ATen/native/TensorIterator.h>
 #include <c10/util/TypeSafeSignMath.h>
 
+#include <limits>
 #include <type_traits>
 
 // NOTE: CUDA on Windows requires that the enclosing function
 // of a __device__ lambda not have internal linkage.
 
-namespace at { namespace native {
+namespace at::native {
 
 void remainder_kernel_cuda(TensorIteratorBase& iter) {
   if (isIntegralType(iter.common_dtype(), /*includeBool*/ false)) {
+#ifndef USE_ROCM
+    // Guard uint8 div-by-zero: NVIDIA hardware returns all-1s (255) for
+    // integer mod by zero, while ROCm returns the dividend unchanged, so
+    // we only need this explicit guard on the CUDA path.
+    AT_DISPATCH_INTEGRAL_TYPES(iter.common_dtype(), "remainder_cuda", [&]() {
+      gpu_kernel_with_scalars(iter, []GPU_LAMBDA(scalar_t a, scalar_t b) -> scalar_t {
+        if constexpr (std::is_same_v<scalar_t, uint8_t>) {
+          if (b == 0) {
+            return std::numeric_limits<uint8_t>::max();
+          }
+        }
+        scalar_t r = a % b;
+        if (r != 0 && c10::signs_differ(r, b)) {
+          r += b;
+        }
+        return r;
+      });
+    });
+#else
     AT_DISPATCH_INTEGRAL_TYPES(iter.common_dtype(), "remainder_cuda", [&]() {
       gpu_kernel_with_scalars(iter, []GPU_LAMBDA(scalar_t a, scalar_t b) -> scalar_t {
         scalar_t r = a % b;
@@ -24,6 +44,7 @@ void remainder_kernel_cuda(TensorIteratorBase& iter) {
         return r;
       });
     });
+#endif
   } else {
     AT_DISPATCH_FLOATING_TYPES_AND2(kHalf, kBFloat16, iter.common_dtype(), "remainder_cuda", [&]() {
       gpu_kernel_with_scalars(iter,
@@ -46,7 +67,7 @@ void fmod_kernel_cuda(TensorIteratorBase& iter) {
       });
     });
   } else {
-    AT_DISPATCH_FLOATING_TYPES_AND(kHalf, iter.common_dtype(), "fmod_cuda", [&]() {
+    AT_DISPATCH_FLOATING_TYPES_AND2(kHalf, kBFloat16, iter.common_dtype(), "fmod_cuda", [&]() {
       gpu_kernel_with_scalars(iter,
         []GPU_LAMBDA(scalar_t a, scalar_t b) __ubsan_ignore_float_divide_by_zero__ -> scalar_t {
           return ::fmod(a, b);
@@ -55,7 +76,7 @@ void fmod_kernel_cuda(TensorIteratorBase& iter) {
   }
 }
 
-REGISTER_DISPATCH(remainder_stub, &remainder_kernel_cuda);
-REGISTER_DISPATCH(fmod_stub, &fmod_kernel_cuda);
+REGISTER_DISPATCH(remainder_stub, &remainder_kernel_cuda)
+REGISTER_DISPATCH(fmod_stub, &fmod_kernel_cuda)
 
-}} // namespace at::native
+} // namespace at::native

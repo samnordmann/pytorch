@@ -1,3 +1,5 @@
+# mypy: ignore-errors
+
 # Torch
 import torch
 import torch.cuda
@@ -14,7 +16,6 @@ from torch.testing._internal.common_utils import enable_profiling_mode  # noqa: 
 
 # Standard library
 from itertools import chain
-from typing import List, Union
 from torch._C import TensorType
 
 import io
@@ -51,7 +52,7 @@ def check_against_reference(self, func, reference_func, output_func, args, kwarg
     def allSum(vs):
         if isinstance(vs, torch.Tensor):
             vs = (vs,)
-        return sum((i + 1) * v.sum()
+        return sum((i + 1) * v.sum().abs() if v.dtype.is_complex else (i + 1) * v.sum()
                    for i, v in enumerate(vs)
                    if v is not None and v.dtype in floating_and_complex_types_and(torch.half, torch.bfloat16))
 
@@ -60,7 +61,7 @@ def check_against_reference(self, func, reference_func, output_func, args, kwarg
         return t.detach().clone().requires_grad_(require_grad)
 
     def clone_inputs(preserve_requires_grad: bool):
-        inputs: List[Union[torch.Tensor, List[torch.Tensor]]] = []
+        inputs: list[torch.Tensor | list[torch.Tensor]] = []
 
         for arg in args:
             if isinstance(arg, torch.Tensor):
@@ -74,7 +75,7 @@ def check_against_reference(self, func, reference_func, output_func, args, kwarg
 
     # Returns tensors in args that requires_grad, including tensors in TensorList args
     def get_recording_tensors(args):
-        recording_tensors: List[torch.Tensor] = []
+        recording_tensors: list[torch.Tensor] = []
 
         for arg in args:
             if isinstance(arg, torch.Tensor) and arg.requires_grad:
@@ -133,7 +134,7 @@ def check_against_reference(self, func, reference_func, output_func, args, kwarg
 
         self.assertEqual(outputs, outputs_test)
         self.assertEqual(grads, grads_test)
-        for g2, g2_test in zip(grads2, grads2_test):
+        for g2, g2_test in zip(grads2, grads2_test, strict=True):
             if g2 is None and g2_test is None:
                 continue
             self.assertEqual(g2, g2_test, atol=5e-4, rtol=1e-4)
@@ -272,16 +273,17 @@ class JitCommonTestCase(TestCase):
                 fusion_nodes_not_found.append(node)
         found_all_fusible_nodes = len(fusion_nodes_found) == len(fusible_nodes)
 
-        err_msg = self.autoDiffErrorMessage(should_autodiff_node,
-                                            nodes_not_in_diff_graph,
-                                            fusion_nodes_not_found,
-                                            non_fusible_nodes_being_fused,
-                                            fusion_nodes_found,
-                                            nodes_in_diff_graph)
-        self.assertEqual(should_autodiff_node,
-                         found_all_nonfusible_nodes and found_all_fusible_nodes, err_msg)
+        if should_autodiff_node is not None:
+            err_msg = self.autoDiffErrorMessage(should_autodiff_node,
+                                                nodes_not_in_diff_graph,
+                                                fusion_nodes_not_found,
+                                                non_fusible_nodes_being_fused,
+                                                fusion_nodes_found,
+                                                nodes_in_diff_graph)
+            self.assertEqual(should_autodiff_node,
+                             found_all_nonfusible_nodes and found_all_fusible_nodes, err_msg)
 
-    def checkShapeAnalysis(self, out_sizes: Union[List[int], List[List[int]]],
+    def checkShapeAnalysis(self, out_sizes: list[int] | list[list[int]],
                            traced_graph, assert_propagation, constant_prop=True):
         # repropagte input shapes provided by tracing,
         prev_symbolic_shapes_test_enabled = torch._C._jit_symbolic_shapes_test_mode_enabled()

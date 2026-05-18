@@ -197,8 +197,8 @@ graph(%a : Tensor, %b : Tensor):
             # Graph doesn't have shape info for inputs => compilation should
             # fail
             exception_thrown = True
-            pass
-        assert exception_thrown
+        if not exception_thrown:
+            raise AssertionError("expected RuntimeError for missing shape info")
 
         # Inject shape info and try compiling again
         example_inputs = [torch.rand(4, 4), torch.rand(4, 4)]
@@ -227,8 +227,8 @@ graph(%a : Tensor, %b : Tensor):
             kernel = te.TensorExprKernel(graph)
         except RuntimeError:
             exception_thrown = True
-            pass
-        assert exception_thrown
+        if not exception_thrown:
+            raise AssertionError("expected RuntimeError for missing shape info")
 
         # Try injecting shape info for graph inputs
         example_inputs = [torch.rand(4, 4), torch.rand(4, 4)]
@@ -239,8 +239,8 @@ graph(%a : Tensor, %b : Tensor):
         except RuntimeError:
             # Graph has a 'self' argument for which we can't set shapes
             exception_thrown = True
-            pass
-        assert exception_thrown
+        if not exception_thrown:
+            raise AssertionError("expected RuntimeError for self argument")
 
         # Remove 'self' argument and try annotating shapes one more time
         torch._C._te.remove_unused_self_argument(graph)
@@ -348,7 +348,7 @@ graph(%x : Float(2, 2, strides=[2, 1], requires_grad=0, device=cpu)):
         """
         graph = torch._C.parse_ir(graph_str)
 
-        def my_custom_lowering(inputs, out_shape, out_type, device):
+        def my_custom_lowering(inputs, out_shape, out_stride, out_type, device):
             def compute(idxs):
                 load = inputs[0].as_buf().load(idxs)
                 return te.ifThenElse(
@@ -392,9 +392,9 @@ graph(%a : Float(1, 3, 1, strides=[3, 1, 1], requires_grad=0, device=cpu)):
 
     @unittest.skipIf(not LLVM_ENABLED, "LLVM backend not enabled")
     def test_alloc_in_loop(self):
-        a, tmp, b = [
+        a, tmp, b = (
             te.BufHandle(name, [1], torch.float32) for name in ["a", "tmp", "b"]
-        ]
+        )
         body = te.Block([tmp.store([0], a.load([0])), b.store([0], tmp.load([0]))])
         for _ in range(4):
             i = te.VarHandle("i", torch.int32)
@@ -402,7 +402,7 @@ graph(%a : Float(1, 3, 1, strides=[3, 1, 1], requires_grad=0, device=cpu)):
         nest = te.LoopNest(body, [b])
         nest.prepare_for_codegen()
         f = te.construct_codegen("llvm", nest.simplify(), [a, b])
-        ta, tb = [torch.ones(1) for _ in range(2)]
+        ta, tb = (torch.ones(1) for _ in range(2))
         f.call([ta.data_ptr(), tb.data_ptr()])
 
 
@@ -460,7 +460,8 @@ class TestExprHandlePyBind(JitTestCase):
             te_fn = construct_te_fn(te_op, n, torch.float32)
             res = torch.empty(n)
             te_fn.call([a, res])
-            assert torch.allclose(ref, res, atol=1e-3, rtol=1e-3)
+            if not torch.allclose(ref, res, atol=1e-3, rtol=1e-3):
+                raise AssertionError("tensor expression result does not match reference")
 
 
 if __name__ == "__main__":

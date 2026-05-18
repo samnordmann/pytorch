@@ -2,22 +2,24 @@
 
 import sys
 import time
+import unittest
 from statistics import mean
 from unittest.mock import patch
 
 import torch
 import torch.nn as nn
-from torch import distributed as dist
-from torch.cuda import Event
+from torch import distributed as dist, Event
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+from torch.testing._internal.common_device_type import instantiate_device_type_tests
 from torch.testing._internal.common_distributed import skip_if_lt_x_gpu
-from torch.testing._internal.common_fsdp import (
-    FSDPTest,
-)
+from torch.testing._internal.common_fsdp import FSDPTestContinuous
 from torch.testing._internal.common_utils import (
-    TEST_WITH_DEV_DBG_ASAN,
     get_cycles_per_ms,
     run_tests,
+    TEST_HPU,
+    TEST_WITH_DEV_DBG_ASAN,
+    TEST_XPU,
+    xfailIf,
 )
 
 
@@ -31,6 +33,8 @@ if TEST_WITH_DEV_DBG_ASAN:
         file=sys.stderr,
     )
     sys.exit(0)
+
+device_type = acc.type if (acc := torch.accelerator.current_accelerator()) else "cpu"
 
 
 class Layer(nn.Module):
@@ -49,7 +53,8 @@ class Layer(nn.Module):
         # Record the fake forward compute time.
         self.e1.record()
         if self.sleep_cycles > 0:
-            torch.cuda._sleep(self.sleep_cycles)
+            if torch.cuda.is_available():
+                torch.cuda._sleep(self.sleep_cycles)
         if self.optional_param is not None:
             x = x + self.optional_param  # force the param to be part of the graph
         self.e2.record()
@@ -61,19 +66,22 @@ class Layer(nn.Module):
 
 
 def _create_model(compute_cycles, has_params: bool):
+    # Use `limit_all_gathers=False` since the timing being tested relies on the
+    # CPU running ahead of the GPU
     model = FSDP(
         nn.Sequential(
-            FSDP(Layer(compute_cycles, has_params)),
-            FSDP(Layer(compute_cycles, has_params)),
-            FSDP(Layer(compute_cycles, has_params)),
-            FSDP(Layer(compute_cycles, has_params)),
-        )
-    ).cuda()
+            FSDP(Layer(compute_cycles, has_params), limit_all_gathers=False),
+            FSDP(Layer(compute_cycles, has_params), limit_all_gathers=False),
+            FSDP(Layer(compute_cycles, has_params), limit_all_gathers=False),
+            FSDP(Layer(compute_cycles, has_params), limit_all_gathers=False),
+        ),
+        limit_all_gathers=False,
+    ).to(device_type)
     return model
 
 
 class Min10:
-    def __init__(self):
+    def __init__(self) -> None:
         self.data = []
 
     def add(self, new_data):
@@ -88,7 +96,7 @@ class Min10:
         return mean(self.data)
 
 
-class TestForwardOverlapWorldSizeOne(FSDPTest):
+class TestForwardOverlapWorldSizeOne(FSDPTestContinuous):
     @property
     def world_size(self):
         return 1
@@ -96,9 +104,9 @@ class TestForwardOverlapWorldSizeOne(FSDPTest):
     def _dist_train(self):
         rank = self.rank
         world_size = self.world_size
-        # Save the original torch.distributed._all_gather_base function since we will
+        # Save the original torch.distributed.all_gather_into_tensor function since we will
         # patch it to include an artificial delay.
-        orig_all_gather = torch.distributed._all_gather_base
+        orig_all_gather = torch.distributed.all_gather_into_tensor
 
         def run(compute_cycles, all_gather_cycles):
             has_params = all_gather_cycles > 0
@@ -106,8 +114,14 @@ class TestForwardOverlapWorldSizeOne(FSDPTest):
 
             # Get the input and sets the input's requires_grad to True because
             # we have a fake compute in the forward pass.
-            batch = torch.rand(1).cuda()
+            batch = torch.rand(1).to(device_type)
             batch.requires_grad = True
+
+            # Run one dummy iteration to trigger the execution order validation
+            # all-gathers
+            out = model(batch)
+            out.backward()
+            model.zero_grad(set_to_none=True)
 
             # We run 20 iterations but only collect timing data from the minimal 10
             # data points because nondeterministic system events can disturb the timing.
@@ -127,8 +141,10 @@ class TestForwardOverlapWorldSizeOne(FSDPTest):
                 def _delayed_all_gather(*args, **kwargs):
                     nonlocal all_gather_called
                     all_gather_called = True
-                    torch.cuda._sleep(all_gather_cycles)
-                    assert orig_all_gather
+                    if torch.cuda.is_available():
+                        torch.cuda._sleep(all_gather_cycles)
+                    if not orig_all_gather:
+                        raise AssertionError("Expected orig_all_gather to be truthy")
                     return orig_all_gather(*args, **kwargs)
 
                 # forward pass
@@ -136,7 +152,9 @@ class TestForwardOverlapWorldSizeOne(FSDPTest):
                 # Even though both e1 & e2 are on the compute stream, since
                 # compute depends on all_gather, e2-e1 includes all_gather time.
                 e1.record()
-                with patch("torch.distributed._all_gather_base", _delayed_all_gather):
+                with patch(
+                    "torch.distributed.all_gather_into_tensor", _delayed_all_gather
+                ):
                     out = model(batch)
                     if has_params and world_size > 1:
                         self.assertTrue(all_gather_called)
@@ -232,6 +250,8 @@ class TestForwardOverlapWorldSizeOne(FSDPTest):
             both = e4["gpu_total"]
             self.assertTrue(compute_only + all_gather_only > 1.1 * both)
 
+    @unittest.skipIf(TEST_HPU, "HPU doesn't has HW sleep API support, skipping")
+    @xfailIf(TEST_XPU)  # https://github.com/intel/torch-xpu-ops/issues/1504
     @skip_if_lt_x_gpu(2)
     def test_forward_overlap(self):
         self._dist_train()
@@ -243,5 +263,9 @@ class TestForwardOverlapWorldSizeTwo(TestForwardOverlapWorldSizeOne):
         return 2
 
 
+devices = ("cuda", "hpu", "xpu")
+instantiate_device_type_tests(
+    TestForwardOverlapWorldSizeOne, globals(), only_for=devices, allow_xpu=True
+)
 if __name__ == "__main__":
     run_tests()

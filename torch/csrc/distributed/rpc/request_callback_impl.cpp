@@ -1,27 +1,15 @@
 #include <torch/csrc/distributed/rpc/request_callback_impl.h>
 
-#include <c10/util/C++17.h>
-#include <torch/csrc/autograd/profiler.h>
-#include <torch/csrc/distributed/autograd/context/container.h>
-#include <torch/csrc/distributed/autograd/context/context.h>
-#include <torch/csrc/distributed/autograd/engine/dist_engine.h>
-#include <torch/csrc/distributed/autograd/rpc_messages/cleanup_autograd_context_req.h>
-#include <torch/csrc/distributed/autograd/rpc_messages/cleanup_autograd_context_resp.h>
-#include <torch/csrc/distributed/autograd/rpc_messages/propagate_gradients_req.h>
-#include <torch/csrc/distributed/autograd/rpc_messages/propagate_gradients_resp.h>
+#include <c10/util/Exception.h>
 #include <torch/csrc/distributed/autograd/rpc_messages/rpc_with_autograd.h>
 #include <torch/csrc/distributed/autograd/rpc_messages/rpc_with_profiling_req.h>
-#include <torch/csrc/distributed/autograd/rpc_messages/rpc_with_profiling_resp.h>
 #include <torch/csrc/distributed/autograd/rpc_messages/rref_backward_req.h>
 #include <torch/csrc/distributed/autograd/rpc_messages/rref_backward_resp.h>
-#include <torch/csrc/distributed/autograd/utils.h>
-#include <torch/csrc/distributed/rpc/profiler/server_process_global_profiler.h>
 #include <torch/csrc/distributed/rpc/py_rref.h>
 #include <torch/csrc/distributed/rpc/python_call.h>
 #include <torch/csrc/distributed/rpc/python_remote_call.h>
 #include <torch/csrc/distributed/rpc/python_resp.h>
 #include <torch/csrc/distributed/rpc/python_rpc_handler.h>
-#include <torch/csrc/distributed/rpc/rref_context.h>
 #include <torch/csrc/distributed/rpc/rref_impl.h>
 #include <torch/csrc/distributed/rpc/rref_proto.h>
 #include <torch/csrc/distributed/rpc/script_call.h>
@@ -29,12 +17,11 @@
 #include <torch/csrc/distributed/rpc/script_resp.h>
 #include <torch/csrc/distributed/rpc/unpickled_python_call.h>
 #include <torch/csrc/distributed/rpc/unpickled_python_remote_call.h>
-#include <torch/csrc/distributed/rpc/utils.h>
 #include <torch/csrc/jit/python/python_ivalue.h>
 
-namespace torch {
-namespace distributed {
-namespace rpc {
+#include <utility>
+
+namespace torch::distributed::rpc {
 
 using namespace torch::distributed::autograd;
 
@@ -91,13 +78,13 @@ SerializedPyObj serializePyObject(IValue value) {
   // py::object
   py::gil_scoped_acquire acquire;
   try {
-    return pythonRpcHandler.serialize(jit::toPyObject(value));
+    return pythonRpcHandler.serialize(jit::toPyObject(std::move(value)));
   } catch (py::error_already_set& e) {
     // py::error_already_set requires GIL to destruct, take special care.
-    auto err = std::runtime_error(e.what());
+    std::string err_msg = e.what();
     e.restore();
     PyErr_Clear();
-    throw err;
+    TORCH_CHECK(false, err_msg);
   }
 }
 
@@ -105,7 +92,7 @@ SerializedPyObj serializePyObject(IValue value) {
 
 c10::intrusive_ptr<JitFuture> RequestCallbackImpl::runPythonFunction(
     const py::object& function,
-    std::vector<c10::Stream> streams,
+    const std::vector<c10::Stream>& streams,
     bool isAsyncExecution) const {
   c10::MultiStreamGuard guard(streams);
   auto& pythonRpcHandler = PythonRpcHandler::getInstance();
@@ -121,11 +108,11 @@ c10::intrusive_ptr<JitFuture> RequestCallbackImpl::runPythonFunction(
     e.restore();
     PyErr_Clear();
     return future;
-  } catch (std::exception& e) {
+  } catch (std::exception&) {
     return asFuture(std::current_exception());
   }
 
-  // After sync exection or failed async execution return the value as-is.
+  // After sync execution or failed async execution return the value as-is.
   if (pythonRpcHandler.isRemoteException(result) || !isAsyncExecution) {
     return asFuture(
         c10::ivalue::ConcretePyObjectHolder::create(result),
@@ -135,7 +122,7 @@ c10::intrusive_ptr<JitFuture> RequestCallbackImpl::runPythonFunction(
   try {
     return result.cast<jit::PythonFutureWrapper&>().fut;
   } catch (const py::cast_error& e) {
-    auto type = result.get_type();
+    auto type = py::type::handle_of(result);
     auto errMsg = c10::str(
         e.what(),
         ". Functions decorated with @rpc.async_function must return a "
@@ -157,18 +144,17 @@ std::unique_ptr<RpcCommandBase> RequestCallbackImpl::
 
 c10::intrusive_ptr<JitFuture> RequestCallbackImpl::processScriptCall(
     RpcCommandBase& rpc,
-    std::vector<c10::Stream> streams) const {
+    const std::vector<c10::Stream>& streams) const {
   auto& scriptCall = static_cast<ScriptCall&>(rpc);
 
   c10::intrusive_ptr<JitFuture> future;
   if (scriptCall.hasOp()) {
-    future = runJitOperator(
-        *scriptCall.op(), scriptCall.stackRef(), std::move(streams));
+    future = runJitOperator(*scriptCall.op(), scriptCall.stackRef(), streams);
   } else {
     future = runJitFunction(
         scriptCall.qualifiedName(),
         scriptCall.stackRef(),
-        std::move(streams),
+        streams,
         scriptCall.isAsyncExecution());
   }
 
@@ -181,10 +167,10 @@ c10::intrusive_ptr<JitFuture> RequestCallbackImpl::processScriptCall(
 
 c10::intrusive_ptr<JitFuture> RequestCallbackImpl::processPythonCall(
     RpcCommandBase& rpc,
-    std::vector<c10::Stream> streams) const {
+    const std::vector<c10::Stream>& streams) const {
   auto& upc = static_cast<UnpickledPythonCall&>(rpc);
-  auto future = runPythonFunction(
-      upc.pythonUdf(), std::move(streams), upc.isAsyncExecution());
+  auto future =
+      runPythonFunction(upc.pythonUdf(), streams, upc.isAsyncExecution());
 
   return future->then(
       [](JitFuture& future) {
@@ -196,37 +182,33 @@ c10::intrusive_ptr<JitFuture> RequestCallbackImpl::processPythonCall(
 
 c10::intrusive_ptr<JitFuture> RequestCallbackImpl::processScriptRemoteCall(
     RpcCommandBase& rpc,
-    std::vector<c10::Stream> streams) const {
+    const std::vector<c10::Stream>& streams) const {
   auto& scriptRemoteCall = static_cast<ScriptRemoteCall&>(rpc);
 
   c10::intrusive_ptr<JitFuture> future;
   if (scriptRemoteCall.hasOp()) {
     future = runJitOperator(
-        *scriptRemoteCall.op(),
-        scriptRemoteCall.stackRef(),
-        std::move(streams));
+        *scriptRemoteCall.op(), scriptRemoteCall.stackRef(), streams);
   } else {
     future = runJitFunction(
         scriptRemoteCall.qualifiedName(),
         scriptRemoteCall.stackRef(),
-        std::move(streams),
+        streams,
         scriptRemoteCall.isAsyncExecution());
   }
 
   return assignOwnerRRef(
-      scriptRemoteCall.retRRefId(),
-      scriptRemoteCall.retForkId(),
-      std::move(future));
+      scriptRemoteCall.retRRefId(), scriptRemoteCall.retForkId(), future);
 }
 
 c10::intrusive_ptr<JitFuture> RequestCallbackImpl::processPythonRemoteCall(
     RpcCommandBase& rpc,
-    std::vector<c10::Stream> streams) const {
+    const std::vector<c10::Stream>& streams) const {
   auto& uprc = static_cast<UnpickledPythonRemoteCall&>(rpc);
-  auto future = runPythonFunction(
-      uprc.pythonUdf(), std::move(streams), uprc.isAsyncExecution());
+  auto future =
+      runPythonFunction(uprc.pythonUdf(), streams, uprc.isAsyncExecution());
 
-  return assignOwnerRRef(uprc.rrefId(), uprc.forkId(), std::move(future));
+  return assignOwnerRRef(uprc.rrefId(), uprc.forkId(), future);
 }
 
 c10::intrusive_ptr<JitFuture> RequestCallbackImpl::processPythonRRefFetchCall(
@@ -255,9 +237,9 @@ void RequestCallbackImpl::handleRRefDelete(
 c10::intrusive_ptr<JitFuture> RequestCallbackImpl::processRpcWithErrors(
     RpcCommandBase& rpc,
     const MessageType& messageType,
-    std::vector<c10::Stream> streams) const {
+    const std::vector<c10::Stream>& streams) const {
   try {
-    return processRpc(rpc, messageType, std::move(streams));
+    return processRpc(rpc, messageType, streams);
   } catch (py::error_already_set& e) {
     // Pass a dummy message ID since it will be overwritten anyways.
     auto future = asFuture(handleError(e, messageType, -1));
@@ -305,7 +287,7 @@ c10::intrusive_ptr<JitFuture> RequestCallbackImpl::processRRefBackward(
 c10::intrusive_ptr<JitFuture> RequestCallbackImpl::runJitFunction(
     const c10::QualifiedName& name,
     std::vector<at::IValue>& stack,
-    std::vector<c10::Stream> streams,
+    const std::vector<c10::Stream>& streams,
     bool isAsyncExecution) const {
   c10::MultiStreamGuard guard(streams);
   c10::intrusive_ptr<JitFuture> future;
@@ -337,6 +319,4 @@ c10::intrusive_ptr<JitFuture> RequestCallbackImpl::runJitFunction(
   return future;
 }
 
-} // namespace rpc
-} // namespace distributed
-} // namespace torch
+} // namespace torch::distributed::rpc

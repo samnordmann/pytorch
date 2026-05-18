@@ -1,19 +1,19 @@
 /**
  * This file is adapted from PyTorch/XLA
- * https://github.com/pytorch/xla/blob/master/third_party/xla_client/multi_wait.h
+ * https://github.com/pytorch/xla/blob/e0e5f937a0ba8d904f9608137dc8c51ba439df2d/third_party/xla_client/multi_wait.h
  */
 
 #pragma once
 
 #include <condition_variable>
+#include <exception>
 #include <functional>
 #include <memory>
 #include <mutex>
 
 #include <c10/macros/Export.h>
 
-namespace torch {
-namespace lazy {
+namespace torch::lazy {
 
 // Support waiting for a number of tasks to complete.
 class TORCH_API MultiWait {
@@ -57,5 +57,4 @@ class TORCH_API MultiWait {
   std::exception_ptr exptr_;
 };
 
-} // namespace lazy
-} // namespace torch
+} // namespace torch::lazy

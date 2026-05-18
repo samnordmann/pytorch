@@ -10,6 +10,10 @@ if [ -z "$PYTORCH_DIR" ]; then
   exit 1
 fi
 
+retry () {
+    "$@" || (sleep 10 && "$@") || (sleep 20 && "$@") || (sleep 40 && "$@")
+}
+
 check_android_sdk() {
   if [ -z "$ANDROID_HOME" ]; then
     echo "ANDROID_HOME not set; please set it to Android sdk directory"
@@ -29,7 +33,8 @@ check_gradle() {
 }
 
 parse_abis_list() {
-  ABIS_LIST="x86"
+  # sync with https://github.com/pytorch/pytorch/blob/0ca0e02685a9d033ac4f04e2fa5c8ba6dbc5ae50/android/gradle.properties#L1
+  ABIS_LIST="armeabi-v7a,arm64-v8a,x86,x86_64"
   CUSTOM_ABIS_LIST=false
   if [ $# -gt 0 ]; then
     ABIS_LIST=$1

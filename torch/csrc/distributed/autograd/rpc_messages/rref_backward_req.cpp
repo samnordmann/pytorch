@@ -2,9 +2,7 @@
 #include <torch/csrc/distributed/rpc/rpc_agent.h>
 #include <torch/csrc/jit/serialization/pickle.h>
 
-namespace torch {
-namespace distributed {
-namespace autograd {
+namespace torch::distributed::autograd {
 
 using rpc::Message;
 using rpc::MessageType;
@@ -39,7 +37,7 @@ c10::intrusive_ptr<Message> RRefBackwardReq::toMessageImpl() && {
 std::unique_ptr<RRefBackwardReq> RRefBackwardReq::fromMessage(
     const Message& message) {
   // Unpickle the message and retrieve tupleElements.
-  auto payload = static_cast<const char*>(message.payload().data());
+  auto payload = message.payload().data();
   auto payload_size = message.payload().size();
   IValue tuple = jit::unpickle(
       payload,
@@ -72,6 +70,4 @@ bool RRefBackwardReq::retainGraph() const {
   return retainGraph_;
 }
 
-} // namespace autograd
-} // namespace distributed
-} // namespace torch
+} // namespace torch::distributed::autograd

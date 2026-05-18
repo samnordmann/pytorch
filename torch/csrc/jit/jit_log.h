@@ -1,4 +1,5 @@
 #pragma once
+#include <c10/util/StringUtil.h>
 #include <torch/csrc/Export.h>
 #include <memory>
 #include <ostream>
@@ -38,8 +39,7 @@
 // `>>>` is also valid and **currently** is equivalent to `GRAPH_DEBUG` as there
 // is no logging level that is higher than `GRAPH_DEBUG`.
 
-namespace torch {
-namespace jit {
+namespace torch::jit {
 
 struct Node;
 struct Graph;
@@ -95,12 +95,12 @@ TORCH_API std::ostream& operator<<(
   JIT_LOG(                                        \
       ::torch::jit::JitLoggingLevels::GRAPH_DUMP, \
       MSG,                                        \
-      "\n",                                       \
+      '\n',                                       \
       ::torch::jit::log_function(G));
 // use GRAPH_DUMP for dumping graphs after optimization passes
 #define GRAPH_DUMP(MSG, G) \
   JIT_LOG(                 \
-      ::torch::jit::JitLoggingLevels::GRAPH_DUMP, MSG, "\n", (G)->toString());
+      ::torch::jit::JitLoggingLevels::GRAPH_DUMP, MSG, '\n', (G)->toString());
 // use GRAPH_UPDATE for reporting graph transformations (i.e. node deletion,
 // constant folding, CSE)
 #define GRAPH_UPDATE(...) \
@@ -109,6 +109,14 @@ TORCH_API std::ostream& operator<<(
 // pass
 #define GRAPH_DEBUG(...) \
   JIT_LOG(::torch::jit::JitLoggingLevels::GRAPH_DEBUG, __VA_ARGS__);
+// use GRAPH_EXPORT to export a graph so that the IR can be loaded by a script
+#define GRAPH_EXPORT(MSG, G)                       \
+  JIT_LOG(                                         \
+      ::torch::jit::JitLoggingLevels::GRAPH_DEBUG, \
+      MSG,                                         \
+      "\n<GRAPH_EXPORT>\n",                        \
+      (G)->toString(),                             \
+      "</GRAPH_EXPORT>");
 
 #define GRAPH_DUMP_ENABLED \
   (is_enabled(__FILE__, ::torch::jit::JitLoggingLevels::GRAPH_DUMP))
@@ -116,5 +124,4 @@ TORCH_API std::ostream& operator<<(
   (is_enabled(__FILE__, ::torch::jit::JitLoggingLevels::GRAPH_UPDATE))
 #define GRAPH_DEBUG_ENABLED \
   (is_enabled(__FILE__, ::torch::jit::JitLoggingLevels::GRAPH_DEBUG))
-} // namespace jit
-} // namespace torch
+} // namespace torch::jit

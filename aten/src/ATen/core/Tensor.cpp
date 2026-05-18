@@ -1,8 +1,5 @@
 #include <ATen/core/Tensor.h>
-#include <ATen/core/Formatting.h>
 #include <ATen/core/VariableHooksInterface.h>
-#include <ATen/core/LegacyTypeDispatch.h>
-#include <ATen/FunctionalTensorWrapper.h>
 
 #ifndef AT_PER_OPERATOR_HEADERS
 #include <ATen/MethodOperators.h>
@@ -42,7 +39,7 @@ TensorBase TensorBase::to(
     at::TensorOptions options,
     bool non_blocking,
     bool copy,
-    c10::optional<at::MemoryFormat> memory_format) const {
+    std::optional<at::MemoryFormat> memory_format) const {
   Tensor self(*this);
   return at::_ops::to_dtype_layout::call(
       self, optTypeMetaToScalarType(options.dtype_opt()),
@@ -51,9 +48,8 @@ TensorBase TensorBase::to(
 }
 
 void TensorBase::enforce_invariants() {
-  if (impl_.get() == nullptr) {
-    throw std::runtime_error("TensorImpl with nullptr is not supported");
-  }
+  TORCH_CHECK(
+      impl_.get() != nullptr, "TensorImpl with nullptr is not supported");
   // Following line throws if the method is not a POD data type or is not
   // supported by ATen
   scalar_type();
@@ -72,9 +68,9 @@ void TensorBase::enforce_invariants() {
 
 void TensorBase::print() const {
   if (defined()) {
-    std::cerr << "[" << toString() << " " << sizes() << "]" << std::endl;
+    std::cerr << '[' << toString() << ' ' << sizes() << ']' << '\n';
   } else {
-    std::cerr << "[UndefinedTensor]" << std::endl;
+    std::cerr << "[UndefinedTensor]" << '\n';
   }
 }
 
@@ -83,7 +79,18 @@ std::string TensorBase::toString() const {
   if (scalar_type() == ScalarType::Undefined) {
     base_str = "UndefinedType";
   } else {
-    base_str = std::string(at::toString(options().computeDispatchKey())) + at::toString(scalar_type()) + "Type";
+    auto dispatchkey = options().computeDispatchKey();
+    std::string dispatchkey_str;
+    if (dispatchkey == c10::DispatchKey::PrivateUse1) {
+      dispatchkey_str = c10::get_privateuse1_backend();
+    } else if (dispatchkey == c10::DispatchKey::AutocastPrivateUse1) {
+      dispatchkey_str = "Autocast" + c10::get_privateuse1_backend();
+    } else if (dispatchkey == c10::DispatchKey::QuantizedPrivateUse1) {
+      dispatchkey_str = "Quantized" + c10::get_privateuse1_backend();
+    } else {
+      dispatchkey_str = at::toString(dispatchkey);
+    }
+    base_str = dispatchkey_str + at::toString(scalar_type()) + "Type";
   }
   return base_str;
 }
@@ -125,10 +132,10 @@ bool TensorBase::retains_grad() const {
 }
 
 void Tensor::_backward(TensorList inputs,
-        const c10::optional<Tensor>& gradient,
-        c10::optional<bool> keep_graph,
+        const std::optional<Tensor>& gradient,
+        std::optional<bool> keep_graph,
         bool create_graph) const {
-  return impl::GetVariableHooks()->_backward(*this, inputs, gradient, keep_graph, create_graph);
+  impl::GetVariableHooks()->_backward(*this, inputs, gradient, keep_graph, create_graph);
 }
 
 const TensorBase& TensorBase::requires_grad_(bool _requires_grad) const {
@@ -151,7 +158,7 @@ const std::string& TensorBase::name() const {
   return impl::GetVariableHooks()->name(*this);
 }
 
-const std::shared_ptr<torch::autograd::Node>& TensorBase::grad_fn() const {
+const c10::intrusive_ptr<torch::autograd::Node>& TensorBase::grad_fn() const {
   return impl::GetVariableHooks()->grad_fn(*this);
 }
 
@@ -161,6 +168,14 @@ void TensorBase::remove_hook(unsigned pos) const {
 
 unsigned TensorBase::_register_hook(std::function<TensorBase(const TensorBase&)> hook) const {
   return impl::GetVariableHooks()->_register_hook(*this, std::move(hook));
+}
+
+std::optional<ScalarType> TensorBase::grad_dtype() const {
+  return impl::GetVariableHooks()->grad_dtype(*this);
+}
+
+void TensorBase::set_grad_dtype(const std::optional<ScalarType>& grad_dtype) const {
+  return impl::GetVariableHooks()->set_grad_dtype(*this, grad_dtype);
 }
 
 } // namespace at

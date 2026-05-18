@@ -51,7 +51,7 @@ const std::string& domain_prefix();
 // structure; it is namespaced via SymbolNamespace and the resulting
 // intern pointers support efficient namespace testing.
 struct TORCH_API Symbol {
-  explicit constexpr Symbol() : value(0) {};
+  explicit constexpr Symbol() : value(0) {}
   explicit constexpr Symbol(unique_t uniq)
   : value(uniq) {}
 
@@ -81,13 +81,15 @@ struct TORCH_API Symbol {
   bool is_aten() const;
   bool is_cuda() const;
   bool is_prim() const;
+  bool is_prims() const;
+  bool is_nvprims() const;
   bool is_onnx() const;
   bool is_user() const;
   bool is_caffe2() const;
   bool is_dimname() const;
 
   // So we can switch on this
-  constexpr operator unique_t() const {
+  constexpr operator unique_t() const noexcept {
     return value;
   }
 
@@ -138,7 +140,7 @@ inline Symbol Symbol::dimname(const std::string & s) { return Symbol::fromQualSt
 namespace std {
 template <>
 struct hash<c10::Symbol> {
-  size_t operator()(c10::Symbol s) const {
+  size_t operator()(c10::Symbol s) const noexcept {
     return std::hash<uint32_t>()(static_cast<uint32_t>(s));
   }
 };

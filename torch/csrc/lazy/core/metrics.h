@@ -1,6 +1,6 @@
 /**
  * This file is adapted from PyTorch/XLA
- * https://github.com/pytorch/xla/blob/master/third_party/xla_client/metrics.h
+ * https://github.com/pytorch/xla/blob/e0e5f937a0ba8d904f9608137dc8c51ba439df2d/third_party/xla_client/metrics.h
  */
 
 #pragma once
@@ -15,8 +15,7 @@
 
 #include <c10/macros/Export.h>
 
-namespace torch {
-namespace lazy {
+namespace torch::lazy {
 
 struct TORCH_API Sample {
   Sample() = default;
@@ -55,6 +54,12 @@ class TORCH_API MetricData {
     return repr_fn_(value);
   }
 
+  void Reset();
+
+  bool IsValid() const {
+    return TotalSamples() > 0;
+  }
+
  private:
   mutable std::mutex lock_;
   MetricReprFn repr_fn_;
@@ -81,6 +86,10 @@ class TORCH_API CounterData {
     value_ = 0;
   }
 
+  bool IsValid() const {
+    return value_ > 0;
+  }
+
  private:
   std::atomic<int64_t> value_;
 };
@@ -89,7 +98,8 @@ class TORCH_API MetricsArena {
  public:
   static MetricsArena* Get();
 
-  void Reset();
+  void ResetCounters();
+  void ResetMetrics();
 
   // Registers a new metric in the global arena.
   void RegisterMetric(
@@ -204,8 +214,7 @@ class TORCH_API Counter {
     __counter->AddValue(value);                \
   } while (0)
 
-#define TORCH_LAZY_FN_COUNTER(ns) \
-  TORCH_LAZY_COUNTER(c10::str(ns, __FUNCTION__), 1)
+#define TORCH_LAZY_FN_COUNTER(ns) TORCH_LAZY_COUNTER(c10::str(ns, __func__), 1)
 
 #define TORCH_LAZY_VALUE_METRIC(name, value)                         \
   do {                                                               \
@@ -217,8 +226,13 @@ class TORCH_API Counter {
 // Creates a report with the current metrics statistics.
 TORCH_API std::string CreateMetricReport();
 
+// Creates a report with the selected metrics statistics.
+TORCH_API std::string CreateMetricReport(
+    const std::vector<std::string>& counter_names,
+    const std::vector<std::string>& metric_names);
+
 // Returns the currently registered metric names. Note that the list can grow
-// since metrics are usually function intialized (they are static function
+// since metrics are usually function initialized (they are static function
 // variables).
 TORCH_API std::vector<std::string> GetMetricNames();
 
@@ -227,7 +241,7 @@ TORCH_API std::vector<std::string> GetMetricNames();
 TORCH_API MetricData* GetMetric(const std::string& name);
 
 // Returns the currently registered counter names. Note that the list can grow
-// since counters are usually function intialized (they are static function
+// since counters are usually function initialized (they are static function
 // variables).
 TORCH_API std::vector<std::string> GetCounterNames();
 
@@ -244,9 +258,13 @@ class TORCH_API TimedSection {
  public:
   explicit TimedSection(Metric* metric) : metric_(metric), start_(NowNs()) {}
 
+  TimedSection(TimedSection&& other) = delete;
+  TimedSection(const TimedSection&) = delete;
+  TimedSection& operator=(const TimedSection&) = delete;
+  TimedSection& operator=(TimedSection&&) = delete;
   ~TimedSection() {
     int64_t now = NowNs();
-    metric_->AddSample(now, now - start_);
+    metric_->AddSample(now, static_cast<double>(now - start_));
   }
 
   double Elapsed() const {
@@ -263,5 +281,8 @@ class TORCH_API TimedSection {
       new torch::lazy::Metric(name, torch::lazy::MetricFnTime); \
   torch::lazy::TimedSection timed_section(timed_metric)
 
-} // namespace lazy
-} // namespace torch
+#define TORCH_LAZY_FN_COUNTER_TIMED_TRACING(ns) \
+  TORCH_LAZY_FN_COUNTER(ns);                    \
+  TORCH_LAZY_TIMED("LazyTracing")
+
+} // namespace torch::lazy

@@ -10,7 +10,7 @@ namespace at {
 namespace native {
 namespace metal {
 
-class API_AVAILABLE(ios(10.0), macos(10.13)) MetalTensorImplStorage::Impl {
+class API_AVAILABLE(ios(11.0), macos(10.13)) MetalTensorImplStorage::Impl {
  public:
   Impl(const std::vector<int64_t>& sizes, const std::vector<int64_t>& strides)
       : _sizes(sizes),
@@ -93,7 +93,7 @@ void MetalTensorImplStorage::copy_data_to_host(float* hostData) {
   impl()->copy_data_to_host(hostData);
 }
 
-API_AVAILABLE(ios(10.0))
+API_AVAILABLE(ios(11.0))
 MPSImageWrapper* MetalTensorImplStorage::texture() const {
   return impl()->texture();
 }
@@ -115,7 +115,7 @@ std::ostream& operator<<(
   std::copy(
       strides.begin(), strides.end() - 1, std::ostream_iterator<int>(oss, ","));
   oss << sizes.back();
-  output << oss.str() << "}";
+  output << oss.str() << '}';
   return output;
 }
 
