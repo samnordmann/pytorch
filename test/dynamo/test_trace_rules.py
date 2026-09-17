@@ -191,6 +191,7 @@ def gen_allowed_objs_and_ids(record=False, c_binding_only=True) -> AllowedObject
             "torch._C._distributed_autograd",
             "torch._C._distributed_c10d",
             "torch._C._distributed_rpc",
+            "torch._C._distributed_transfer",
             "torch._C._functorch",
             "torch._C._monitor",
             "torch._C._nvtx",
