@@ -975,7 +975,6 @@ libtorch_python_core_sources = [
     "torch/csrc/autograd/python_variable_indexing.cpp",
     "torch/csrc/PyObjectConversionPythonImpl.cpp",
     "torch/csrc/distributed/python_placement.cpp",
-    "torch/csrc/distributed/transfer/python_bindings.cpp",
     "torch/csrc/dynamo/python_compiled_autograd.cpp",
     "torch/csrc/dynamo/cache_entry.cpp",
     "torch/csrc/dynamo/cpp_shim.cpp",

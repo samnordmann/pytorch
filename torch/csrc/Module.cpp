@@ -73,7 +73,6 @@
 #include <torch/csrc/autograd/python_variable.h>
 #include <torch/csrc/cpu/Module.h>
 #include <torch/csrc/distributed/python_placement.h>
-#include <torch/csrc/distributed/transfer/python_bindings.h>
 #include <torch/csrc/dynamo/init.h>
 #include <torch/csrc/export/pybind.h>
 #include <torch/csrc/functionalization/Module.h>
@@ -2670,7 +2669,6 @@ PyObject* initModule() {
 #endif
 
   torch::distributed::initPlacementBindings(module);
-  torch::distributed::transfer::initPythonBindings(module);
 
   torch::initTensorIteratorBindings(module);
 
