@@ -239,7 +239,7 @@ class TestNIXLNative(TestCase):
         ):
             sender.connect(receiver.bind())
             receiver.connect(sender.bind())
-            sender._agent.send_notif(receiver._agent.name, b"retained", backend="UCX")
+            sender._agent.send_notif(receiver._agent.name, b"retained")
             deadline = time.monotonic() + 5
             while b"retained" not in receiver._agent.notifs.get(sender._agent.name, []):
                 sender.progress()
