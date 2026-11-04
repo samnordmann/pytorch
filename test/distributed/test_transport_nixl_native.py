@@ -3,6 +3,7 @@
 import asyncio
 import multiprocessing
 import os
+import time
 import unittest
 
 import torch
@@ -155,6 +156,51 @@ def _connect_rank_worker(rank, port):
         asyncio.run(transport.close_async(timeout=5))
 
 
+def _passive_progress_worker(rank, connection, operation):
+    with new_transport(
+        "nixl",
+        "cpu",
+        timeout=5,
+        enable_prog_thread=False,
+        backend_options={"engine_config": "TLS=tcp"},
+    ) as transport:
+        tensor = torch.full((4098,), -1, dtype=torch.int64)
+        expected = torch.arange(4096, dtype=torch.int64)
+        if (rank == 0 and operation == "write") or (rank == 1 and operation == "read"):
+            tensor[1:-1].copy_(expected)
+        memory = transport.register_memory(tensor)
+        if rank == 1:
+            connection.send_bytes(transport.bind())
+            connection.send_bytes(
+                memory.to_remote_buffer().slice(8, 4096 * 8).serialize()
+            )
+            deadline = time.monotonic() + 10
+            while not connection.poll(0.001):
+                transport.progress()
+                if transport._pending:
+                    raise AssertionError("passive endpoint created local Work")
+                if time.monotonic() >= deadline:
+                    raise TimeoutError(
+                        "passive endpoint did not observe peer completion"
+                    )
+            if connection.recv_bytes() != b"done":
+                raise AssertionError("unexpected completion message")
+        else:
+            transport.connect(_receive(connection))
+            remote = NIXLRemoteBuffer.deserialize(_receive(connection))
+            if operation == "write":
+                transport.write(memory.to_view(8, 4096 * 8), remote)
+            else:
+                transport.read(memory.to_mutable_view(8, 4096 * 8), remote)
+            connection.send_bytes(b"done")
+        torch.testing.assert_close(tensor[1:-1], expected)
+        torch.testing.assert_close(
+            tensor[[0, -1]], torch.full((2,), -1, dtype=torch.int64)
+        )
+        # Both sides have observed transfer completion before releasing memory.
+    connection.close()
+
+
 def _run_worker(worker, *args):
     # Some NIXL 0.6-1.5 wheels segfault at exit on hosts with libefa, whose UCX modules
     # load a second libnl-route-3: https://github.com/ai-dynamo/nixl/issues/2428
@@ -176,6 +222,33 @@ class TestNIXLNative(TestCase):
             [(connection, progress_thread) for connection in connections],
             connections,
         )
+
+    @parametrize("operation", ["read", "write"])
+    def test_passive_endpoint_manual_progress(self, operation):
+        connections = multiprocessing.Pipe()
+        self._spawn(
+            _passive_progress_worker,
+            [(connection, operation) for connection in connections],
+            connections,
+        )
+
+    def test_manual_progress_preserves_notifications(self):
+        with (
+            new_transport("nixl", enable_prog_thread=False) as sender,
+            new_transport("nixl", enable_prog_thread=False) as receiver,
+        ):
+            sender.connect(receiver.bind())
+            receiver.connect(sender.bind())
+            sender._agent.send_notif(receiver._agent.name, b"retained", backend="UCX")
+            deadline = time.monotonic() + 5
+            while b"retained" not in receiver._agent.notifs.get(sender._agent.name, []):
+                sender.progress()
+                receiver.progress()
+                if time.monotonic() >= deadline:
+                    raise TimeoutError("notification did not arrive")
+            receiver.progress()
+            self.assertIn(b"retained", receiver._agent.notifs[sender._agent.name])
+            self.assertEqual(receiver._pending, {})
 
     def test_three_process_cpu_multi_peer(self):
         pipes = [multiprocessing.Pipe() for _ in range(2)]

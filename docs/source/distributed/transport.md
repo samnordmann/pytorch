@@ -142,3 +142,19 @@ cannot interrupt a blocked native call, even when it releases the GIL.
 .. autoclass:: torch.distributed._transport.nixl.NIXLTransport
    :members: close_async
 ```
+
+### Manual progress
+
+NIXL uses a background progress thread by default. When constructing a UCX
+transport with `enable_prog_thread=False`, call `transport.progress()` repeatedly
+on endpoints while peers may access their registered memory. This includes a
+passive receiver with no local `Work`; polling only local works is insufficient.
+No background thread is started by `progress()`.
+
+`progress()` services available UCX activity and preserves received NIXL
+notifications. It does not wait for a particular transfer or publish local Work
+completion. Continue to use `Work.wait()` or `Work.is_completed()` and a control
+message from the initiating peer before accessing or releasing exposed buffers.
+Its timeout bounds operation-lock acquisition, not execution in NIXL. Explicit
+progress is currently supported only by the NIXL UCX plugin; other backends raise
+`NotImplementedError`.

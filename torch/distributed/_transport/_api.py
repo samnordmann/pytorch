@@ -166,6 +166,19 @@ class Transport(ABC):
     def supported() -> bool:
         """Return whether the transport can be used in this process."""
 
+    def progress(self, *, timeout: float | None = None) -> None:
+        """Service incoming operations without waiting for a local Work.
+
+        Backends requiring manual progress must override this method. Call it
+        repeatedly on passive endpoints while peers may access their registered
+        memory. It does not establish transfer completion; use Work completion
+        and the application control plane before accessing or releasing buffers.
+
+        Raises NotImplementedError when the backend does not support explicit
+        progress. A timeout bounds lock acquisition, not native execution.
+        """
+        raise NotImplementedError("this transport does not support manual progress")
+
     @abstractmethod
     def bind(self, *, timeout: float | None = None) -> bytes:
         """Bind the endpoint and return its opaque connection URL.
