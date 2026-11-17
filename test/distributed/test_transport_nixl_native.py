@@ -170,6 +170,68 @@ def _connect_rank_worker(rank, port):
         asyncio.run(transport.close_async(timeout=5))
 
 
+def _mixed_batch_worker(rank, connection):
+    with new_transport("nixl", timeout=10) as transport:
+        devices = ("cpu", "cuda")
+        sources = [torch.arange(64.0, device=device) for device in devices]
+        targets = [torch.full((80,), -1.0, device=device) for device in devices]
+        source_memories = [transport.register_memory(t) for t in sources]
+        target_memories = [transport.register_memory(t) for t in targets]
+        connection.send_bytes(transport.bind())
+        transport.connect(_receive(connection))
+        for memory in source_memories + target_memories:
+            connection.send_bytes(memory.to_remote_buffer().serialize())
+        remote_sources = [
+            NIXLRemoteBuffer.deserialize(_receive(connection)) for _ in devices
+        ]
+        remote_targets = [
+            NIXLRemoteBuffer.deserialize(_receive(connection)) for _ in devices
+        ]
+        writes, reads = [], []
+        for i, (source, remote_source) in enumerate(
+            zip(source_memories, remote_sources)
+        ):
+            offset = (8 + 16 * i) * 4
+            for target, remote_target in zip(target_memories, remote_targets):
+                writes.append((source.to_view(16, 64), remote_target.slice(offset, 64)))
+                reads.append((target.to_mutable_view(offset, 64), remote_source[16:80]))
+        writes.append((source_memories[0].to_view(0, 0), remote_targets[0]))
+        for step in range(3):
+            for i, source in enumerate(sources):
+                source.copy_(torch.arange(64.0, device=source.device))
+                source.add_(1000 * rank + 100 * i + 10000 * step)
+            for operation, pairs in (("write", writes), ("read", reads)):
+                for target in targets:
+                    target.fill_(-1)
+                torch.cuda.synchronize()
+                # A peer must finish consuming the previous values and resetting
+                # its destinations before either side starts another transfer.
+                connection.send_bytes(b"ready")
+                if _receive(connection) != b"ready":
+                    raise AssertionError("unexpected control-plane message")
+                if operation == "write":
+                    transport.write_batch(pairs, async_op=True).wait()
+                else:
+                    asyncio.run(transport.read_batch_async(pairs, timeout=10))
+                connection.send_bytes(b"done")
+                if _receive(connection) != b"done":
+                    raise AssertionError("unexpected control-plane message")
+                expected = torch.full((80,), -1.0)
+                for i in range(2):
+                    expected[8 + 16 * i : 24 + 16 * i] = (
+                        torch.arange(4.0, 20.0)
+                        + 1000 * (1 - rank)
+                        + 100 * i
+                        + 10000 * step
+                    )
+                for target in targets:
+                    torch.testing.assert_close(target.cpu(), expected, rtol=0, atol=0)
+        connection.send_bytes(b"checked")
+        if _receive(connection) != b"checked":
+            raise AssertionError("unexpected control-plane message")
+    connection.close()
+
+
 def _next_notifications(transport):
     transport.wait_notifications(timeout=10).wait()
     return transport.poll_notifications()
@@ -244,6 +306,15 @@ class TestNIXLNative(TestCase):
     def test_three_process_cpu_connect_rank(self):
         store = dist.TCPStore("127.0.0.1", 0, is_master=True, wait_for_workers=False)
         self._spawn(_connect_rank_worker, [(store.port,)] * 3, [])
+
+    @unittest.skipUnless(torch.cuda.is_available(), "CUDA is required")
+    def test_two_process_mixed_device_batches(self):
+        connections = multiprocessing.Pipe()
+        self._spawn(
+            _mixed_batch_worker,
+            [(connection,) for connection in connections],
+            connections,
+        )
 
     def _spawn(self, worker, args, connections):
         context = multiprocessing.get_context("spawn")
