@@ -187,10 +187,8 @@ def _next_notifications(transport):
     return notifications
 
 
-def _notification_worker(rank, connection, progress_thread):
-    with new_transport(
-        "nixl", "cpu", timeout=10, enable_prog_thread=progress_thread
-    ) as transport:
+def _notification_worker(rank, connection):
+    with new_transport("nixl", "cpu", timeout=10) as transport:
         connection.send_bytes(transport.bind())
         transport.connect(_receive(connection))
         data = torch.full((1 << 20,), rank + 1, dtype=torch.uint8)
@@ -242,12 +240,11 @@ class TestNIXLNative(TestCase):
             connections,
         )
 
-    @parametrize("progress_thread", [True, False])
-    def test_two_process_notifications(self, progress_thread):
+    def test_two_process_notifications(self):
         connections = multiprocessing.Pipe()
         self._spawn(
             _notification_worker,
-            [(connection, progress_thread) for connection in connections],
+            [(connection,) for connection in connections],
             connections,
         )
 
