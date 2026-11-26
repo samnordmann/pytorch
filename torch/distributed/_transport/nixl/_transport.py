@@ -369,10 +369,11 @@ class NIXLTransport(Transport):
                 )
             agent.deregister_memory(registration.descs, backends=[self._plugin])
             registration.active = False
-            key = next(
-                k for k, value in self._registrations.items() if value is registration
-            )
-            del self._registrations[key]
+            del self._registrations[
+                registration.address,
+                registration.length,
+                str(registration.storage.device),
+            ]
             if not self._registrations and not self._transfers:
                 _live_transports.discard(self)
 
