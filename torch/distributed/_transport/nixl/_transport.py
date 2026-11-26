@@ -121,7 +121,7 @@ class NIXLTransport(Transport):
         self._default_timeout = timeout
         self._peers: set[str] = set()
         self._remote_agents: set[str] = set()
-        self._registrations: dict[tuple[int, int, str], _Registration] = {}
+        self._registrations: dict[tuple[int, int, torch.device], _Registration] = {}
         self._transfers: dict[int, Any] = {}
         self._pending: dict[int, _NIXLWork] = {}
         self._operation_lock = RLock()
@@ -326,7 +326,7 @@ class NIXLTransport(Transport):
         if tensor.device.type not in ("cpu", "cuda"):
             raise ValueError("NIXL transport requires CPU or CUDA tensors")
         length = tensor.numel() * tensor.element_size()
-        key = tensor.data_ptr(), length, str(tensor.device)
+        key = tensor.data_ptr(), length, tensor.device
         if registration := self._registrations.get(key):
             return NIXLMemory(self, registration)
         descs = agent.register_memory(tensor, backends=[self._plugin])
@@ -372,7 +372,7 @@ class NIXLTransport(Transport):
             del self._registrations[
                 registration.address,
                 registration.length,
-                str(registration.storage.device),
+                registration.storage.device,
             ]
             if not self._registrations and not self._transfers:
                 _live_transports.discard(self)
