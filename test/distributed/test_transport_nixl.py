@@ -840,6 +840,8 @@ class TestNIXLTransport(TransportTestMixin, TestCase):
         tensor.set_(torch.zeros(8))
         with self.assertRaisesRegex(RuntimeError, "storage was replaced"):
             first.write(source.to_view(), remote)
+        first.unregister_memory(source)
+        self.assertFalse(first._registrations)
 
     def test_changed_remote_metadata_rebuilds_handle(self):
         first, second, source, remote = self.registered_pair()
